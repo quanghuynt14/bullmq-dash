@@ -16,7 +16,7 @@
   "author": "quanghuynt14",
   "repository": {
     "type": "git",
-    "url": "https://github.com/quanghuynt14/bullmq-tui"
+    "url": "https://github.com/quanghuynt14/bullmq-dash"
   },
   "bin": {
     "bullmq-dash": "./dist/index.js"

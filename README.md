@@ -36,8 +36,8 @@ npx bullmq-dash
 
 ```bash
 # Clone the repository
-git clone https://github.com/quanghuynt14/bullmq-tui.git
-cd bullmq-tui
+git clone https://github.com/quanghuynt14/bullmq-dash.git
+cd bullmq-dash
 
 # Install dependencies
 bun install

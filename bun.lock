@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "bullmq-tui",
+      "name": "bullmq-dash",
       "dependencies": {
         "@opentui/core": "^0.1.75",
         "bullmq": "^5.66.5",
