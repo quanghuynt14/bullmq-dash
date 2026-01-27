@@ -81,7 +81,7 @@ export async function runConfigPrompt(): Promise<ConfigPromptAnswers> {
   const rl = createReadlineInterface();
 
   console.log();
-  console.log(bold(cyan("BullMQ Dash - Redis Connection Setup")));
+  console.log(bold(cyan("Redis Connection Setup")));
   console.log();
 
   try {

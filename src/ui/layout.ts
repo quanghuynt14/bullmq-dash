@@ -55,7 +55,7 @@ export function createLayout(renderer: CliRenderer): LayoutElements {
 
   const headerTitle = new TextRenderable(renderer, {
     id: "header-title",
-    content: t`${bold(fg(colors.text)("BullMQ"))}`,
+    content: t`${bold(fg(colors.text)("bullmq-dash"))}`,
     fg: colors.text,
   });
   header.add(headerTitle);

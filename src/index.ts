@@ -31,7 +31,7 @@ async function main() {
   if (hasRedisHostConfig(cliArgs)) {
     // Load config from CLI args and env vars
     config = loadConfig(cliArgs);
-    console.log("BullMQ Dash");
+    console.log("Hello!");
     console.log(`Connecting to Redis at ${config.redis.host}:${config.redis.port}...`);
     console.log("");
   } else {

@@ -1,5 +1,5 @@
 {
-  "name": "BullMQ TUI",
+  "name": "bullmq-dash Dev Container",
   "image": "oven/bun:latest",
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": {},

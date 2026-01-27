@@ -1,4 +1,4 @@
-# AGENTS.md - BullMQ TUI
+# AGENTS.md - bullmq-dash
 
 Reference for AI coding agents and developers working on this codebase.
 
