@@ -1,0 +1,31 @@
+# Source files
+src/
+tests/
+
+# Config files
+tsconfig.json
+build.ts
+.env
+.env.*
+!.env.example
+
+# Development
+.devcontainer/
+.vscode/
+.idea/
+*.log
+
+# Git
+.git/
+.gitignore
+
+# Documentation (keep README.md)
+AGENTS.md
+CONVENTIONS.md
+CONTRIBUTING.md
+
+# Misc
+node_modules/
+coverage/
+.DS_Store
+*.tgz

@@ -1,0 +1,58 @@
+{
+  "name": "bullmq-tui",
+  "version": "0.1.0",
+  "description": "Terminal UI dashboard for BullMQ queue monitoring",
+  "keywords": [
+    "bullmq",
+    "cli",
+    "dashboard",
+    "monitoring",
+    "queue",
+    "redis",
+    "terminal",
+    "tui"
+  ],
+  "license": "MIT",
+  "author": "quanghuynt14",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/quanghuynt14/bullmq-tui"
+  },
+  "bin": {
+    "bullmq-tui": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "build": "bun build.ts",
+    "start": "bun dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt --write",
+    "format:check": "oxfmt --check",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.1.75",
+    "bullmq": "^5.66.5",
+    "dotenv": "^16.4.0",
+    "ioredis": "^5.9.2",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "@types/node": "^22.0.0",
+    "oxfmt": "^0.27.0",
+    "oxlint": "^1.42.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
