@@ -1,12 +1,16 @@
-# BullMQ TUI
+# BullMQ Dash
 
 A modern terminal UI dashboard for monitoring [BullMQ](https://bullmq.io/) queues in real-time.
+
+![npm version](https://img.shields.io/npm/v/bullmq-dash)
+![license](https://img.shields.io/npm/l/bullmq-dash)
 
 ## Features
 
 - **Real-time monitoring** - Watch queues and jobs update live with configurable polling
 - **Queue overview** - View all BullMQ queues with job counts and status
 - **Job inspection** - Browse jobs by status, view details, data, and error stacktraces
+- **Scheduler monitoring** - View Job Schedulers (repeatable jobs) with patterns, iterations, and job history
 - **Job management** - Delete jobs directly from the TUI
 - **Global metrics** - Track enqueue/dequeue rates across all queues
 - **Modern UI** - Beautiful Catppuccin Mocha color theme
@@ -20,15 +24,26 @@ A modern terminal UI dashboard for monitoring [BullMQ](https://bullmq.io/) queue
 ## Installation
 
 ```bash
+# Install globally via npm
+npm install -g bullmq-dash
+
+# Or use bunx/npx to run directly
+bunx bullmq-dash
+npx bullmq-dash
+```
+
+### From Source
+
+```bash
 # Clone the repository
 git clone https://github.com/quanghuynt14/bullmq-tui.git
 cd bullmq-tui
 
 # Install dependencies
-pnpm install
+bun install
 
 # Build
-pnpm build
+bun run build
 ```
 
 ## Usage
@@ -36,11 +51,14 @@ pnpm build
 ### Quick Start
 
 ```bash
-# Run with default settings (localhost:6379)
+# If installed globally
+bullmq-dash
+
+# Or run from source
 bun dist/index.js
 
 # Or use the dev script
-pnpm dev
+bun run dev
 ```
 
 ### Configuration
@@ -91,6 +109,23 @@ QUEUE_NAMES=queue1,queue2       # Optional, monitors all queues if not set
 | `4` | Completed    |
 | `5` | Failed       |
 | `6` | Delayed      |
+| `7` | Scheduled    |
+
+### Scheduler View (Key `7`)
+
+When viewing scheduled jobs, the job list shows all Job Schedulers (repeatable jobs):
+
+| Key     | Action                                    |
+| ------- | ----------------------------------------- |
+| `Enter` | View scheduler details                    |
+| `j`     | Jump to next delayed job (in detail view) |
+
+The scheduler detail modal shows:
+- **Basic info**: Key, name, pattern/interval, timezone
+- **Statistics**: Iterations count, limits, created/next/end dates
+- **Job template**: Default job data and options
+- **Next delayed job**: Preview of the next job to be executed
+- **Recent history**: Last 10 completed/failed jobs from this scheduler
 
 ## UI Overview
 
@@ -128,17 +163,23 @@ QUEUE_NAMES=queue1,queue2       # Optional, monitors all queues if not set
 ## Development
 
 ```bash
-# Run in development mode (with hot reload)
-pnpm dev
+# Run in development mode
+bun run dev
 
 # Type check
-pnpm typecheck
+bun run typecheck
+
+# Lint
+bun run lint
+
+# Format
+bun run format
 
 # Build for production
-pnpm build
+bun run build
 
 # Run production build
-pnpm start
+bun run start
 ```
 
 ## Tech Stack
@@ -148,11 +189,11 @@ pnpm start
 - **Queue Library**: [BullMQ](https://bullmq.io/)
 - **Redis Client**: [ioredis](https://github.com/redis/ioredis)
 - **Config Validation**: [Zod](https://zod.dev/)
-- **Build Tool**: [tsup](https://tsup.egoist.dev/)
+- **Build Tool**: Bun bundler
 
 ## Color Theme
 
-BullMQ TUI uses the [Catppuccin Mocha](https://catppuccin.com/) color palette for a modern, easy-on-the-eyes aesthetic:
+BullMQ Dash uses the [Catppuccin Mocha](https://catppuccin.com/) color palette for a modern, easy-on-the-eyes aesthetic:
 
 - **Base**: `#1e1e2e` - Main background
 - **Text**: `#cdd6f4` - Primary text

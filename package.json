@@ -1,5 +1,5 @@
 {
-  "name": "bullmq-tui",
+  "name": "bullmq-dash",
   "version": "0.1.0",
   "description": "Terminal UI dashboard for BullMQ queue monitoring",
   "keywords": [
@@ -19,7 +19,7 @@
     "url": "https://github.com/quanghuynt14/bullmq-tui"
   },
   "bin": {
-    "bullmq-tui": "./dist/index.js"
+    "bullmq-dash": "./dist/index.js"
   },
   "files": [
     "dist"
@@ -36,7 +36,8 @@
     "lint:fix": "oxlint --fix",
     "format": "oxfmt --write",
     "format:check": "oxfmt --check",
-    "test": "bun test"
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
   },
   "dependencies": {
     "@opentui/core": "^0.1.75",
