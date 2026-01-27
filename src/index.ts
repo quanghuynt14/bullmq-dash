@@ -1,14 +1,47 @@
 import { App } from "./app.js";
-import { getConfig } from "./config.js";
+import {
+  parseCliArgs,
+  showHelp,
+  showVersion,
+  hasRedisHostConfig,
+  loadConfig,
+  createConfigFromPrompt,
+  setConfig,
+} from "./config.js";
+import { runConfigPrompt } from "./ui/config-prompt.js";
 
 async function main() {
-  // Load and validate config (will exit if invalid)
-  const config = getConfig();
+  // Parse CLI arguments
+  const cliArgs = parseCliArgs();
 
-  // Print startup info
-  console.log("BullMQ TUI Dashboard");
-  console.log(`Connecting to Redis at ${config.redis.host}:${config.redis.port}...`);
-  console.log("");
+  // Handle --help and --version
+  if (cliArgs.help) {
+    showHelp();
+    return;
+  }
+
+  if (cliArgs.version) {
+    showVersion();
+    return;
+  }
+
+  let config;
+
+  // Check if Redis host is configured
+  if (hasRedisHostConfig(cliArgs)) {
+    // Load config from CLI args and env vars
+    config = loadConfig(cliArgs);
+    console.log("BullMQ Dash");
+    console.log(`Connecting to Redis at ${config.redis.host}:${config.redis.port}...`);
+    console.log("");
+  } else {
+    // Run interactive prompt
+    const promptAnswers = await runConfigPrompt();
+    config = createConfigFromPrompt(promptAnswers, cliArgs);
+  }
+
+  // Set the global config
+  setConfig(config);
 
   try {
     const app = new App();

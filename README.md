@@ -51,19 +51,46 @@ bun run build
 ### Quick Start
 
 ```bash
-# If installed globally
+# Interactive setup (prompts for Redis connection)
 bullmq-dash
 
-# Or run from source
-bun dist/index.js
+# Connect with CLI options
+bullmq-dash --redis-host localhost --redis-port 6379
 
-# Or use the dev script
-bun run dev
+# Or use environment variables
+export REDIS_HOST=localhost
+export REDIS_PORT=6379
+bullmq-dash
 ```
 
-### Configuration
+### CLI Options
 
-Create a `.env` file in the project root:
+```
+bullmq-dash [options]
+
+Options:
+  --redis-host <host>      Redis host (default: localhost)
+  --redis-port <port>      Redis port (default: 6379)
+  --redis-password <pass>  Redis password
+  --redis-db <db>          Redis database number (default: 0)
+  --poll-interval <ms>     Polling interval in milliseconds (default: 3000)
+  --queues <names>         Comma-separated queue names to monitor
+  -v, --version            Show version
+  -h, --help               Show help
+```
+
+### Configuration Priority
+
+Configuration is loaded in the following priority (highest to lowest):
+
+1. **CLI arguments** - `--redis-host`, `--redis-port`, etc.
+2. **Environment variables** - `REDIS_HOST`, `REDIS_PORT`, etc.
+3. **Interactive prompt** - If no Redis host is configured, you'll be prompted
+4. **Defaults** - localhost:6379
+
+### Environment Variables
+
+Create a `.env` file or set environment variables:
 
 ```env
 # Redis connection
@@ -77,6 +104,25 @@ POLL_INTERVAL=3000              # Optional, default: 3000
 
 # Filter specific queues (comma-separated)
 QUEUE_NAMES=queue1,queue2       # Optional, monitors all queues if not set
+```
+
+### Examples
+
+```bash
+# Interactive setup
+bullmq-dash
+
+# Connect to remote Redis
+bullmq-dash --redis-host 192.168.1.100 --redis-port 6380
+
+# Connect with password
+bullmq-dash --redis-host redis.example.com --redis-password secret
+
+# Monitor specific queues only
+bullmq-dash --queues email,notifications,payments
+
+# Custom polling interval (5 seconds)
+bullmq-dash --poll-interval 5000
 ```
 
 ## Keyboard Shortcuts
