@@ -1,6 +1,6 @@
 # bullmq-dash
 
-Dashboard for monitoring [BullMQ](https://bullmq.io/) queues.
+Dashboard for monitoring [BullMQ](https://bullmq.io/)
 
 <img width="1491" height="854" alt="SCR-20260127-gsqa" src="https://github.com/user-attachments/assets/739d7729-b6cd-4933-a9e8-96e8cf84d33a" />
 
