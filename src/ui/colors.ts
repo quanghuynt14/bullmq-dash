@@ -30,6 +30,7 @@ export const colors = {
   peach: "#fab387",
   red: "#f38ba8",
   mauve: "#cba6f7",
+  maroon: "#eba0ac",
 } as const;
 
 export type ColorName = keyof typeof colors;

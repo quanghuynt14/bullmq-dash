@@ -66,7 +66,7 @@ export function createSchedulerList(
   // Empty state text
   const emptyText = new TextRenderable(renderer, {
     id: "scheduler-list-empty",
-    content: "No scheduled jobs found",
+    content: "No job schedulers found",
     fg: colors.overlay0,
     position: "absolute",
     left: 2,

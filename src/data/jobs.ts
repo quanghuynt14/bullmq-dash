@@ -1,7 +1,7 @@
 import type { Job } from "bullmq";
 import { getQueue } from "./queues.js";
 
-export type JobStatus = "latest" | "wait" | "active" | "completed" | "failed" | "delayed" | "scheduled";
+export type JobListView = "latest" | "wait" | "active" | "completed" | "failed" | "delayed" | "schedulers";
 
 export interface JobSummary {
   id: string;
@@ -39,7 +39,7 @@ const PAGE_SIZE = 25;
  */
 export async function getJobs(
   queueName: string,
-  status: JobStatus,
+  status: JobListView,
   page: number = 1,
   pageSize: number = PAGE_SIZE,
 ): Promise<JobsResult> {
@@ -117,6 +117,9 @@ export async function getJobs(
         const delayedCounts = await queue.getJobCounts("delayed");
         total = delayedCounts.delayed || 0;
         break;
+      case "schedulers":
+        // Schedulers are not jobs - use getJobSchedulers() from schedulers.ts instead
+        throw new Error("Cannot fetch schedulers via getJobs(). Use getJobSchedulers() instead.");
       default:
         jobs = [];
         total = 0;

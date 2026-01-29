@@ -1,5 +1,5 @@
 import type { QueueStats } from "./data/queues.js";
-import type { JobSummary, JobDetail, JobStatus } from "./data/jobs.js";
+import type { JobSummary, JobDetail, JobListView } from "./data/jobs.js";
 import type { GlobalMetrics } from "./data/metrics.js";
 import type { JobSchedulerSummary, JobSchedulerDetail } from "./data/schedulers.js";
 
@@ -22,7 +22,7 @@ export interface AppState {
   jobsTotal: number;
   jobsPage: number;
   jobsTotalPages: number;
-  jobsStatus: JobStatus;
+  jobsStatus: JobListView;
   selectedJobIndex: number;
 
   // Detail view
@@ -189,7 +189,7 @@ class StateManager {
   }
 
   // Status filter
-  setJobsStatus(status: JobStatus): void {
+  setJobsStatus(status: JobListView): void {
     this.setState({
       jobsStatus: status,
       jobsPage: 1,

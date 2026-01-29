@@ -1,5 +1,4 @@
 import * as readline from "readline";
-import { colors } from "./colors.js";
 
 export interface ConfigPromptAnswers {
   host: string;
@@ -33,19 +32,19 @@ function promptPassword(rl: readline.Interface, question: string): Promise<strin
     // For password, we'll use a simple approach
     // Note: This won't mask input in all terminals, but works for basic cases
     process.stdout.write(question);
-    
+
     let password = "";
     const stdin = process.stdin;
     const wasRaw = stdin.isRaw;
-    
+
     if (stdin.isTTY) {
       stdin.setRawMode(true);
     }
     stdin.resume();
-    
+
     const onData = (char: Buffer) => {
       const c = char.toString("utf8");
-      
+
       switch (c) {
         case "\n":
         case "\r":
@@ -72,7 +71,7 @@ function promptPassword(rl: readline.Interface, question: string): Promise<strin
           break;
       }
     };
-    
+
     stdin.on("data", onData);
   });
 }
@@ -88,18 +87,18 @@ export async function runConfigPrompt(): Promise<ConfigPromptAnswers> {
     // Host
     const hostInput = await prompt(rl, `Redis Host ${dim("[localhost]")}: `);
     const host = hostInput.trim() || "localhost";
-    
+
     // Port
     const portInput = await prompt(rl, `Redis Port ${dim("[6379]")}: `);
     const port = portInput.trim() ? parseInt(portInput.trim(), 10) : 6379;
-    
+
     if (isNaN(port) || port <= 0 || port > 65535) {
       console.error("Invalid port number. Using default 6379.");
     }
-    
+
     // Close readline before password prompt (we use raw mode for password)
     rl.close();
-    
+
     // Password (with masking)
     const password = await promptPassword(
       createReadlineInterface(),

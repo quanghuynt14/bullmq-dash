@@ -24,6 +24,7 @@ export interface QueueStats {
     completed: number;
     failed: number;
     delayed: number;
+    schedulers: number;
   };
   isPaused: boolean;
   total: number;
@@ -106,9 +107,10 @@ export async function discoverQueueNames(): Promise<string[]> {
 export async function getQueueStats(queueName: string): Promise<QueueStats> {
   const queue = getQueue(queueName);
 
-  const [counts, isPaused] = await Promise.all([
+  const [counts, isPaused, schedulersCount] = await Promise.all([
     queue.getJobCounts(),
     queue.isPaused(),
+    queue.getJobSchedulersCount(),
   ]);
 
   // Use prioritized count from getJobCounts() instead of fetching all prioritized jobs
@@ -122,6 +124,7 @@ export async function getQueueStats(queueName: string): Promise<QueueStats> {
       completed: counts.completed || 0,
       failed: counts.failed || 0,
       delayed: counts.delayed || 0,
+      schedulers: schedulersCount || 0,
     },
     isPaused,
     total:

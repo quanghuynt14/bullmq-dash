@@ -64,8 +64,8 @@ class PollingManager {
       const updatedState = stateManager.getState();
       const selectedQueue = queues[clampedIndex];
       if (selectedQueue) {
-        // If status is "scheduled", fetch schedulers instead of jobs
-        if (updatedState.jobsStatus === "scheduled") {
+        // If status is "schedulers", fetch schedulers instead of jobs
+        if (updatedState.jobsStatus === "schedulers") {
           const schedulersResult = await getJobSchedulers(
             selectedQueue.name,
             updatedState.schedulersPage,
@@ -150,8 +150,8 @@ class PollingManager {
     }
 
     try {
-      // If status is "scheduled", fetch schedulers instead of jobs
-      if (state.jobsStatus === "scheduled") {
+      // If status is "schedulers", fetch schedulers instead of jobs
+      if (state.jobsStatus === "schedulers") {
         const schedulersResult = await getJobSchedulers(
           selectedQueue.name,
           state.schedulersPage,

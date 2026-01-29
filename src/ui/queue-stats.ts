@@ -57,5 +57,5 @@ export function updateQueueStats(elements: QueueStatsElements, queue: QueueStats
 
   // Stats line with colored counts
   const { counts } = queue;
-  statsText.content = t`${fg(colors.yellow)(`wait: ${counts.wait}`)}  ${fg(colors.green)(`active: ${counts.active}`)}  ${fg(colors.blue)(`completed: ${counts.completed}`)}  ${fg(colors.red)(`failed: ${counts.failed}`)}  ${fg(colors.mauve)(`delayed: ${counts.delayed}`)}`;
+  statsText.content = t`${fg(colors.yellow)(`wait: ${counts.wait}`)}  ${fg(colors.green)(`active: ${counts.active}`)}  ${fg(colors.blue)(`completed: ${counts.completed}`)}  ${fg(colors.red)(`failed: ${counts.failed}`)}  ${fg(colors.mauve)(`delayed: ${counts.delayed}`)}  ${fg(colors.maroon)(`schedulers: ${counts.schedulers}`)}`;
 }

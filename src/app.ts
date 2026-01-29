@@ -203,7 +203,7 @@ export class App {
       case "enter":
         if (state.focusedPane === "jobs") {
           // If viewing schedulers, open scheduler detail
-          if (state.jobsStatus === "scheduled") {
+          if (state.jobsStatus === "schedulers") {
             await this.openSchedulerDetail();
           } else {
             await this.openJobDetail();
@@ -216,7 +216,7 @@ export class App {
 
       case "left":
         if (state.focusedPane === "jobs") {
-          if (state.jobsStatus === "scheduled") {
+          if (state.jobsStatus === "schedulers") {
             stateManager.prevSchedulerPage();
             await pollingManager.refreshSchedulers();
           } else {
@@ -228,7 +228,7 @@ export class App {
 
       case "right":
         if (state.focusedPane === "jobs") {
-          if (state.jobsStatus === "scheduled") {
+          if (state.jobsStatus === "schedulers") {
             stateManager.nextSchedulerPage();
             await pollingManager.refreshSchedulers();
           } else {
@@ -240,7 +240,7 @@ export class App {
 
       case "d":
         // Delete only works for regular jobs, not schedulers
-        if (state.focusedPane === "jobs" && state.jobsStatus !== "scheduled" && state.jobs.length > 0) {
+        if (state.focusedPane === "jobs" && state.jobsStatus !== "schedulers" && state.jobs.length > 0) {
           stateManager.showDeleteConfirm();
         }
         break;
@@ -252,9 +252,9 @@ export class App {
       case "g":
         // Open page jump modal when in jobs pane
         if (state.focusedPane === "jobs") {
-          if (state.jobsStatus === "scheduled" && state.schedulersTotalPages > 1) {
+          if (state.jobsStatus === "schedulers" && state.schedulersTotalPages > 1) {
             stateManager.showPageJumpModal();
-          } else if (state.jobsStatus !== "scheduled" && state.jobsTotalPages > 1) {
+          } else if (state.jobsStatus !== "schedulers" && state.jobsTotalPages > 1) {
             stateManager.showPageJumpModal();
           }
         }
@@ -271,8 +271,8 @@ export class App {
         const newStatus = getStatusFromKey(key.name);
         if (newStatus) {
           stateManager.setJobsStatus(newStatus);
-          // Reset scheduler state when switching to scheduled
-          if (newStatus === "scheduled") {
+          // Reset scheduler state when switching to schedulers
+          if (newStatus === "schedulers") {
             stateManager.setState({
               selectedSchedulerIndex: 0,
               schedulersPage: 1,
@@ -370,7 +370,7 @@ export class App {
     if (pageInput) {
       const targetPage = parseInt(pageInput, 10);
       if (!isNaN(targetPage) && targetPage >= 1) {
-        if (state.jobsStatus === "scheduled") {
+        if (state.jobsStatus === "schedulers") {
           stateManager.goToSchedulerPage(targetPage);
           await pollingManager.refreshSchedulers();
         } else {
@@ -430,9 +430,9 @@ export class App {
     updateStatusFilter(statusFilter, state.jobsStatus);
 
     // Toggle between job list and scheduler list based on status
-    const isScheduledView = state.jobsStatus === "scheduled";
+    const isSchedulersView = state.jobsStatus === "schedulers";
 
-    if (isScheduledView) {
+    if (isSchedulersView) {
       // Hide job list, show scheduler list
       jobList.container.visible = false;
       showSchedulerList(schedulerList);
@@ -479,8 +479,8 @@ export class App {
       pageJump,
       state.showPageJump,
       state.pageJumpInput,
-      isScheduledView ? state.schedulersPage : state.jobsPage,
-      isScheduledView ? state.schedulersTotalPages : state.jobsTotalPages,
+      isSchedulersView ? state.schedulersPage : state.jobsPage,
+      isSchedulersView ? state.schedulersTotalPages : state.jobsTotalPages,
     );
   }
 
