@@ -33,8 +33,8 @@ describe("getStatusFromKey", () => {
       expect(getStatusFromKey("0")).toBeNull();
     });
 
-    it("returns null for key '7'", () => {
-      expect(getStatusFromKey("7")).toBeNull();
+    it("returns null for key '99'", () => {
+      expect(getStatusFromKey("99")).toBeNull();
     });
 
     it("returns null for empty string", () => {
