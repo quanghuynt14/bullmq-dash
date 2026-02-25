@@ -30,9 +30,109 @@ bun run format:check     # Check formatting
 
 # Run production
 bun run start            # bun dist/index.js
+
+# JSON output (headless / AI agent mode)
+bullmq-dash --json --redis-host localhost   # Single snapshot
+bullmq-dash --json --watch --redis-host localhost  # Stream NDJSON
 ```
 
 **No test framework configured.** If adding tests, use Bun's built-in test runner.
+
+## Non-Interactive / Headless Mode (AI Agent Usage)
+
+Use `--json` flag to get a machine-readable JSON snapshot without launching the TUI:
+
+```bash
+# Single snapshot - connect and dump all queue stats as JSON, then exit
+bullmq-dash --json --redis-host localhost --redis-port 6379
+
+# With specific queues
+bullmq-dash --json --queues email,payments --redis-host localhost
+
+# Using environment variables
+REDIS_HOST=localhost bullmq-dash --json
+```
+
+### Output Schema
+
+```typescript
+interface JsonOutput {
+  timestamp: string; // ISO 8601
+  queues: Array<{
+    name: string;
+    counts: {
+      wait: number;
+      active: number;
+      completed: number;
+      failed: number;
+      delayed: number;
+      schedulers: number;
+    };
+    isPaused: boolean;
+    total: number;
+  }>;
+  metrics: {
+    queueCount: number;
+    jobCounts: {
+      wait: number;
+      active: number;
+      completed: number;
+      failed: number;
+      delayed: number;
+      total: number;
+    };
+    rates: {
+      enqueuedPerMin: number;
+      enqueuedPerSec: number;
+      dequeuedPerMin: number;
+      dequeuedPerSec: number;
+    };
+  };
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Success |
+| `1`  | Runtime error (unhandled exception) |
+| `2`  | Configuration error (bad/missing env vars or flags) |
+| `3`  | Redis connection error |
+
+### Structured Error Output (stderr)
+
+All errors are written to `stderr` as JSON:
+
+```json
+{ "error": "Redis connection failed", "code": "REDIS_ERROR", "details": "connect ECONNREFUSED 127.0.0.1:6379" }
+```
+
+Error codes: `CONFIG_ERROR`, `REDIS_ERROR`, `RUNTIME_ERROR`
+
+### Common Agent Tasks
+
+```bash
+# Check if any queue has failed jobs
+bullmq-dash --json --redis-host localhost | jq '.queues[] | select(.counts.failed > 0)'
+
+# Get total waiting jobs across all queues
+bullmq-dash --json --redis-host localhost | jq '[.queues[].counts.wait] | add'
+
+# Check if a specific queue exists and get its stats
+bullmq-dash --json --redis-host localhost --queues email | jq '.queues[0]'
+
+# Watch mode: stream NDJSON every 3 seconds
+bullmq-dash --json --watch --redis-host localhost
+```
+
+## Watch Mode (`--json --watch`)
+
+Combine `--json` and `--watch` flags to stream NDJSON (newline-delimited JSON) to stdout at the configured `--poll-interval` (default: 3000ms). Each line is a complete JSON snapshot. Exit with `Ctrl+C`.
+
+```bash
+bullmq-dash --json --watch --redis-host localhost --poll-interval 5000
+```
 
 ## Project Structure
 
@@ -234,4 +334,5 @@ Uses Catppuccin Mocha palette. Key colors:
 | `ioredis`       | Redis client          |
 | `zod`           | Schema validation     |
 | `tsup`          | Build tool            |
+
 

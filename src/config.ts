@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { parseArgs } from "util";
+import { writeError } from "./errors.js";
 
 const configSchema = z.object({
   redis: z.object({
@@ -26,6 +27,8 @@ export interface CliArgs {
   queues?: string[];
   help?: boolean;
   version?: boolean;
+  json?: boolean;
+  watch?: boolean;
 }
 
 let packageVersion: string | null = null;
@@ -43,6 +46,8 @@ Options:
   --poll-interval <ms>     Polling interval in milliseconds (default: 3000)
   --prefix <prefix>        BullMQ key prefix (default: bull)
   --queues <names>         Comma-separated queue names to monitor
+  --json                   Output a JSON snapshot and exit (headless/agent mode)
+  --watch                  Stream NDJSON snapshots (use with --json)
   -v, --version            Show version
   -h, --help               Show this help message
 
@@ -51,6 +56,8 @@ Examples:
   bullmq-dash --redis-host 192.168.1.100 --redis-port 6380
   bullmq-dash --queues email,notifications
   bullmq-dash --prefix bull:taskService
+  bullmq-dash --json --redis-host localhost
+  bullmq-dash --json --watch --redis-host localhost
 `;
 
 export function parseCliArgs(): CliArgs {
@@ -67,6 +74,8 @@ export function parseCliArgs(): CliArgs {
         queues: { type: "string" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
+        json: { type: "boolean" },
+        watch: { type: "boolean" },
       },
       strict: true,
     });
@@ -81,12 +90,14 @@ export function parseCliArgs(): CliArgs {
       queues: values.queues ? parseQueueNames(values.queues) : undefined,
       help: values.help,
       version: values.version,
+      json: values.json,
+      watch: values.watch,
     };
   } catch (error) {
     if (error instanceof Error && error.message.includes("Unknown option")) {
       console.error(`Error: ${error.message}`);
       console.error("Use --help to see available options.");
-      process.exit(1);
+      process.exit(2);
     }
     throw error;
   }
@@ -159,9 +170,8 @@ export function loadConfig(cliArgs: CliArgs): Config {
 
   if (!result.success) {
     const errors = result.error.flatten();
-    console.error("Configuration error:");
-    console.error(JSON.stringify(errors, null, 2));
-    process.exit(1);
+    writeError("Configuration error", "CONFIG_ERROR", JSON.stringify(errors));
+    process.exit(2);
   }
 
   return result.data;
@@ -190,9 +200,8 @@ export function createConfigFromPrompt(
 
   if (!result.success) {
     const errors = result.error.flatten();
-    console.error("Configuration error:");
-    console.error(JSON.stringify(errors, null, 2));
-    process.exit(1);
+    writeError("Configuration error", "CONFIG_ERROR", JSON.stringify(errors));
+    process.exit(2);
   }
 
   return result.data;
