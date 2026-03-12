@@ -5,8 +5,7 @@ import { writeError } from "./errors.js";
 import type { Config } from "./config.js";
 import { setConfig } from "./config.js";
 
-async function fetchSnapshot(config: Config) {
-  setConfig(config);
+async function fetchSnapshot() {
   const queueNames = await discoverQueueNames();
   const queues = await Promise.all(queueNames.map((name) => getQueueStats(name)));
   const metrics = await getGlobalMetrics();
@@ -19,6 +18,8 @@ async function fetchSnapshot(config: Config) {
 }
 
 export async function runJsonSnapshot(config: Config): Promise<void> {
+  setConfig(config);
+
   try {
     await connectRedis();
   } catch (error) {
@@ -31,8 +32,15 @@ export async function runJsonSnapshot(config: Config): Promise<void> {
   }
 
   try {
-    const snapshot = await fetchSnapshot(config);
+    const snapshot = await fetchSnapshot();
     process.stdout.write(JSON.stringify(snapshot) + "\n");
+  } catch (error) {
+    writeError(
+      "Failed to fetch snapshot",
+      "RUNTIME_ERROR",
+      error instanceof Error ? error.message : String(error),
+    );
+    process.exit(1);
   } finally {
     await closeAllQueues();
     await disconnectRedis();
@@ -42,6 +50,8 @@ export async function runJsonSnapshot(config: Config): Promise<void> {
 }
 
 export async function runJsonWatch(config: Config): Promise<void> {
+  setConfig(config);
+
   try {
     await connectRedis();
   } catch (error) {
@@ -61,7 +71,7 @@ export async function runJsonWatch(config: Config): Promise<void> {
 
   while (true) {
     try {
-      const snapshot = await fetchSnapshot(config);
+      const snapshot = await fetchSnapshot();
       process.stdout.write(JSON.stringify(snapshot) + "\n");
     } catch (error) {
       writeError(
