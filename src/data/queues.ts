@@ -13,8 +13,6 @@ let queueNamesCache: {
 
 const QUEUE_NAMES_CACHE_TTL = 5000; // 5 seconds
 const SCAN_COUNT = 1000;
-const PREFIX = "bull:";
-const SUFFIX = ":meta";
 
 export interface QueueStats {
   name: string;
@@ -37,6 +35,7 @@ export function getQueue(queueName: string): Queue {
   if (!queueCache.has(queueName)) {
     const config = getConfig();
     const queue = new Queue(queueName, {
+      prefix: config.prefix,
       connection: {
         host: config.redis.host,
         port: config.redis.port,
@@ -69,22 +68,25 @@ export async function discoverQueueNames(): Promise<string[]> {
 
   const redis = getRedisClient();
   const queueNames = new Set<string>();
+  const prefix = config.prefix + ":";
 
   let cursor = "0";
   do {
     const [nextCursor, keys] = await redis.scan(
       cursor,
       "MATCH",
-      "bull:*:meta",
+      `${config.prefix}:*`,
       "COUNT",
       SCAN_COUNT,
     );
     cursor = nextCursor;
 
     for (const key of keys) {
-      if (key.startsWith(PREFIX) && key.endsWith(SUFFIX)) {
-        const queueName = key.slice(PREFIX.length, key.length - SUFFIX.length);
-        if (queueName && !queueName.includes(":")) {
+      if (key.startsWith(prefix)) {
+        const rest = key.slice(prefix.length);
+        const colonIdx = rest.indexOf(":");
+        const queueName = colonIdx === -1 ? rest : rest.slice(0, colonIdx);
+        if (queueName) {
           queueNames.add(queueName);
         }
       }

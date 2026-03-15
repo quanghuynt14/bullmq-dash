@@ -13,6 +13,7 @@ const configSchema = z.object({
     db: z.coerce.number().int().min(0).default(0),
   }),
   pollInterval: z.coerce.number().int().positive().default(3000),
+  prefix: z.string().default("bull"),
   queueNames: z.array(z.string()).optional(),
 });
 
@@ -24,6 +25,7 @@ export interface CliArgs {
   redisPassword?: string;
   redisDb?: number;
   pollInterval?: number;
+  prefix?: string;
   queues?: string[];
   help?: boolean;
   version?: boolean;
@@ -42,6 +44,7 @@ Options:
   --redis-password <pass>  Redis password
   --redis-db <db>          Redis database number (default: 0)
   --poll-interval <ms>     Polling interval in milliseconds (default: 3000)
+  --prefix <prefix>        BullMQ key prefix (default: bull)
   --queues <names>         Comma-separated queue names to monitor
   -v, --version            Show version
   -h, --help               Show this help message
@@ -52,12 +55,14 @@ Environment Variables:
   REDIS_PASSWORD           Redis password
   REDIS_DB                 Redis database number
   POLL_INTERVAL            Polling interval in milliseconds
+  BULL_PREFIX              BullMQ key prefix (default: bull)
   QUEUE_NAMES              Comma-separated queue names
 
 Examples:
   bullmq-dash
   bullmq-dash --redis-host 192.168.1.100 --redis-port 6380
   bullmq-dash --queues email,notifications
+  bullmq-dash --prefix bull:taskService
 `;
 
 export function parseCliArgs(): CliArgs {
@@ -70,6 +75,7 @@ export function parseCliArgs(): CliArgs {
         "redis-password": { type: "string" },
         "redis-db": { type: "string" },
         "poll-interval": { type: "string" },
+        prefix: { type: "string" },
         queues: { type: "string" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
@@ -83,6 +89,7 @@ export function parseCliArgs(): CliArgs {
       redisPassword: values["redis-password"],
       redisDb: values["redis-db"] ? parseInt(values["redis-db"], 10) : undefined,
       pollInterval: values["poll-interval"] ? parseInt(values["poll-interval"], 10) : undefined,
+      prefix: values.prefix,
       queues: values.queues ? parseQueueNames(values.queues) : undefined,
       help: values.help,
       version: values.version,
@@ -134,6 +141,7 @@ export function loadConfig(cliArgs: CliArgs): Config {
       db: cliArgs.redisDb ?? process.env.REDIS_DB,
     },
     pollInterval: cliArgs.pollInterval ?? process.env.POLL_INTERVAL,
+    prefix: cliArgs.prefix ?? process.env.BULL_PREFIX,
     queueNames: cliArgs.queues ?? parseQueueNames(process.env.QUEUE_NAMES),
   };
 
@@ -164,6 +172,7 @@ export function createConfigFromPrompt(
       db: cliArgs.redisDb ?? process.env.REDIS_DB,
     },
     pollInterval: cliArgs.pollInterval ?? process.env.POLL_INTERVAL,
+    prefix: cliArgs.prefix ?? process.env.BULL_PREFIX,
     queueNames: cliArgs.queues ?? parseQueueNames(process.env.QUEUE_NAMES),
   };
 
