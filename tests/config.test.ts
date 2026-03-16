@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { parseQueueNames } from "../src/config.js";
+import { readFileSync } from "node:fs";
+import { getVersionText, parseQueueNames } from "../src/config.js";
+
+const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8")) as {
+  version: string;
+};
 
 describe("parseQueueNames", () => {
   describe("returns undefined", () => {
@@ -55,5 +60,11 @@ describe("parseQueueNames", () => {
         "queue2",
       ]);
     });
+  });
+});
+
+describe("getVersionText", () => {
+  it("uses the version from package.json", () => {
+    expect(getVersionText()).toBe(`bullmq-dash v${packageJson.version}`);
   });
 });

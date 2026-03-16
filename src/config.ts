@@ -1,4 +1,5 @@
 import { config } from "dotenv";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { parseArgs } from "util";
 
@@ -31,7 +32,7 @@ export interface CliArgs {
   version?: boolean;
 }
 
-const VERSION = "0.1.0";
+let packageVersion: string | null = null;
 
 const HELP_TEXT = `
 bullmq-dash - Terminal UI dashboard for BullMQ queue monitoring
@@ -110,8 +111,30 @@ export function showHelp(): void {
 }
 
 export function showVersion(): void {
-  console.log(`bullmq-dash v${VERSION}`);
+  console.log(getVersionText());
   process.exit(0);
+}
+
+export function getVersionText(): string {
+  return `bullmq-dash v${getPackageVersion()}`;
+}
+
+function getPackageVersion(): string {
+  if (packageVersion) {
+    return packageVersion;
+  }
+
+  const packageJsonUrl = new URL("../package.json", import.meta.url);
+  const packageJson = JSON.parse(readFileSync(packageJsonUrl, "utf-8")) as {
+    version?: unknown;
+  };
+
+  if (typeof packageJson.version !== "string" || packageJson.version.trim() === "") {
+    throw new Error("Invalid package.json version");
+  }
+
+  packageVersion = packageJson.version;
+  return packageVersion;
 }
 
 export function parseQueueNames(value: string | undefined): string[] | undefined {
