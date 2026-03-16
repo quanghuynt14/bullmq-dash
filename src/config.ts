@@ -1,10 +1,6 @@
-import { config } from "dotenv";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { parseArgs } from "util";
-
-// Load .env file
-config();
 
 const configSchema = z.object({
   redis: z.object({
@@ -49,15 +45,6 @@ Options:
   --queues <names>         Comma-separated queue names to monitor
   -v, --version            Show version
   -h, --help               Show this help message
-
-Environment Variables:
-  REDIS_HOST               Redis host
-  REDIS_PORT               Redis port
-  REDIS_PASSWORD           Redis password
-  REDIS_DB                 Redis database number
-  POLL_INTERVAL            Polling interval in milliseconds
-  BULL_PREFIX              BullMQ key prefix (default: bull)
-  QUEUE_NAMES              Comma-separated queue names
 
 Examples:
   bullmq-dash
@@ -149,23 +136,23 @@ export function parseQueueNames(value: string | undefined): string[] | undefined
  * Check if Redis host is configured from any source
  */
 export function hasRedisHostConfig(cliArgs: CliArgs): boolean {
-  return !!(cliArgs.redisHost || process.env.REDIS_HOST);
+  return !!cliArgs.redisHost;
 }
 
 /**
- * Load config with priority: CLI args > env vars > defaults
+ * Load config with priority: CLI args > defaults
  */
 export function loadConfig(cliArgs: CliArgs): Config {
   const raw = {
     redis: {
-      host: cliArgs.redisHost ?? process.env.REDIS_HOST,
-      port: cliArgs.redisPort ?? process.env.REDIS_PORT,
-      password: cliArgs.redisPassword ?? process.env.REDIS_PASSWORD ?? undefined,
-      db: cliArgs.redisDb ?? process.env.REDIS_DB,
+      host: cliArgs.redisHost,
+      port: cliArgs.redisPort,
+      password: cliArgs.redisPassword,
+      db: cliArgs.redisDb,
     },
-    pollInterval: cliArgs.pollInterval ?? process.env.POLL_INTERVAL,
-    prefix: cliArgs.prefix ?? process.env.BULL_PREFIX,
-    queueNames: cliArgs.queues ?? parseQueueNames(process.env.QUEUE_NAMES),
+    pollInterval: cliArgs.pollInterval,
+    prefix: cliArgs.prefix,
+    queueNames: cliArgs.queues,
   };
 
   const result = configSchema.safeParse(raw);
@@ -192,11 +179,11 @@ export function createConfigFromPrompt(
       host: promptAnswers.host,
       port: promptAnswers.port,
       password: promptAnswers.password,
-      db: cliArgs.redisDb ?? process.env.REDIS_DB,
+      db: cliArgs.redisDb,
     },
-    pollInterval: cliArgs.pollInterval ?? process.env.POLL_INTERVAL,
-    prefix: cliArgs.prefix ?? process.env.BULL_PREFIX,
-    queueNames: cliArgs.queues ?? parseQueueNames(process.env.QUEUE_NAMES),
+    pollInterval: cliArgs.pollInterval,
+    prefix: cliArgs.prefix,
+    queueNames: cliArgs.queues,
   };
 
   const result = configSchema.safeParse(raw);

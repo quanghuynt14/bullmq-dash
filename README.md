@@ -39,11 +39,6 @@ bullmq-dash
 
 # Connect with CLI options
 bullmq-dash --redis-host localhost --redis-port 6379
-
-# Or use environment variables
-export REDIS_HOST=localhost
-export REDIS_PORT=6379
-bullmq-dash
 ```
 
 ### CLI Options
@@ -143,24 +138,6 @@ The scheduler detail modal shows:
 | DEQ    | Jobs dequeued per minute       |
 
 ## Development
-
-### Environment Variables
-
-Create a `.env` file or set environment variables:
-
-```env
-# Redis connection
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=your_password    # Optional
-REDIS_DB=0                      # Optional, default: 0
-
-# Polling interval in milliseconds
-POLL_INTERVAL=3000              # Optional, default: 3000
-
-# Filter specific queues (comma-separated)
-QUEUE_NAMES=queue1,queue2       # Optional, monitors all queues if not set
-```
 
 ### Scripts
 ```bash

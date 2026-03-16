@@ -233,16 +233,5 @@ Uses Catppuccin Mocha palette. Key colors:
 | `bullmq`        | Queue library         |
 | `ioredis`       | Redis client          |
 | `zod`           | Schema validation     |
-| `dotenv`        | Environment variables |
 | `tsup`          | Build tool            |
 
-## Environment Variables
-
-```env
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=        # optional
-REDIS_DB=0             # optional
-POLL_INTERVAL=3000     # ms
-QUEUE_NAMES=q1,q2      # optional, comma-separated
-```

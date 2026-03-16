@@ -7,7 +7,6 @@ tsconfig.json
 build.ts
 .env
 .env.*
-!.env.example
 
 # Development
 .devcontainer/

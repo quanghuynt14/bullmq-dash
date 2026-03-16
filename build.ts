@@ -11,7 +11,7 @@ const result = await Bun.build({
   format: "esm",
   sourcemap: "linked",
   minify: false,
-  external: ["bullmq", "ioredis", "@opentui/core", "dotenv", "zod"],
+  external: ["bullmq", "ioredis", "@opentui/core", "zod"],
 });
 
 if (!result.success) {
