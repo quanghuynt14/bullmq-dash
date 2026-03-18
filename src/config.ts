@@ -39,17 +39,19 @@ bullmq-dash - Terminal UI dashboard for BullMQ queue monitoring
 Usage: bullmq-dash [options]
 
 Options:
-  --redis-host <host>      Redis host (default: localhost)
-  --redis-port <port>      Redis port (default: 6379)
-  --redis-password <pass>  Redis password
-  --redis-db <db>          Redis database number (default: 0)
-  --poll-interval <ms>     Polling interval in milliseconds (default: 3000)
-  --prefix <prefix>        BullMQ key prefix (default: bull)
-  --queues <names>         Comma-separated queue names to monitor
+  --redis-host <host>      Redis host (default: localhost)   [env: REDIS_HOST]
+  --redis-port <port>      Redis port (default: 6379)        [env: REDIS_PORT]
+  --redis-password <pass>  Redis password                    [env: REDIS_PASSWORD]
+  --redis-db <db>          Redis database number (default: 0)[env: REDIS_DB]
+  --poll-interval <ms>     Polling interval in ms (default: 3000) [env: POLL_INTERVAL]
+  --prefix <prefix>        BullMQ key prefix (default: bull) [env: BULLMQ_PREFIX]
+  --queues <names>         Comma-separated queue names       [env: QUEUES]
   --json                   Output a JSON snapshot and exit (headless/agent mode)
   --watch                  Stream NDJSON snapshots (use with --json)
   -v, --version            Show version
   -h, --help               Show this help message
+
+CLI flags take priority over environment variables.
 
 Examples:
   bullmq-dash
@@ -58,6 +60,7 @@ Examples:
   bullmq-dash --prefix bull:taskService
   bullmq-dash --json --redis-host localhost
   bullmq-dash --json --watch --redis-host localhost
+  REDIS_HOST=localhost bullmq-dash --json
 `;
 
 export function parseCliArgs(): CliArgs {
@@ -80,14 +83,21 @@ export function parseCliArgs(): CliArgs {
       strict: true,
     });
 
+    // CLI flags take priority over environment variables
+    const redisPortRaw = values["redis-port"] ?? process.env.REDIS_PORT;
+    const redisDbRaw = values["redis-db"] ?? process.env.REDIS_DB;
+    const pollIntervalRaw = values["poll-interval"] ?? process.env.POLL_INTERVAL;
+
     return {
-      redisHost: values["redis-host"],
-      redisPort: values["redis-port"] ? parseInt(values["redis-port"], 10) : undefined,
-      redisPassword: values["redis-password"],
-      redisDb: values["redis-db"] ? parseInt(values["redis-db"], 10) : undefined,
-      pollInterval: values["poll-interval"] ? parseInt(values["poll-interval"], 10) : undefined,
-      prefix: values.prefix,
-      queues: values.queues ? parseQueueNames(values.queues) : undefined,
+      redisHost: values["redis-host"] ?? process.env.REDIS_HOST,
+      redisPort: redisPortRaw ? parseInt(String(redisPortRaw), 10) : undefined,
+      redisPassword: values["redis-password"] ?? process.env.REDIS_PASSWORD,
+      redisDb: redisDbRaw ? parseInt(String(redisDbRaw), 10) : undefined,
+      pollInterval: pollIntervalRaw ? parseInt(String(pollIntervalRaw), 10) : undefined,
+      prefix: values.prefix ?? process.env.BULLMQ_PREFIX,
+      queues: values.queues
+        ? parseQueueNames(values.queues)
+        : parseQueueNames(process.env.QUEUES),
       help: values.help,
       version: values.version,
       json: values.json,
@@ -95,8 +105,7 @@ export function parseCliArgs(): CliArgs {
     };
   } catch (error) {
     if (error instanceof Error && error.message.includes("Unknown option")) {
-      console.error(`Error: ${error.message}`);
-      console.error("Use --help to see available options.");
+      writeError(error.message, "CONFIG_ERROR", "Use --help to see available options.");
       process.exit(2);
     }
     throw error;
@@ -144,7 +153,7 @@ export function parseQueueNames(value: string | undefined): string[] | undefined
 }
 
 /**
- * Check if Redis host is configured from any source
+ * Check if Redis host is configured from any source (CLI args or env vars)
  */
 export function hasRedisHostConfig(cliArgs: CliArgs): boolean {
   return !!cliArgs.redisHost;
