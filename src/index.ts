@@ -9,7 +9,7 @@ import {
   setConfig,
 } from "./config.js";
 import { runConfigPrompt } from "./ui/config-prompt.js";
-import { runJsonSnapshot, runJsonWatch } from "./json-reporter.js";
+import { runJsonSnapshot } from "./json-reporter.js";
 import { writeError } from "./errors.js";
 
 async function main() {
@@ -35,17 +35,8 @@ async function main() {
     }
 
     const config = loadConfig(cliArgs);
-
-    if (cliArgs.watch) {
-      await runJsonWatch(config);
-    } else {
-      await runJsonSnapshot(config);
-    }
+    await runJsonSnapshot(config);
     return;
-  }
-
-  if (cliArgs.watch) {
-    process.stderr.write("Warning: --watch flag is ignored without --json\n");
   }
 
   let config;

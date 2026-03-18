@@ -1,6 +1,5 @@
 import { connectRedis, disconnectRedis } from "./data/redis.js";
 import { discoverQueueNames, getQueueStats, closeAllQueues } from "./data/queues.js";
-import { getGlobalMetrics } from "./data/metrics.js";
 import { writeError } from "./errors.js";
 import type { Config } from "./config.js";
 import { setConfig } from "./config.js";
@@ -8,12 +7,27 @@ import { setConfig } from "./config.js";
 async function fetchSnapshot() {
   const queueNames = await discoverQueueNames();
   const queues = await Promise.all(queueNames.map((name) => getQueueStats(name)));
-  const metrics = await getGlobalMetrics();
+
+  // Aggregate job counts across all queues
+  const jobCounts = queues.reduce(
+    (acc, q) => ({
+      wait: acc.wait + q.counts.wait,
+      active: acc.active + q.counts.active,
+      completed: acc.completed + q.counts.completed,
+      failed: acc.failed + q.counts.failed,
+      delayed: acc.delayed + q.counts.delayed,
+      total: acc.total + q.total,
+    }),
+    { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, total: 0 },
+  );
 
   return {
     timestamp: new Date().toISOString(),
     queues,
-    metrics,
+    metrics: {
+      queueCount: queues.length,
+      jobCounts,
+    },
   };
 }
 
@@ -48,52 +62,4 @@ export async function runJsonSnapshot(config: Config): Promise<void> {
   await closeAllQueues();
   await disconnectRedis();
   process.exit(0);
-}
-
-export async function runJsonWatch(config: Config): Promise<void> {
-  setConfig(config);
-
-  try {
-    await connectRedis();
-  } catch (error) {
-    writeError(
-      "Redis connection failed",
-      "REDIS_ERROR",
-      error instanceof Error ? error.message : String(error),
-    );
-    process.exit(3);
-  }
-
-  let shuttingDown = false;
-
-  const gracefulShutdown = async () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    await closeAllQueues();
-    await disconnectRedis();
-    process.exit(0);
-  };
-
-  process.on("SIGINT", gracefulShutdown);
-  process.on("SIGTERM", gracefulShutdown);
-
-  // oxlint-disable-next-line no-unmodified-loop-condition -- modified by signal handlers
-  while (!shuttingDown) {
-    try {
-      const snapshot = await fetchSnapshot();
-      if (!shuttingDown) {
-        process.stdout.write(JSON.stringify(snapshot) + "\n");
-      }
-    } catch (error) {
-      if (shuttingDown) break;
-      writeError(
-        "Failed to fetch snapshot",
-        "RUNTIME_ERROR",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-    if (!shuttingDown) {
-      await new Promise((resolve) => setTimeout(resolve, config.pollInterval));
-    }
-  }
 }

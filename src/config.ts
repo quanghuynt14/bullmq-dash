@@ -28,7 +28,6 @@ export interface CliArgs {
   help?: boolean;
   version?: boolean;
   json?: boolean;
-  watch?: boolean;
 }
 
 let packageVersion: string | null = null;
@@ -47,7 +46,6 @@ Options:
   --prefix <prefix>        BullMQ key prefix (default: bull) [env: BULLMQ_PREFIX]
   --queues <names>         Comma-separated queue names       [env: QUEUES]
   --json                   Output a JSON snapshot and exit (headless/agent mode)
-  --watch                  Stream NDJSON snapshots (use with --json)
   -v, --version            Show version
   -h, --help               Show this help message
 
@@ -59,7 +57,6 @@ Examples:
   bullmq-dash --queues email,notifications
   bullmq-dash --prefix bull:taskService
   bullmq-dash --json --redis-host localhost
-  bullmq-dash --json --watch --redis-host localhost
   REDIS_HOST=localhost bullmq-dash --json
 `;
 
@@ -78,7 +75,6 @@ export function parseCliArgs(): CliArgs {
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
         json: { type: "boolean" },
-        watch: { type: "boolean" },
       },
       strict: true,
     });
@@ -101,7 +97,6 @@ export function parseCliArgs(): CliArgs {
       help: values.help,
       version: values.version,
       json: values.json,
-      watch: values.watch,
     };
   } catch (error) {
     if (error instanceof Error && error.message.includes("Unknown option")) {

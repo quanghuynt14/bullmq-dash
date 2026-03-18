@@ -33,7 +33,6 @@ bun run start            # bun dist/index.js
 
 # JSON output (headless / AI agent mode)
 bullmq-dash --json --redis-host localhost   # Single snapshot
-bullmq-dash --json --watch --redis-host localhost  # Stream NDJSON
 ```
 
 **No test framework configured.** If adding tests, use Bun's built-in test runner.
@@ -81,17 +80,9 @@ interface JsonOutput {
       delayed: number;
       total: number;
     };
-    rates: {
-      enqueuedPerMin: number;
-      enqueuedPerSec: number;
-      dequeuedPerMin: number;
-      dequeuedPerSec: number;
-    };
   };
 }
 ```
-
-> **Note:** `metrics.rates` in single-snapshot mode (`--json` without `--watch`) are always `0` because rate calculation requires two data points over time. Use `--json --watch` for meaningful rate data.
 
 ### Exit Codes
 
@@ -123,17 +114,6 @@ bullmq-dash --json --redis-host localhost | jq '[.queues[].counts.wait] | add'
 
 # Check if a specific queue exists and get its stats
 bullmq-dash --json --redis-host localhost --queues email | jq '.queues[0]'
-
-# Watch mode: stream NDJSON every 3 seconds
-bullmq-dash --json --watch --redis-host localhost
-```
-
-## Watch Mode (`--json --watch`)
-
-Combine `--json` and `--watch` flags to stream NDJSON (newline-delimited JSON) to stdout at the configured `--poll-interval` (default: 3000ms). Each line is a complete JSON snapshot. Exit with `Ctrl+C`.
-
-```bash
-bullmq-dash --json --watch --redis-host localhost --poll-interval 5000
 ```
 
 ## Project Structure
