@@ -30,9 +30,88 @@ bun run format:check     # Check formatting
 
 # Run production
 bun run start            # bun dist/index.js
+
+# JSON output (headless / AI agent mode)
+bullmq-dash --json --redis-host localhost   # Single snapshot
 ```
 
 **No test framework configured.** If adding tests, use Bun's built-in test runner.
+
+## Non-Interactive / Headless Mode (AI Agent Usage)
+
+Use `--json` flag to get a machine-readable JSON snapshot without launching the TUI:
+
+```bash
+# Single snapshot - connect and dump all queue stats as JSON, then exit
+bullmq-dash --json --redis-host localhost --redis-port 6379
+
+# With specific queues
+bullmq-dash --json --queues email,payments --redis-host localhost
+```
+
+### Output Schema
+
+```typescript
+interface JsonOutput {
+  timestamp: string; // ISO 8601
+  queues: Array<{
+    name: string;
+    counts: {
+      wait: number;
+      active: number;
+      completed: number;
+      failed: number;
+      delayed: number;
+      schedulers: number;
+    };
+    isPaused: boolean;
+    total: number;
+  }>;
+  metrics: {
+    queueCount: number;
+    jobCounts: {
+      wait: number;
+      active: number;
+      completed: number;
+      failed: number;
+      delayed: number;
+      total: number;
+    };
+  };
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Success |
+| `1`  | Runtime error (unhandled exception) |
+| `2`  | Configuration error (bad/missing CLI flags) |
+| `3`  | Redis connection error |
+
+### Structured Error Output (stderr)
+
+All errors are written to `stderr` as JSON:
+
+```json
+{ "error": "Redis connection failed", "code": "REDIS_ERROR", "details": "connect ECONNREFUSED 127.0.0.1:6379" }
+```
+
+Error codes: `CONFIG_ERROR`, `REDIS_ERROR`, `RUNTIME_ERROR`
+
+### Common Agent Tasks
+
+```bash
+# Check if any queue has failed jobs
+bullmq-dash --json --redis-host localhost | jq '.queues[] | select(.counts.failed > 0)'
+
+# Get total waiting jobs across all queues
+bullmq-dash --json --redis-host localhost | jq '[.queues[].counts.wait] | add'
+
+# Check if a specific queue exists and get its stats
+bullmq-dash --json --redis-host localhost --queues email | jq '.queues[0]'
+```
 
 ## Project Structure
 
@@ -40,7 +119,7 @@ bun run start            # bun dist/index.js
 src/
 ├── index.ts          # Entry point - minimal bootstrap
 ├── app.ts            # Main App class with lifecycle
-├── config.ts         # Zod-validated config from env
+├── config.ts         # Zod-validated config from CLI args
 ├── state.ts          # Singleton state manager
 ├── polling.ts        # Polling manager singleton
 ├── data/             # Data layer
@@ -234,4 +313,5 @@ Uses Catppuccin Mocha palette. Key colors:
 | `ioredis`       | Redis client          |
 | `zod`           | Schema validation     |
 | `tsup`          | Build tool            |
+
 
