@@ -47,9 +47,6 @@ bullmq-dash --json --redis-host localhost --redis-port 6379
 
 # With specific queues
 bullmq-dash --json --queues email,payments --redis-host localhost
-
-# Using environment variables
-REDIS_HOST=localhost bullmq-dash --json
 ```
 
 ### Output Schema
@@ -90,7 +87,7 @@ interface JsonOutput {
 |------|---------|
 | `0`  | Success |
 | `1`  | Runtime error (unhandled exception) |
-| `2`  | Configuration error (bad/missing env vars or flags) |
+| `2`  | Configuration error (bad/missing CLI flags) |
 | `3`  | Redis connection error |
 
 ### Structured Error Output (stderr)
@@ -122,7 +119,7 @@ bullmq-dash --json --redis-host localhost --queues email | jq '.queues[0]'
 src/
 ├── index.ts          # Entry point - minimal bootstrap
 ├── app.ts            # Main App class with lifecycle
-├── config.ts         # Zod-validated config from env
+├── config.ts         # Zod-validated config from CLI args
 ├── state.ts          # Singleton state manager
 ├── polling.ts        # Polling manager singleton
 ├── data/             # Data layer
