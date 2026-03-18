@@ -27,4 +27,3 @@ npm-debug.log*
 
 # npm
 .npmrc
-package-lock.json
