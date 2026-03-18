@@ -40,12 +40,13 @@ export async function runJsonSnapshot(config: Config): Promise<void> {
       "RUNTIME_ERROR",
       error instanceof Error ? error.message : String(error),
     );
-    process.exit(1);
-  } finally {
     await closeAllQueues();
     await disconnectRedis();
+    process.exit(1);
   }
 
+  await closeAllQueues();
+  await disconnectRedis();
   process.exit(0);
 }
 
@@ -63,23 +64,36 @@ export async function runJsonWatch(config: Config): Promise<void> {
     process.exit(3);
   }
 
-  process.on("SIGINT", async () => {
+  let shuttingDown = false;
+
+  const gracefulShutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     await closeAllQueues();
     await disconnectRedis();
     process.exit(0);
-  });
+  };
 
-  while (true) {
+  process.on("SIGINT", gracefulShutdown);
+  process.on("SIGTERM", gracefulShutdown);
+
+  // oxlint-disable-next-line no-unmodified-loop-condition -- modified by signal handlers
+  while (!shuttingDown) {
     try {
       const snapshot = await fetchSnapshot();
-      process.stdout.write(JSON.stringify(snapshot) + "\n");
+      if (!shuttingDown) {
+        process.stdout.write(JSON.stringify(snapshot) + "\n");
+      }
     } catch (error) {
+      if (shuttingDown) break;
       writeError(
         "Failed to fetch snapshot",
         "RUNTIME_ERROR",
         error instanceof Error ? error.message : String(error),
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, config.pollInterval));
+    if (!shuttingDown) {
+      await new Promise((resolve) => setTimeout(resolve, config.pollInterval));
+    }
   }
 }

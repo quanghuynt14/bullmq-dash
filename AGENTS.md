@@ -91,6 +91,8 @@ interface JsonOutput {
 }
 ```
 
+> **Note:** `metrics.rates` in single-snapshot mode (`--json` without `--watch`) are always `0` because rate calculation requires two data points over time. Use `--json --watch` for meaningful rate data.
+
 ### Exit Codes
 
 | Code | Meaning |
