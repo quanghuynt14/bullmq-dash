@@ -12,7 +12,7 @@ import { setConfig } from "./config.js";
  */
 interface JsonQueryOptions {
   queue?: string;
-  status?: JsonJobStatus;
+  jobState?: JsonJobStatus;
   jobId?: string;
   schedulers?: boolean;
   schedulerId?: string;
@@ -49,13 +49,13 @@ async function fetchQueuesOverview() {
 
 // ── Jobs list ───────────────────────────────────────────────────────────
 
-async function fetchJobsList(queueName: string, status?: JsonJobStatus, maxResults?: number) {
-  const { jobs, total } = await getAllJobs(queueName, status, maxResults);
+async function fetchJobsList(queueName: string, jobState?: JsonJobStatus, maxResults?: number) {
+  const { jobs, total } = await getAllJobs(queueName, jobState, maxResults);
 
   return {
     timestamp: new Date().toISOString(),
     queue: queueName,
-    status: status ?? "all",
+    jobState: jobState ?? "all",
     jobs,
     total,
   };
@@ -117,17 +117,17 @@ async function fetchSchedulerDetail(queueName: string, schedulerKey: string) {
 
 function validateOptions(opts: JsonQueryOptions): void {
   // --queue is required for all query-specific flags
-  if (!opts.queue && (opts.jobId || opts.status || opts.schedulers || opts.schedulerId)) {
+  if (!opts.queue && (opts.jobId || opts.jobState || opts.schedulers || opts.schedulerId)) {
     writeError(
-      "--queue is required when using --job-id, --status, --schedulers, or --scheduler-id",
+      "--queue is required when using --job-id, --job-state, --schedulers, or --scheduler-id",
       "CONFIG_ERROR",
     );
     process.exit(2);
   }
 
-  // --job-id and --status are mutually exclusive
-  if (opts.jobId && opts.status) {
-    writeError("--job-id and --status cannot be used together", "CONFIG_ERROR");
+  // --job-id and --job-state are mutually exclusive
+  if (opts.jobId && opts.jobState) {
+    writeError("--job-id and --job-state cannot be used together", "CONFIG_ERROR");
     process.exit(2);
   }
 
@@ -137,16 +137,16 @@ function validateOptions(opts: JsonQueryOptions): void {
     process.exit(2);
   }
 
-  // --status and --schedulers/--scheduler-id are mutually exclusive
-  if (opts.status && (opts.schedulers || opts.schedulerId)) {
-    writeError("--status cannot be used with --schedulers or --scheduler-id", "CONFIG_ERROR");
+  // --job-state and --schedulers/--scheduler-id are mutually exclusive
+  if (opts.jobState && (opts.schedulers || opts.schedulerId)) {
+    writeError("--job-state cannot be used with --schedulers or --scheduler-id", "CONFIG_ERROR");
     process.exit(2);
   }
 
-  // Validate --status value
-  if (opts.status && !VALID_JOB_STATUSES.includes(opts.status)) {
+  // Validate --job-state value
+  if (opts.jobState && !VALID_JOB_STATUSES.includes(opts.jobState)) {
     writeError(
-      `Invalid --status value: '${opts.status}'. Valid values: ${VALID_JOB_STATUSES.join(", ")}`,
+      `Invalid --job-state value: '${opts.jobState}'. Valid values: ${VALID_JOB_STATUSES.join(", ")}`,
       "CONFIG_ERROR",
     );
     process.exit(2);
@@ -181,7 +181,7 @@ async function routeAndFetch(opts: JsonQueryOptions): Promise<unknown> {
   }
 
   // Default for --queue: list jobs
-  return fetchJobsList(opts.queue, opts.status, opts.pageSize);
+  return fetchJobsList(opts.queue, opts.jobState, opts.pageSize);
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ export async function runJsonMode(config: Config, cliArgs: CliArgs): Promise<voi
 
   const opts: JsonQueryOptions = {
     queue: cliArgs.queue,
-    status: cliArgs.status as JsonJobStatus | undefined,
+    jobState: cliArgs.jobState as JsonJobStatus | undefined,
     jobId: cliArgs.jobId,
     schedulers: cliArgs.schedulers,
     schedulerId: cliArgs.schedulerId,

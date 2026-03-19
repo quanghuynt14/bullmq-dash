@@ -36,7 +36,7 @@ const PAGE_SIZE = 25;
 const DEFAULT_MAX_RESULTS = 1000;
 
 /**
- * Valid job status values for the --status flag
+ * Valid job state values for the --job-state flag
  */
 export const VALID_JOB_STATUSES = ["wait", "active", "completed", "failed", "delayed"] as const;
 export type JsonJobStatus = (typeof VALID_JOB_STATUSES)[number];

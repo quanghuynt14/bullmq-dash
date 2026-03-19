@@ -30,7 +30,7 @@ export interface CliArgs {
   json?: boolean;
   // JSON mode query flags
   queue?: string;
-  status?: string;
+  jobState?: string;
   jobId?: string;
   schedulers?: boolean;
   schedulerId?: string;
@@ -56,7 +56,7 @@ Connection Options:
 JSON Mode (headless / agent mode):
   --json                   Output JSON and exit
   --queue <name>           Target a specific queue for jobs/scheduler queries
-  --status <status>        Filter jobs by status (wait|active|completed|failed|delayed)
+  --job-state <state>      Filter jobs by state (wait|active|completed|failed|delayed)
   --job-id <id>            Get detail for a specific job (requires --queue)
   --schedulers             List schedulers (requires --queue)
   --scheduler-id <key>     Get detail for a specific scheduler (requires --queue)
@@ -72,7 +72,7 @@ Examples:
   bullmq-dash --queues email,notifications
   bullmq-dash --json --redis-host localhost
   bullmq-dash --json --redis-host localhost --queue email
-  bullmq-dash --json --redis-host localhost --queue email --status failed
+  bullmq-dash --json --redis-host localhost --queue email --job-state failed
   bullmq-dash --json --redis-host localhost --queue email --job-id 123
   bullmq-dash --json --redis-host localhost --queue email --schedulers
   bullmq-dash --json --redis-host localhost --queue email --scheduler-id my-cron
@@ -95,7 +95,7 @@ export function parseCliArgs(): CliArgs {
         json: { type: "boolean" },
         // JSON mode query flags
         queue: { type: "string" },
-        status: { type: "string" },
+        "job-state": { type: "string" },
         "job-id": { type: "string" },
         schedulers: { type: "boolean" },
         "scheduler-id": { type: "string" },
@@ -117,7 +117,7 @@ export function parseCliArgs(): CliArgs {
       json: values.json,
       // JSON mode query flags
       queue: values.queue,
-      status: values.status,
+      jobState: values["job-state"],
       jobId: values["job-id"],
       schedulers: values.schedulers,
       schedulerId: values["scheduler-id"],

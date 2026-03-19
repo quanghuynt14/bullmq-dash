@@ -53,8 +53,8 @@ bullmq-dash --json --queues email,payments --redis-host localhost
 # List jobs in a queue (all statuses, up to 1000)
 bullmq-dash --json --redis-host localhost --queue email
 
-# List jobs filtered by status
-bullmq-dash --json --redis-host localhost --queue email --status failed
+# List jobs filtered by state
+bullmq-dash --json --redis-host localhost --queue email --job-state failed
 
 # Get a single job's full detail
 bullmq-dash --json --redis-host localhost --queue email --job-id 123
@@ -75,7 +75,7 @@ bullmq-dash --json --redis-host localhost --queue email --page-size 50
 |------|------|-------------|
 | `--json` | boolean | Enable JSON mode (required) |
 | `--queue <name>` | string | Target a specific queue |
-| `--status <status>` | string | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed` |
+| `--job-state <state>` | string | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed` |
 | `--job-id <id>` | string | Get detail for a specific job (requires `--queue`) |
 | `--schedulers` | boolean | List schedulers (requires `--queue`) |
 | `--scheduler-id <key>` | string | Get scheduler detail (requires `--queue`) |
@@ -115,13 +115,13 @@ interface QueuesOverview {
 }
 ```
 
-**Jobs list** (`--json --queue <name> [--status <s>]`):
+**Jobs list** (`--json --queue <name> [--job-state <s>]`):
 
 ```typescript
 interface JobsList {
   timestamp: string;
   queue: string;
-  status: string; // "all" or the specific status
+  jobState: string; // "all" or the specific job state
   jobs: Array<{
     id: string;
     name: string;
@@ -248,7 +248,7 @@ bullmq-dash --json --redis-host localhost | jq '[.queues[].counts.wait] | add'
 bullmq-dash --json --redis-host localhost --queues email | jq '.queues[0]'
 
 # Get all failed jobs in a queue with their IDs
-bullmq-dash --json --redis-host localhost --queue email --status failed | jq '.jobs[] | {id, name, timestamp}'
+bullmq-dash --json --redis-host localhost --queue email --job-state failed | jq '.jobs[] | {id, name, timestamp}'
 
 # Get the stacktrace of a specific failed job
 bullmq-dash --json --redis-host localhost --queue email --job-id 42 | jq '.job.stacktrace'
