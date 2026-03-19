@@ -33,6 +33,102 @@ export interface JobsResult {
 }
 
 const PAGE_SIZE = 25;
+const DEFAULT_MAX_RESULTS = 1000;
+
+/**
+ * Valid job status values for the --status flag
+ */
+export const VALID_JOB_STATUSES = ["wait", "active", "completed", "failed", "delayed"] as const;
+export type JsonJobStatus = (typeof VALID_JOB_STATUSES)[number];
+
+/**
+ * Get all jobs for a queue, optionally filtered by status.
+ * Returns up to `maxResults` jobs (default 1000) to prevent OOM on huge queues.
+ * Used by --json mode for bulk export.
+ */
+export async function getAllJobs(
+  queueName: string,
+  status?: JsonJobStatus,
+  maxResults: number = DEFAULT_MAX_RESULTS,
+): Promise<{ jobs: JobSummary[]; total: number }> {
+  const queue = getQueue(queueName);
+  const end = maxResults - 1;
+
+  let jobs: Job[];
+  let total: number;
+
+  if (!status) {
+    // Fetch from all statuses, sort by timestamp descending
+    const counts = await queue.getJobCounts();
+    total =
+      (counts.waiting || 0) +
+      (counts.active || 0) +
+      (counts.completed || 0) +
+      (counts.failed || 0) +
+      (counts.delayed || 0) +
+      (counts.prioritized || 0);
+
+    const [active, waiting, completed, failed, delayed, prioritized] = await Promise.all([
+      queue.getActive(0, end),
+      queue.getWaiting(0, end),
+      queue.getCompleted(0, end),
+      queue.getFailed(0, end),
+      queue.getDelayed(0, end),
+      queue.getPrioritized(0, end),
+    ]);
+
+    const allJobs = [...active, ...waiting, ...completed, ...failed, ...delayed, ...prioritized];
+    allJobs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    jobs = allJobs.slice(0, maxResults);
+  } else if (status === "wait") {
+    const waitCounts = await queue.getJobCounts("waiting", "prioritized");
+    total = (waitCounts.waiting || 0) + (waitCounts.prioritized || 0);
+
+    const [waitingJobs, prioritizedJobs] = await Promise.all([
+      queue.getWaiting(0, end),
+      queue.getPrioritized(0, end),
+    ]);
+
+    const combined = [...waitingJobs, ...prioritizedJobs];
+    jobs = combined.slice(0, maxResults);
+  } else {
+    switch (status) {
+      case "active":
+        jobs = await queue.getActive(0, end);
+        total = (await queue.getJobCounts("active")).active || 0;
+        break;
+      case "completed":
+        jobs = await queue.getCompleted(0, end);
+        total = (await queue.getJobCounts("completed")).completed || 0;
+        break;
+      case "failed":
+        jobs = await queue.getFailed(0, end);
+        total = (await queue.getJobCounts("failed")).failed || 0;
+        break;
+      case "delayed":
+        jobs = await queue.getDelayed(0, end);
+        total = (await queue.getJobCounts("delayed")).delayed || 0;
+        break;
+      default:
+        jobs = [];
+        total = 0;
+    }
+  }
+
+  const jobSummaries: JobSummary[] = await Promise.all(
+    jobs.map(async (job) => {
+      const state = await job.getState();
+      return {
+        id: job.id || "unknown",
+        name: job.name,
+        state,
+        timestamp: job.timestamp || 0,
+      };
+    }),
+  );
+
+  return { jobs: jobSummaries, total };
+}
 
 /**
  * Get jobs by status with pagination

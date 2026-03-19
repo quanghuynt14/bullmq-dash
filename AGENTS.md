@@ -33,26 +33,60 @@ bun run start            # bun dist/index.js
 
 # JSON output (headless / AI agent mode)
 bullmq-dash --json --redis-host localhost   # Single snapshot
+bullmq-dash --json --redis-host localhost --queue email   # Jobs in a queue
+bullmq-dash --json --redis-host localhost --queue email --job-id 42   # Job detail
 ```
 
 **No test framework configured.** If adding tests, use Bun's built-in test runner.
 
 ## Non-Interactive / Headless Mode (AI Agent Usage)
 
-Use `--json` flag to get a machine-readable JSON snapshot without launching the TUI:
+Use `--json` flag to get machine-readable JSON output without launching the TUI:
 
 ```bash
-# Single snapshot - connect and dump all queue stats as JSON, then exit
+# Queues overview (default) - all queue stats
 bullmq-dash --json --redis-host localhost --redis-port 6379
 
-# With specific queues
+# With specific queues only
 bullmq-dash --json --queues email,payments --redis-host localhost
+
+# List jobs in a queue (all statuses, up to 1000)
+bullmq-dash --json --redis-host localhost --queue email
+
+# List jobs filtered by status
+bullmq-dash --json --redis-host localhost --queue email --status failed
+
+# Get a single job's full detail
+bullmq-dash --json --redis-host localhost --queue email --job-id 123
+
+# List schedulers in a queue
+bullmq-dash --json --redis-host localhost --queue email --schedulers
+
+# Get a single scheduler's detail (includes next job + recent history)
+bullmq-dash --json --redis-host localhost --queue email --scheduler-id my-cron
+
+# Limit results (default: 1000)
+bullmq-dash --json --redis-host localhost --queue email --page-size 50
 ```
 
-### Output Schema
+### JSON Query Flags
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--json` | boolean | Enable JSON mode (required) |
+| `--queue <name>` | string | Target a specific queue |
+| `--status <status>` | string | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed` |
+| `--job-id <id>` | string | Get detail for a specific job (requires `--queue`) |
+| `--schedulers` | boolean | List schedulers (requires `--queue`) |
+| `--scheduler-id <key>` | string | Get scheduler detail (requires `--queue`) |
+| `--page-size <n>` | number | Max results to return (default: 1000) |
+
+### Output Schemas
+
+**Queues overview** (`--json`):
 
 ```typescript
-interface JsonOutput {
+interface QueuesOverview {
   timestamp: string; // ISO 8601
   queues: Array<{
     name: string;
@@ -77,6 +111,107 @@ interface JsonOutput {
       delayed: number;
       total: number;
     };
+  };
+}
+```
+
+**Jobs list** (`--json --queue <name> [--status <s>]`):
+
+```typescript
+interface JobsList {
+  timestamp: string;
+  queue: string;
+  status: string; // "all" or the specific status
+  jobs: Array<{
+    id: string;
+    name: string;
+    state: string;
+    timestamp: number;
+  }>;
+  total: number;
+}
+```
+
+**Job detail** (`--json --queue <name> --job-id <id>`):
+
+```typescript
+interface JobDetailOutput {
+  timestamp: string;
+  queue: string;
+  job: {
+    id: string;
+    name: string;
+    state: string;
+    timestamp: number;
+    data: unknown;
+    opts: unknown;
+    attemptsMade: number;
+    failedReason?: string;
+    stacktrace?: string[];
+    returnvalue?: unknown;
+    processedOn?: number;
+    finishedOn?: number;
+    progress?: number | object;
+    repeatJobKey?: string;
+    delay?: number;
+  };
+}
+```
+
+**Schedulers list** (`--json --queue <name> --schedulers`):
+
+```typescript
+interface SchedulersList {
+  timestamp: string;
+  queue: string;
+  schedulers: Array<{
+    key: string;
+    name: string;
+    pattern?: string;
+    every?: number;
+    next?: number;
+    iterationCount?: number;
+    tz?: string;
+  }>;
+  total: number;
+}
+```
+
+**Scheduler detail** (`--json --queue <name> --scheduler-id <key>`):
+
+```typescript
+interface SchedulerDetailOutput {
+  timestamp: string;
+  queue: string;
+  scheduler: {
+    key: string;
+    name: string;
+    pattern?: string;
+    every?: number;
+    next?: number;
+    iterationCount?: number;
+    tz?: string;
+    id?: string | null;
+    limit?: number;
+    startDate?: number;
+    endDate?: number;
+    template?: { data?: unknown; opts?: unknown };
+    nextJob?: {
+      id: string;
+      state: string;
+      timestamp: number;
+      delay?: number;
+      data: unknown;
+      opts: unknown;
+    };
+    recentJobs?: Array<{
+      id: string;
+      state: string;
+      timestamp: number;
+      processedOn?: number;
+      finishedOn?: number;
+      failedReason?: string;
+    }>;
   };
 }
 ```
@@ -111,6 +246,15 @@ bullmq-dash --json --redis-host localhost | jq '[.queues[].counts.wait] | add'
 
 # Check if a specific queue exists and get its stats
 bullmq-dash --json --redis-host localhost --queues email | jq '.queues[0]'
+
+# Get all failed jobs in a queue with their IDs
+bullmq-dash --json --redis-host localhost --queue email --status failed | jq '.jobs[] | {id, name, timestamp}'
+
+# Get the stacktrace of a specific failed job
+bullmq-dash --json --redis-host localhost --queue email --job-id 42 | jq '.job.stacktrace'
+
+# List all cron schedulers and their next run times
+bullmq-dash --json --redis-host localhost --queue email --schedulers | jq '.schedulers[] | {key, pattern, next}'
 ```
 
 ## Project Structure

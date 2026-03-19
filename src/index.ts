@@ -9,7 +9,7 @@ import {
   setConfig,
 } from "./config.js";
 import { runConfigPrompt } from "./ui/config-prompt.js";
-import { runJsonSnapshot } from "./json-reporter.js";
+import { runJsonMode } from "./json-reporter.js";
 import { writeError } from "./errors.js";
 
 async function main() {
@@ -35,7 +35,7 @@ async function main() {
     }
 
     const config = loadConfig(cliArgs);
-    await runJsonSnapshot(config);
+    await runJsonMode(config, cliArgs);
     return;
   }
 

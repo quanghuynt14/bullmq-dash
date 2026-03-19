@@ -65,6 +65,36 @@ export interface SchedulersResult {
 }
 
 const PAGE_SIZE = 25;
+const DEFAULT_MAX_RESULTS = 1000;
+
+/**
+ * Get all job schedulers for a queue (up to maxResults).
+ * Used by --json mode for bulk export.
+ */
+export async function getAllJobSchedulers(
+  queueName: string,
+  maxResults: number = DEFAULT_MAX_RESULTS,
+): Promise<{ schedulers: JobSchedulerSummary[]; total: number }> {
+  const queue = getQueue(queueName);
+  const end = maxResults - 1;
+
+  const [schedulers, total] = await Promise.all([
+    queue.getJobSchedulers(0, end, false),
+    queue.getJobSchedulersCount(),
+  ]);
+
+  const summaries: JobSchedulerSummary[] = schedulers.map((s) => ({
+    key: s.key,
+    name: s.name,
+    pattern: s.pattern ?? undefined,
+    every: s.every ?? undefined,
+    next: s.next ?? undefined,
+    iterationCount: s.iterationCount ?? undefined,
+    tz: s.tz ?? undefined,
+  }));
+
+  return { schedulers: summaries, total };
+}
 
 /**
  * Get job schedulers with pagination

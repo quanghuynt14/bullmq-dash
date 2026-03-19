@@ -28,6 +28,13 @@ export interface CliArgs {
   help?: boolean;
   version?: boolean;
   json?: boolean;
+  // JSON mode query flags
+  queue?: string;
+  status?: string;
+  jobId?: string;
+  schedulers?: boolean;
+  schedulerId?: string;
+  pageSize?: number;
 }
 
 let packageVersion: string | null = null;
@@ -37,7 +44,7 @@ bullmq-dash - Terminal UI dashboard for BullMQ queue monitoring
 
 Usage: bullmq-dash [options]
 
-Options:
+Connection Options:
   --redis-host <host>      Redis host (default: localhost)
   --redis-port <port>      Redis port (default: 6379)
   --redis-password <pass>  Redis password
@@ -45,7 +52,17 @@ Options:
   --poll-interval <ms>     Polling interval in ms (default: 3000)
   --prefix <prefix>        BullMQ key prefix (default: bull)
   --queues <names>         Comma-separated queue names to monitor
-  --json                   Output a JSON snapshot and exit (headless/agent mode)
+
+JSON Mode (headless / agent mode):
+  --json                   Output JSON and exit
+  --queue <name>           Target a specific queue for jobs/scheduler queries
+  --status <status>        Filter jobs by status (wait|active|completed|failed|delayed)
+  --job-id <id>            Get detail for a specific job (requires --queue)
+  --schedulers             List schedulers (requires --queue)
+  --scheduler-id <key>     Get detail for a specific scheduler (requires --queue)
+  --page-size <n>          Max results to return (default: 1000)
+
+General:
   -v, --version            Show version
   -h, --help               Show this help message
 
@@ -53,8 +70,12 @@ Examples:
   bullmq-dash
   bullmq-dash --redis-host 192.168.1.100 --redis-port 6380
   bullmq-dash --queues email,notifications
-  bullmq-dash --prefix bull:taskService
   bullmq-dash --json --redis-host localhost
+  bullmq-dash --json --redis-host localhost --queue email
+  bullmq-dash --json --redis-host localhost --queue email --status failed
+  bullmq-dash --json --redis-host localhost --queue email --job-id 123
+  bullmq-dash --json --redis-host localhost --queue email --schedulers
+  bullmq-dash --json --redis-host localhost --queue email --scheduler-id my-cron
 `;
 
 export function parseCliArgs(): CliArgs {
@@ -72,6 +93,13 @@ export function parseCliArgs(): CliArgs {
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
         json: { type: "boolean" },
+        // JSON mode query flags
+        queue: { type: "string" },
+        status: { type: "string" },
+        "job-id": { type: "string" },
+        schedulers: { type: "boolean" },
+        "scheduler-id": { type: "string" },
+        "page-size": { type: "string" },
       },
       strict: true,
     });
@@ -87,6 +115,13 @@ export function parseCliArgs(): CliArgs {
       help: values.help,
       version: values.version,
       json: values.json,
+      // JSON mode query flags
+      queue: values.queue,
+      status: values.status,
+      jobId: values["job-id"],
+      schedulers: values.schedulers,
+      schedulerId: values["scheduler-id"],
+      pageSize: values["page-size"] ? parseInt(values["page-size"], 10) : undefined,
     };
   } catch (error) {
     if (error instanceof Error && error.message.includes("Unknown option")) {
