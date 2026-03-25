@@ -97,10 +97,15 @@ export function formatQueuesOverview(data: QueuesOverviewData): string {
   ];
 
   const lines = [table(headers, rows, align)];
+  const colWidths = headers.map((h, i) => {
+    let max = h.length;
+    for (const row of rows) {
+      max = Math.max(max, (row[i] ?? "").length);
+    }
+    return max;
+  });
   const totalPad = (val: string, i: number) =>
-    align[i] === "r"
-      ? padLeft(val, Math.max(headers[i]!.length, ...rows.map((r) => r[i]!.length)))
-      : padRight(val, Math.max(headers[i]!.length, ...rows.map((r) => r[i]!.length)));
+    align[i] === "r" ? padLeft(val, colWidths[i]!) : padRight(val, colWidths[i]!);
 
   lines.push(totals.map(totalPad).join("  "));
 

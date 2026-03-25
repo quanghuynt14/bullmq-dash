@@ -204,7 +204,7 @@ const ACTIONS = new Set(["list", "get"]);
  * Separate subcommand tokens (positional args) from flag tokens.
  * Returns the subcommand positionals and the remaining argv for parseArgs.
  */
-function extractSubcommand(argv: string[]): { positionals: string[]; flagArgv: string[] } {
+export function extractSubcommand(argv: string[]): { positionals: string[]; flagArgv: string[] } {
   const positionals: string[] = [];
   const flagArgv: string[] = [];
   let donePositionals = false;
@@ -265,10 +265,13 @@ function parseSubcommand(
     switch (resource) {
       case "queues":
         showSubcommandHelp(QUEUES_HELP);
+        break;
       case "jobs":
         showSubcommandHelp(JOBS_HELP);
+        break;
       case "schedulers":
         showSubcommandHelp(SCHEDULERS_HELP);
+        break;
     }
   }
 
@@ -408,7 +411,7 @@ function parseSubcommand(
 
 // ── Parse CLI flags ─────────────────────────────────────────────────────
 
-function parseNumericFlag(flagName: string, rawValue: string | undefined): number | undefined {
+export function parseNumericFlag(flagName: string, rawValue: string | undefined): number | undefined {
   if (!rawValue) return undefined;
   const parsed = parseInt(rawValue, 10);
   if (Number.isNaN(parsed)) {
