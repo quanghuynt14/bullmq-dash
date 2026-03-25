@@ -134,14 +134,13 @@ function formatRecentJob(job: RecentJobInfo): StyledText {
   const duration = formatDuration(job.processedOn, job.finishedOn);
   const durationStr = duration ? ` (${duration})` : "";
   const timestamp = formatSchedulerTimestamp(job.finishedOn || job.timestamp);
-  
+
   if (job.state === "failed" && job.failedReason) {
-    const shortReason = job.failedReason.length > 30 
-      ? job.failedReason.slice(0, 30) + "..." 
-      : job.failedReason;
+    const shortReason =
+      job.failedReason.length > 30 ? job.failedReason.slice(0, 30) + "..." : job.failedReason;
     return t`  ${fg(colors.overlay0)(`#${job.id}`)} ${fg(stateColor)(job.state)}  ${timestamp}  ${fg(colors.red)(shortReason)}`;
   }
-  
+
   return t`  ${fg(colors.overlay0)(`#${job.id}`)} ${fg(stateColor)(job.state)}  ${timestamp}${durationStr}`;
 }
 
@@ -163,9 +162,7 @@ export function updateSchedulerDetail(
   title.content = t` Scheduler: ${bold(fg(colors.text)(scheduler.key))}`;
 
   // Update footer based on whether there's a next job
-  footer.content = scheduler.nextJob 
-    ? "j: view next job | Esc: close"
-    : "Esc: close";
+  footer.content = scheduler.nextJob ? "j: view next job | Esc: close" : "Esc: close";
 
   // Build content using StyledText concatenation
   const parts: (StyledText | string)[] = [];
@@ -254,7 +251,7 @@ export function updateSchedulerDetail(
     parts.push("\n");
     parts.push(t`${bold("State:")}          ${fg(stateColor)(scheduler.nextJob.state)}`);
     parts.push("\n");
-    
+
     if (scheduler.next) {
       parts.push(t`${bold("Runs:")}           ${fg(colors.green)(formatNextRun(scheduler.next))}`);
       parts.push("\n");

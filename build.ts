@@ -28,10 +28,13 @@ const content = readFileSync(outputPath, "utf-8");
 writeFileSync(outputPath, `#!/usr/bin/env bun\n${content}`);
 
 // Generate .d.ts using tsc
-const tsc = Bun.spawn(["bunx", "tsc", "--emitDeclarationOnly", "--declaration", "--outDir", "dist"], {
-  stdout: "inherit",
-  stderr: "inherit",
-});
+const tsc = Bun.spawn(
+  ["bunx", "tsc", "--emitDeclarationOnly", "--declaration", "--outDir", "dist"],
+  {
+    stdout: "inherit",
+    stderr: "inherit",
+  },
+);
 
 const exitCode = await tsc.exited;
 if (exitCode !== 0) {

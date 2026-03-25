@@ -1,5 +1,4 @@
 import { getQueue } from "./queues.js";
-import type { Job } from "bullmq";
 
 /**
  * Summary info for scheduler list view
@@ -157,10 +156,9 @@ export async function getJobSchedulerDetail(
 
   let nextJob: NextDelayedJob | undefined;
   if (nextDelayedJob) {
-    const state = await nextDelayedJob.getState();
     nextJob = {
       id: nextDelayedJob.id || "unknown",
-      state,
+      state: "delayed",
       timestamp: nextDelayedJob.timestamp || 0,
       delay: nextDelayedJob.delay,
       data: nextDelayedJob.data,
@@ -175,28 +173,28 @@ export async function getJobSchedulerDetail(
     queue.getFailed(0, 50),
   ]);
 
-  // Filter jobs that belong to this scheduler and get their details
-  const allHistoryJobs: Job[] = [...completedJobs, ...failedJobs].filter(
-    (job) => job.repeatJobKey === schedulerKey,
-  );
+  // Filter jobs that belong to this scheduler, tagging with known state
+  const allHistoryTagged = [
+    ...completedJobs
+      .filter((job) => job.repeatJobKey === schedulerKey)
+      .map((job) => ({ job, state: "completed" as const })),
+    ...failedJobs
+      .filter((job) => job.repeatJobKey === schedulerKey)
+      .map((job) => ({ job, state: "failed" as const })),
+  ];
 
   // Sort by timestamp descending and take most recent 10
-  allHistoryJobs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-  const recentHistoryJobs = allHistoryJobs.slice(0, 10);
+  allHistoryTagged.sort((a, b) => (b.job.timestamp || 0) - (a.job.timestamp || 0));
+  const recentHistoryTagged = allHistoryTagged.slice(0, 10);
 
-  const recentJobs: RecentJobInfo[] = await Promise.all(
-    recentHistoryJobs.map(async (job) => {
-      const state = await job.getState();
-      return {
-        id: job.id || "unknown",
-        state,
-        timestamp: job.timestamp || 0,
-        processedOn: job.processedOn,
-        finishedOn: job.finishedOn,
-        failedReason: job.failedReason,
-      };
-    }),
-  );
+  const recentJobs: RecentJobInfo[] = recentHistoryTagged.map(({ job, state }) => ({
+    id: job.id || "unknown",
+    state,
+    timestamp: job.timestamp || 0,
+    processedOn: job.processedOn,
+    finishedOn: job.finishedOn,
+    failedReason: job.failedReason,
+  }));
 
   return {
     key: scheduler.key,

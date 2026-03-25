@@ -15,7 +15,7 @@ Terminal UI dashboard for [BullMQ](https://bullmq.io/)
 
 ## Requirements
 
-- [Bun](https://bun.sh/) >= 1.0.0 
+- [Bun](https://bun.sh/) >= 1.0.0
 - Redis server with BullMQ queues
 
 ## Installation
@@ -118,6 +118,7 @@ When viewing scheduled jobs, the job list shows all Job Schedulers (repeatable j
 | `j`     | Jump to next delayed job (in detail view) |
 
 The scheduler detail modal shows:
+
 - **Basic info**: Key, name, pattern/interval, timezone
 - **Statistics**: Iterations count, limits, created/next/end dates
 - **Job template**: Default job data and options
@@ -126,20 +127,21 @@ The scheduler detail modal shows:
 
 ### Metrics Bar
 
-| Metric | Description                    | 
-| ------ | ------------------------------ | 
-| QUEUES | Total number of queues         | 
-| WAIT   | Jobs waiting to be processed   | 
-| ACTIVE | Jobs currently being processed | 
-| DONE   | Completed jobs                 | 
+| Metric | Description                    |
+| ------ | ------------------------------ |
+| QUEUES | Total number of queues         |
+| WAIT   | Jobs waiting to be processed   |
+| ACTIVE | Jobs currently being processed |
+| DONE   | Completed jobs                 |
 | FAIL   | Failed jobs                    |
-| DELAY  | Delayed jobs                   | 
-| ENQ    | Jobs enqueued per minute       | 
+| DELAY  | Delayed jobs                   |
+| ENQ    | Jobs enqueued per minute       |
 | DEQ    | Jobs dequeued per minute       |
 
 ## Development
 
 ### Scripts
+
 ```bash
 # Run in development mode
 bun run dev

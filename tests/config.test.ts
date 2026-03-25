@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { getVersionText, parseQueueNames } from "../src/config.js";
 
-const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8")) as {
+const packageJson = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+) as {
   version: string;
 };
 
@@ -28,18 +30,11 @@ describe("parseQueueNames", () => {
     });
 
     it("handles multiple queue names", () => {
-      expect(parseQueueNames("queue1,queue2,queue3")).toEqual([
-        "queue1",
-        "queue2",
-        "queue3",
-      ]);
+      expect(parseQueueNames("queue1,queue2,queue3")).toEqual(["queue1", "queue2", "queue3"]);
     });
 
     it("trims whitespace from queue names", () => {
-      expect(parseQueueNames("  queue1  ,  queue2  ")).toEqual([
-        "queue1",
-        "queue2",
-      ]);
+      expect(parseQueueNames("  queue1  ,  queue2  ")).toEqual(["queue1", "queue2"]);
     });
 
     it("filters out empty segments", () => {
@@ -48,17 +43,11 @@ describe("parseQueueNames", () => {
     });
 
     it("filters out whitespace-only segments", () => {
-      expect(parseQueueNames("queue1,   ,queue2")).toEqual([
-        "queue1",
-        "queue2",
-      ]);
+      expect(parseQueueNames("queue1,   ,queue2")).toEqual(["queue1", "queue2"]);
     });
 
     it("handles mixed edge cases", () => {
-      expect(parseQueueNames("  ,queue1, ,queue2,  ")).toEqual([
-        "queue1",
-        "queue2",
-      ]);
+      expect(parseQueueNames("  ,queue1, ,queue2,  ")).toEqual(["queue1", "queue2"]);
     });
   });
 });

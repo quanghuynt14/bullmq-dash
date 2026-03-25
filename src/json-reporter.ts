@@ -4,20 +4,15 @@ import { getAllJobs, getJobDetail, VALID_JOB_STATUSES } from "./data/jobs.js";
 import type { JsonJobStatus } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
 import { writeError } from "./errors.js";
-import type { Config, CliArgs } from "./config.js";
+import type { Config, Subcommand } from "./config.js";
 import { setConfig } from "./config.js";
-
-/**
- * JSON mode query options extracted from CLI args
- */
-interface JsonQueryOptions {
-  queue?: string;
-  jobState?: JsonJobStatus;
-  jobId?: string;
-  schedulers?: boolean;
-  schedulerId?: string;
-  pageSize?: number;
-}
+import {
+  formatQueuesOverview,
+  formatJobsList,
+  formatJobDetail,
+  formatSchedulersList,
+  formatSchedulerDetail,
+} from "./formatters.js";
 
 // ── Queues overview (default) ───────────────────────────────────────────
 
@@ -98,10 +93,7 @@ async function fetchSchedulerDetail(queueName: string, schedulerKey: string) {
   const scheduler = await getJobSchedulerDetail(queueName, schedulerKey);
 
   if (!scheduler) {
-    writeError(
-      `Scheduler '${schedulerKey}' not found in queue '${queueName}'`,
-      "RUNTIME_ERROR",
-    );
+    writeError(`Scheduler '${schedulerKey}' not found in queue '${queueName}'`, "RUNTIME_ERROR");
     await cleanup();
     process.exit(1);
   }
@@ -115,42 +107,18 @@ async function fetchSchedulerDetail(queueName: string, schedulerKey: string) {
 
 // ── Validation ──────────────────────────────────────────────────────────
 
-function validateOptions(opts: JsonQueryOptions): void {
-  // --queue is required for all query-specific flags
-  if (!opts.queue && (opts.jobId || opts.jobState || opts.schedulers || opts.schedulerId)) {
+function validateJobState(jobState: string | undefined): JsonJobStatus | undefined {
+  if (!jobState) return undefined;
+
+  if (!VALID_JOB_STATUSES.includes(jobState as JsonJobStatus)) {
     writeError(
-      "--queue is required when using --job-id, --job-state, --schedulers, or --scheduler-id",
+      `Invalid --job-state value: '${jobState}'. Valid values: ${VALID_JOB_STATUSES.join(", ")}`,
       "CONFIG_ERROR",
     );
     process.exit(2);
   }
 
-  // --job-id and --job-state are mutually exclusive
-  if (opts.jobId && opts.jobState) {
-    writeError("--job-id and --job-state cannot be used together", "CONFIG_ERROR");
-    process.exit(2);
-  }
-
-  // --job-id and --schedulers/--scheduler-id are mutually exclusive
-  if (opts.jobId && (opts.schedulers || opts.schedulerId)) {
-    writeError("--job-id cannot be used with --schedulers or --scheduler-id", "CONFIG_ERROR");
-    process.exit(2);
-  }
-
-  // --job-state and --schedulers/--scheduler-id are mutually exclusive
-  if (opts.jobState && (opts.schedulers || opts.schedulerId)) {
-    writeError("--job-state cannot be used with --schedulers or --scheduler-id", "CONFIG_ERROR");
-    process.exit(2);
-  }
-
-  // Validate --job-state value
-  if (opts.jobState && !VALID_JOB_STATUSES.includes(opts.jobState)) {
-    writeError(
-      `Invalid --job-state value: '${opts.jobState}'. Valid values: ${VALID_JOB_STATUSES.join(", ")}`,
-      "CONFIG_ERROR",
-    );
-    process.exit(2);
-  }
+  return jobState as JsonJobStatus;
 }
 
 // ── Cleanup helper ──────────────────────────────────────────────────────
@@ -162,43 +130,56 @@ async function cleanup(): Promise<void> {
 
 // ── Route and execute ───────────────────────────────────────────────────
 
-async function routeAndFetch(opts: JsonQueryOptions): Promise<unknown> {
-  if (!opts.queue) {
-    // Default: queues overview
-    return fetchQueuesOverview();
+async function routeAndFetch(subcommand: Subcommand): Promise<unknown> {
+  switch (subcommand.kind) {
+    case "queues-list":
+      return fetchQueuesOverview();
+
+    case "jobs-list": {
+      const validState = validateJobState(subcommand.jobState);
+      return fetchJobsList(subcommand.queue, validState, subcommand.pageSize);
+    }
+
+    case "jobs-get":
+      return fetchJobDetail(subcommand.queue, subcommand.jobId);
+
+    case "schedulers-list":
+      return fetchSchedulersList(subcommand.queue, subcommand.pageSize);
+
+    case "schedulers-get":
+      return fetchSchedulerDetail(subcommand.queue, subcommand.schedulerId);
+  }
+}
+
+// ── Format output ───────────────────────────────────────────────────────
+
+function formatOutput(result: unknown, subcommand: Subcommand, humanFriendly: boolean): string {
+  if (!humanFriendly) {
+    return JSON.stringify(result);
   }
 
-  if (opts.jobId) {
-    return fetchJobDetail(opts.queue, opts.jobId);
+  switch (subcommand.kind) {
+    case "queues-list":
+      return formatQueuesOverview(result as Parameters<typeof formatQueuesOverview>[0]);
+    case "jobs-list":
+      return formatJobsList(result as Parameters<typeof formatJobsList>[0]);
+    case "jobs-get":
+      return formatJobDetail(result as Parameters<typeof formatJobDetail>[0]);
+    case "schedulers-list":
+      return formatSchedulersList(result as Parameters<typeof formatSchedulersList>[0]);
+    case "schedulers-get":
+      return formatSchedulerDetail(result as Parameters<typeof formatSchedulerDetail>[0]);
   }
-
-  if (opts.schedulerId) {
-    return fetchSchedulerDetail(opts.queue, opts.schedulerId);
-  }
-
-  if (opts.schedulers) {
-    return fetchSchedulersList(opts.queue, opts.pageSize);
-  }
-
-  // Default for --queue: list jobs
-  return fetchJobsList(opts.queue, opts.jobState, opts.pageSize);
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────
 
-export async function runJsonMode(config: Config, cliArgs: CliArgs): Promise<void> {
+export async function runJsonMode(
+  config: Config,
+  subcommand: Subcommand,
+  humanFriendly?: boolean,
+): Promise<void> {
   setConfig(config);
-
-  const opts: JsonQueryOptions = {
-    queue: cliArgs.queue,
-    jobState: cliArgs.jobState as JsonJobStatus | undefined,
-    jobId: cliArgs.jobId,
-    schedulers: cliArgs.schedulers,
-    schedulerId: cliArgs.schedulerId,
-    pageSize: cliArgs.pageSize,
-  };
-
-  validateOptions(opts);
 
   try {
     await connectRedis();
@@ -212,8 +193,9 @@ export async function runJsonMode(config: Config, cliArgs: CliArgs): Promise<voi
   }
 
   try {
-    const result = await routeAndFetch(opts);
-    process.stdout.write(JSON.stringify(result) + "\n");
+    const result = await routeAndFetch(subcommand);
+    const output = formatOutput(result, subcommand, !!humanFriendly);
+    process.stdout.write(output + "\n");
   } catch (error) {
     writeError(
       "Failed to fetch data",
