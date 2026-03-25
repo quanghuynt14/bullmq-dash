@@ -84,8 +84,8 @@ bullmq-dash jobs list email --redis-host localhost --page-size 50
 | Flag                  | Type    | Applies to                     | Description                                                     |
 | --------------------- | ------- | ------------------------------ | --------------------------------------------------------------- |
 | `--job-state <state>` | string  | `jobs list`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed` |
-| `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000)                           |
-| `--human-friendly`    | boolean | all subcommands                | Output as readable tables instead of JSON (default: JSON)       |
+| `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000, must be >= 1)             |
+| `--format <format>`   | string  | all subcommands                | Output format: `json` (default) or `table` (human-readable)     |
 
 ### Progressive Help
 
@@ -234,12 +234,20 @@ interface SchedulerDetailOutput {
 
 ### Exit Codes
 
-| Code | Meaning                                     |
-| ---- | ------------------------------------------- |
-| `0`  | Success                                     |
-| `1`  | Runtime error (unhandled exception)         |
-| `2`  | Configuration error (bad/missing CLI flags) |
-| `3`  | Redis connection error                      |
+| Code | Meaning                                           |
+| ---- | ------------------------------------------------- |
+| `0`  | Success                                           |
+| `1`  | Runtime error (unhandled exception)               |
+| `2`  | Configuration error (bad/missing CLI flags) or no command given |
+| `3`  | Redis connection error                            |
+
+### Idempotency
+
+All current subcommands (`queues list`, `jobs list`, `jobs get`, `schedulers list`, `schedulers get`) are **read-only** operations and are inherently idempotent — safe to retry freely. Agents should rely on this guarantee.
+
+When destructive subcommands are added (e.g., `jobs delete`, `jobs retry`):
+- They **MUST** support `--dry-run` to preview the effect without executing it.
+- They **MUST** support `--yes` / `--force` to skip interactive confirmation (agents cannot answer prompts).
 
 ### Structured Error Output (stderr)
 

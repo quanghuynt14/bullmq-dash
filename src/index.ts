@@ -39,7 +39,7 @@ async function main() {
     }
 
     const config = loadConfig(cliArgs);
-    await runJsonMode(config, cliArgs.subcommand, cliArgs.humanFriendly);
+    await runJsonMode(config, cliArgs.subcommand, cliArgs.format);
     return;
   }
 
@@ -72,8 +72,8 @@ async function main() {
     return;
   }
 
-  // No subcommand and no --tui: show help
-  showHelp();
+  // No subcommand and no --tui: show help with exit code 2 (no command given)
+  showHelp(2);
 }
 
 main();

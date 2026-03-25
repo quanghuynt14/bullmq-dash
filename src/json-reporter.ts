@@ -4,7 +4,7 @@ import { getAllJobs, getJobDetail, VALID_JOB_STATUSES } from "./data/jobs.js";
 import type { JsonJobStatus } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
 import { writeError } from "./errors.js";
-import type { Config, Subcommand } from "./config.js";
+import type { Config, Subcommand, OutputFormat } from "./config.js";
 import { setConfig } from "./config.js";
 import {
   formatQueuesOverview,
@@ -153,8 +153,8 @@ async function routeAndFetch(subcommand: Subcommand): Promise<unknown> {
 
 // ── Format output ───────────────────────────────────────────────────────
 
-function formatOutput(result: unknown, subcommand: Subcommand, humanFriendly: boolean): string {
-  if (!humanFriendly) {
+function formatOutput(result: unknown, subcommand: Subcommand, format: OutputFormat): string {
+  if (format !== "table") {
     return JSON.stringify(result);
   }
 
@@ -177,7 +177,7 @@ function formatOutput(result: unknown, subcommand: Subcommand, humanFriendly: bo
 export async function runJsonMode(
   config: Config,
   subcommand: Subcommand,
-  humanFriendly?: boolean,
+  format: OutputFormat = "json",
 ): Promise<void> {
   setConfig(config);
 
@@ -194,7 +194,7 @@ export async function runJsonMode(
 
   try {
     const result = await routeAndFetch(subcommand);
-    const output = formatOutput(result, subcommand, !!humanFriendly);
+    const output = formatOutput(result, subcommand, format);
     process.stdout.write(output + "\n");
   } catch (error) {
     writeError(

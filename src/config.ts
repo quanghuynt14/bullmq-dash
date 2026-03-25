@@ -26,6 +26,8 @@ export type Subcommand =
   | { kind: "schedulers-list"; queue: string; pageSize?: number }
   | { kind: "schedulers-get"; queue: string; schedulerId: string };
 
+export type OutputFormat = "json" | "table";
+
 export interface CliArgs {
   redisHost?: string;
   redisPort?: number;
@@ -38,7 +40,7 @@ export interface CliArgs {
   version?: boolean;
   tui?: boolean;
   subcommand?: Subcommand;
-  humanFriendly?: boolean;
+  format?: OutputFormat;
 }
 
 let packageVersion: string | null = null;
@@ -67,7 +69,7 @@ Connection Options (all commands):
   --prefix <prefix>        BullMQ key prefix (default: bull)
 
 Output Options:
-  --human-friendly         Output as readable tables instead of JSON
+  --format <format>        Output format: json (default) | table
 
 TUI Options:
   --tui                    Launch interactive terminal dashboard
@@ -81,7 +83,7 @@ General:
 Examples:
   bullmq-dash --tui --redis-host 192.168.1.100 --redis-port 6380
   bullmq-dash queues list --redis-host localhost
-  bullmq-dash queues list --redis-host localhost --human-friendly
+  bullmq-dash queues list --redis-host localhost --format table
   bullmq-dash jobs list email --redis-host localhost --job-state failed
   bullmq-dash jobs get email 123 --redis-host localhost
 `;
@@ -97,7 +99,7 @@ Connection Options:
   --prefix <prefix>        BullMQ key prefix (default: bull)
 
 Output Options:
-  --human-friendly         Output as readable tables instead of JSON`;
+  --format <format>        Output format: json (default) | table`;
 
 const QUEUES_HELP = `
 Usage: bullmq-dash queues <action> [options]
@@ -446,7 +448,7 @@ export function parseCliArgs(): CliArgs {
         // Command-specific flags
         "job-state": { type: "string" },
         "page-size": { type: "string" },
-        "human-friendly": { type: "boolean" },
+        format: { type: "string" },
       },
       strict: true,
     });
@@ -456,6 +458,27 @@ export function parseCliArgs(): CliArgs {
     const redisDb = parseNumericFlag("redis-db", values["redis-db"]);
     const pollInterval = parseNumericFlag("poll-interval", values["poll-interval"]);
     const pageSize = parseNumericFlag("page-size", values["page-size"]);
+
+    // Validate --page-size is a positive integer
+    if (pageSize !== undefined && pageSize < 1) {
+      writeError(
+        `Invalid value for --page-size: ${pageSize}. Must be a positive integer (>= 1).`,
+        "CONFIG_ERROR",
+      );
+      process.exit(2);
+    }
+
+    // Validate --format value and narrow type without a cast
+    const rawFormat = values.format;
+    const format: OutputFormat | undefined =
+      rawFormat === "json" || rawFormat === "table" ? rawFormat : undefined;
+    if (rawFormat !== undefined && format === undefined) {
+      writeError(
+        `Invalid value for --format: '${rawFormat}'. Valid values: json, table`,
+        "CONFIG_ERROR",
+      );
+      process.exit(2);
+    }
 
     // Parse subcommand from positionals
     const subcommand = parseSubcommand(positionals, !!values.help, values["job-state"], pageSize);
@@ -482,11 +505,11 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    if (values["human-friendly"] && !subcommand) {
+    if (format && !subcommand) {
       writeError(
-        "--human-friendly can only be used with subcommands",
+        "--format can only be used with subcommands",
         "CONFIG_ERROR",
-        "Usage: bullmq-dash <command> --human-friendly. Use --help for usage.",
+        "Usage: bullmq-dash <command> --format table. Use --help for usage.",
       );
       process.exit(2);
     }
@@ -500,11 +523,11 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    if (values["human-friendly"] && values.tui) {
+    if (format && values.tui) {
       writeError(
-        "--human-friendly cannot be used with --tui",
+        "--format cannot be used with --tui",
         "CONFIG_ERROR",
-        "--human-friendly is for formatting subcommand output. Use --tui alone for the dashboard.",
+        "--format is for formatting subcommand output. Use --tui alone for the dashboard.",
       );
       process.exit(2);
     }
@@ -521,7 +544,7 @@ export function parseCliArgs(): CliArgs {
       version: values.version,
       tui: values.tui,
       subcommand,
-      humanFriendly: values["human-friendly"],
+      format,
     };
   } catch (error) {
     if (error instanceof Error && error.message.includes("Unknown option")) {
@@ -532,9 +555,9 @@ export function parseCliArgs(): CliArgs {
   }
 }
 
-export function showHelp(): void {
+export function showHelp(exitCode = 0): void {
   console.log(HELP_TEXT);
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 export function showVersion(): void {

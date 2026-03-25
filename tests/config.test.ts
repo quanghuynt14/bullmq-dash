@@ -77,7 +77,7 @@ describe("extractSubcommand", () => {
     });
   });
 
-  it("treats everything after first flag as flags", () => {
+  it("treats everything after first flag as flags (unknown positionals passed to parseArgs for strict validation)", () => {
     expect(extractSubcommand(["jobs", "list", "--job-state", "failed", "extra"])).toEqual({
       positionals: ["jobs", "list"],
       flagArgv: ["--job-state", "failed", "extra"],
