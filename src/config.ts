@@ -104,12 +104,55 @@ export function parseCliArgs(): CliArgs {
       strict: true,
     });
 
+    // Parse numeric flags with NaN validation
+    const redisPort = values["redis-port"] ? parseInt(values["redis-port"], 10) : undefined;
+    if (values["redis-port"] && Number.isNaN(redisPort)) {
+      writeError(
+        "Invalid value for --redis-port",
+        "CONFIG_ERROR",
+        `Expected a valid number, got "${values["redis-port"]}"`,
+      );
+      process.exit(2);
+    }
+
+    const redisDb = values["redis-db"] ? parseInt(values["redis-db"], 10) : undefined;
+    if (values["redis-db"] && Number.isNaN(redisDb)) {
+      writeError(
+        "Invalid value for --redis-db",
+        "CONFIG_ERROR",
+        `Expected a valid number, got "${values["redis-db"]}"`,
+      );
+      process.exit(2);
+    }
+
+    const pollInterval = values["poll-interval"]
+      ? parseInt(values["poll-interval"], 10)
+      : undefined;
+    if (values["poll-interval"] && Number.isNaN(pollInterval)) {
+      writeError(
+        "Invalid value for --poll-interval",
+        "CONFIG_ERROR",
+        `Expected a valid number, got "${values["poll-interval"]}"`,
+      );
+      process.exit(2);
+    }
+
+    const pageSize = values["page-size"] ? parseInt(values["page-size"], 10) : undefined;
+    if (values["page-size"] && Number.isNaN(pageSize)) {
+      writeError(
+        "Invalid value for --page-size",
+        "CONFIG_ERROR",
+        `Expected a valid number, got "${values["page-size"]}"`,
+      );
+      process.exit(2);
+    }
+
     return {
       redisHost: values["redis-host"],
-      redisPort: values["redis-port"] ? parseInt(values["redis-port"], 10) : undefined,
+      redisPort,
       redisPassword: values["redis-password"],
-      redisDb: values["redis-db"] ? parseInt(values["redis-db"], 10) : undefined,
-      pollInterval: values["poll-interval"] ? parseInt(values["poll-interval"], 10) : undefined,
+      redisDb,
+      pollInterval,
       prefix: values.prefix,
       queues: values.queues ? parseQueueNames(values.queues) : undefined,
       help: values.help,
@@ -121,7 +164,7 @@ export function parseCliArgs(): CliArgs {
       jobId: values["job-id"],
       schedulers: values.schedulers,
       schedulerId: values["scheduler-id"],
-      pageSize: values["page-size"] ? parseInt(values["page-size"], 10) : undefined,
+      pageSize,
     };
   } catch (error) {
     if (error instanceof Error && error.message.includes("Unknown option")) {
