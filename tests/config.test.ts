@@ -147,4 +147,26 @@ describe("parseNumericFlag", () => {
     expect(exitSpy).toHaveBeenCalledWith(2);
     exitSpy.mockRestore();
   });
+
+  it("exits with code 2 when value is below min", () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(mockExit);
+    parseNumericFlag("page-size", "0", { min: 1 });
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+  });
+
+  it("exits with code 2 for negative values when min is 1", () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(mockExit);
+    parseNumericFlag("page-size", "-5", { min: 1 });
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+  });
+
+  it("allows zero when no min is specified", () => {
+    expect(parseNumericFlag("redis-db", "0")).toBe(0);
+  });
+
+  it("allows value equal to min", () => {
+    expect(parseNumericFlag("page-size", "1", { min: 1 })).toBe(1);
+  });
 });

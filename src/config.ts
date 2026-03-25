@@ -413,7 +413,11 @@ function parseSubcommand(
 
 // ── Parse CLI flags ─────────────────────────────────────────────────────
 
-export function parseNumericFlag(flagName: string, rawValue: string | undefined): number | undefined {
+export function parseNumericFlag(
+  flagName: string,
+  rawValue: string | undefined,
+  options?: { min?: number },
+): number | undefined {
   if (!rawValue) return undefined;
   const parsed = parseInt(rawValue, 10);
   if (Number.isNaN(parsed)) {
@@ -421,6 +425,14 @@ export function parseNumericFlag(flagName: string, rawValue: string | undefined)
       `Invalid value for --${flagName}`,
       "CONFIG_ERROR",
       `Expected a valid number, got "${rawValue}"`,
+    );
+    process.exit(2);
+  }
+  if (options?.min !== undefined && parsed < options.min) {
+    writeError(
+      `Invalid value for --${flagName}`,
+      "CONFIG_ERROR",
+      `Expected a number >= ${options.min}, got ${parsed}`,
     );
     process.exit(2);
   }
@@ -457,16 +469,7 @@ export function parseCliArgs(): CliArgs {
     const redisPort = parseNumericFlag("redis-port", values["redis-port"]);
     const redisDb = parseNumericFlag("redis-db", values["redis-db"]);
     const pollInterval = parseNumericFlag("poll-interval", values["poll-interval"]);
-    const pageSize = parseNumericFlag("page-size", values["page-size"]);
-
-    // Validate --page-size is a positive integer
-    if (pageSize !== undefined && pageSize < 1) {
-      writeError(
-        `Invalid value for --page-size: ${pageSize}. Must be a positive integer (>= 1).`,
-        "CONFIG_ERROR",
-      );
-      process.exit(2);
-    }
+    const pageSize = parseNumericFlag("page-size", values["page-size"], { min: 1 });
 
     // Validate --format value and narrow type without a cast
     const rawFormat = values.format;
@@ -555,7 +558,7 @@ export function parseCliArgs(): CliArgs {
   }
 }
 
-export function showHelp(exitCode = 0): void {
+export function showHelp(exitCode: number = 0): void {
   console.log(HELP_TEXT);
   process.exit(exitCode);
 }
