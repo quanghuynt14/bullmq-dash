@@ -52,7 +52,10 @@ export function createStatusFilter(
   return { container, text };
 }
 
-export function updateStatusFilter(elements: StatusFilterElements, currentStatus: JobListView): void {
+export function updateStatusFilter(
+  elements: StatusFilterElements,
+  currentStatus: JobListView,
+): void {
   const { text } = elements;
 
   // Build parts with separators between them

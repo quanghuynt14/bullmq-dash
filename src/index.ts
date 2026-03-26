@@ -9,7 +9,7 @@ import {
   setConfig,
 } from "./config.js";
 import { runConfigPrompt } from "./ui/config-prompt.js";
-import { runJsonSnapshot } from "./json-reporter.js";
+import { runJsonMode } from "./json-reporter.js";
 import { writeError } from "./errors.js";
 
 async function main() {
@@ -27,46 +27,53 @@ async function main() {
     return;
   }
 
-  // JSON / headless mode
-  if (cliArgs.json) {
+  // Subcommand mode (headless JSON output)
+  if (cliArgs.subcommand) {
     if (!hasRedisHostConfig(cliArgs)) {
-      writeError("Redis host is not configured", "CONFIG_ERROR");
+      writeError(
+        "Redis host is not configured",
+        "CONFIG_ERROR",
+        "Use --redis-host <host> to specify the Redis server.",
+      );
       process.exit(2);
     }
 
     const config = loadConfig(cliArgs);
-    await runJsonSnapshot(config);
+    await runJsonMode(config, cliArgs.subcommand, cliArgs.humanFriendly);
     return;
   }
 
-  let config;
+  // TUI mode (requires --tui flag)
+  if (cliArgs.tui) {
+    let config;
 
-  // Check if Redis host is configured
-  if (hasRedisHostConfig(cliArgs)) {
-    // Load config from CLI args and env vars
-    config = loadConfig(cliArgs);
-    console.log(`Connecting to Redis at ${config.redis.host}:${config.redis.port}...`);
-    console.log("");
-  } else {
-    // Run interactive prompt
-    const promptAnswers = await runConfigPrompt();
-    config = createConfigFromPrompt(promptAnswers, cliArgs);
+    if (hasRedisHostConfig(cliArgs)) {
+      config = loadConfig(cliArgs);
+      console.log(`Connecting to Redis at ${config.redis.host}:${config.redis.port}...`);
+      console.log("");
+    } else {
+      const promptAnswers = await runConfigPrompt();
+      config = createConfigFromPrompt(promptAnswers, cliArgs);
+    }
+
+    setConfig(config);
+
+    try {
+      const app = new App();
+      await app.start();
+    } catch (error) {
+      writeError(
+        "Failed to start application",
+        "RUNTIME_ERROR",
+        error instanceof Error ? error.message : String(error),
+      );
+      process.exit(1);
+    }
+    return;
   }
 
-  // Set the global config
-  setConfig(config);
-
-  try {
-    const app = new App();
-    await app.start();
-  } catch (error) {
-    writeError(
-      "Failed to start application",
-      "RUNTIME_ERROR",
-      error instanceof Error ? error.message : String(error),
-    );
-    process.exit(1);
-  }
+  // No subcommand and no --tui: show help with exit code 2 (no command given)
+  showHelp(2);
 }
 
 main();

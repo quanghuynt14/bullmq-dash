@@ -48,9 +48,8 @@ class PollingManager {
 
       // Clamp selectedQueueIndex to valid range if queues changed
       const currentState = stateManager.getState();
-      const clampedIndex = queues.length > 0
-        ? Math.min(currentState.selectedQueueIndex, queues.length - 1)
-        : 0;
+      const clampedIndex =
+        queues.length > 0 ? Math.min(currentState.selectedQueueIndex, queues.length - 1) : 0;
 
       stateManager.setState({
         queues,
@@ -152,10 +151,7 @@ class PollingManager {
     try {
       // If status is "schedulers", fetch schedulers instead of jobs
       if (state.jobsStatus === "schedulers") {
-        const schedulersResult = await getJobSchedulers(
-          selectedQueue.name,
-          state.schedulersPage,
-        );
+        const schedulersResult = await getJobSchedulers(selectedQueue.name, state.schedulersPage);
 
         stateManager.setState({
           schedulers: schedulersResult.schedulers,
@@ -192,10 +188,7 @@ class PollingManager {
     }
 
     try {
-      const schedulersResult = await getJobSchedulers(
-        selectedQueue.name,
-        state.schedulersPage,
-      );
+      const schedulersResult = await getJobSchedulers(selectedQueue.name, state.schedulersPage);
 
       stateManager.setState({
         schedulers: schedulersResult.schedulers,
@@ -203,7 +196,10 @@ class PollingManager {
         schedulersTotalPages: schedulersResult.totalPages,
       });
     } catch (error) {
-      console.error("Failed to refresh schedulers:", error instanceof Error ? error.message : error);
+      console.error(
+        "Failed to refresh schedulers:",
+        error instanceof Error ? error.message : error,
+      );
     }
   }
 }

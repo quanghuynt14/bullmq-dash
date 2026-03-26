@@ -26,7 +26,6 @@ export interface LayoutElements {
 }
 
 export function createLayout(renderer: CliRenderer): LayoutElements {
-
   // Root container - fills entire terminal
   const root = new BoxRenderable(renderer, {
     id: "root",

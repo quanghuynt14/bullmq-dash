@@ -31,28 +31,78 @@ bun run format:check     # Check formatting
 # Run production
 bun run start            # bun dist/index.js
 
-# JSON output (headless / AI agent mode)
-bullmq-dash --json --redis-host localhost   # Single snapshot
+# Headless / AI agent mode (subcommands output JSON to stdout)
+bullmq-dash queues list --redis-host localhost
+bullmq-dash jobs list email --redis-host localhost
+bullmq-dash jobs get email 42 --redis-host localhost
+
+# Interactive TUI mode (requires --tui flag)
+bullmq-dash --tui --redis-host localhost
 ```
 
 **No test framework configured.** If adding tests, use Bun's built-in test runner.
 
 ## Non-Interactive / Headless Mode (AI Agent Usage)
 
-Use `--json` flag to get a machine-readable JSON snapshot without launching the TUI:
+Use subcommands to get machine-readable JSON output without launching the TUI:
 
 ```bash
-# Single snapshot - connect and dump all queue stats as JSON, then exit
-bullmq-dash --json --redis-host localhost --redis-port 6379
+# Queues overview - all queue stats
+bullmq-dash queues list --redis-host localhost --redis-port 6379
 
-# With specific queues
-bullmq-dash --json --queues email,payments --redis-host localhost
+# List jobs in a queue (all statuses, up to 1000)
+bullmq-dash jobs list email --redis-host localhost
+
+# List jobs filtered by state
+bullmq-dash jobs list email --redis-host localhost --job-state failed
+
+# Get a single job's full detail
+bullmq-dash jobs get email 123 --redis-host localhost
+
+# List schedulers in a queue
+bullmq-dash schedulers list email --redis-host localhost
+
+# Get a single scheduler's detail (includes next job + recent history)
+bullmq-dash schedulers get email my-cron --redis-host localhost
+
+# Limit results (default: 1000)
+bullmq-dash jobs list email --redis-host localhost --page-size 50
 ```
 
-### Output Schema
+### Commands
+
+| Command                                 | Description                       |
+| --------------------------------------- | --------------------------------- |
+| `queues list`                           | List all queues with job counts   |
+| `jobs list <queue>`                     | List jobs in a queue              |
+| `jobs get <queue> <job-id>`             | Get full detail for a single job  |
+| `schedulers list <queue>`               | List schedulers in a queue        |
+| `schedulers get <queue> <scheduler-id>` | Get detail for a single scheduler |
+
+### Command Options
+
+| Flag                  | Type    | Applies to                     | Description                                                     |
+| --------------------- | ------- | ------------------------------ | --------------------------------------------------------------- |
+| `--job-state <state>` | string  | `jobs list`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed` |
+| `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000, must be >= 1)             |
+| `--human-friendly`    | boolean | all subcommands                | Human-readable table output (default: JSON)                     |
+
+### Progressive Help
+
+Every level supports `--help` so agents can discover commands incrementally:
+
+```bash
+bullmq-dash --help                    # Global overview: all commands
+bullmq-dash jobs --help               # Resource-level: available actions for jobs
+bullmq-dash jobs list --help          # Action-level: flags, options, and examples
+```
+
+### Output Schemas
+
+**Queues overview** (`queues list`):
 
 ```typescript
-interface JsonOutput {
+interface QueuesOverview {
   timestamp: string; // ISO 8601
   queues: Array<{
     name: string;
@@ -81,21 +131,141 @@ interface JsonOutput {
 }
 ```
 
+**Jobs list** (`jobs list <queue> [--job-state <s>]`):
+
+```typescript
+interface JobsList {
+  timestamp: string;
+  queue: string;
+  jobState: string; // "all" or the specific job state
+  jobs: Array<{
+    id: string;
+    name: string;
+    state: string;
+    timestamp: number;
+  }>;
+  total: number;
+}
+```
+
+**Job detail** (`jobs get <queue> <job-id>`):
+
+```typescript
+interface JobDetailOutput {
+  timestamp: string;
+  queue: string;
+  job: {
+    id: string;
+    name: string;
+    state: string;
+    timestamp: number;
+    data: unknown;
+    opts: unknown;
+    attemptsMade: number;
+    failedReason?: string;
+    stacktrace?: string[];
+    returnvalue?: unknown;
+    processedOn?: number;
+    finishedOn?: number;
+    progress?: number | object;
+    repeatJobKey?: string;
+    delay?: number;
+  };
+}
+```
+
+**Schedulers list** (`schedulers list <queue>`):
+
+```typescript
+interface SchedulersList {
+  timestamp: string;
+  queue: string;
+  schedulers: Array<{
+    key: string;
+    name: string;
+    pattern?: string;
+    every?: number;
+    next?: number;
+    iterationCount?: number;
+    tz?: string;
+  }>;
+  total: number;
+}
+```
+
+**Scheduler detail** (`schedulers get <queue> <scheduler-id>`):
+
+```typescript
+interface SchedulerDetailOutput {
+  timestamp: string;
+  queue: string;
+  scheduler: {
+    key: string;
+    name: string;
+    pattern?: string;
+    every?: number;
+    next?: number;
+    iterationCount?: number;
+    tz?: string;
+    id?: string | null;
+    limit?: number;
+    startDate?: number;
+    endDate?: number;
+    template?: { data?: unknown; opts?: unknown };
+    nextJob?: {
+      id: string;
+      state: string;
+      timestamp: number;
+      delay?: number;
+      data: unknown;
+      opts: unknown;
+    };
+    recentJobs?: Array<{
+      id: string;
+      state: string;
+      timestamp: number;
+      processedOn?: number;
+      finishedOn?: number;
+      failedReason?: string;
+    }>;
+  };
+}
+```
+
 ### Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0`  | Success |
-| `1`  | Runtime error (unhandled exception) |
-| `2`  | Configuration error (bad/missing CLI flags) |
-| `3`  | Redis connection error |
+| Code | Meaning                                           |
+| ---- | ------------------------------------------------- |
+| `0`  | Success                                           |
+| `1`  | Runtime error (unhandled exception)               |
+| `2`  | Configuration error (bad/missing CLI flags) or no command given |
+| `3`  | Redis connection error                            |
+
+### Idempotency
+
+All current subcommands (`queues list`, `jobs list`, `jobs get`, `schedulers list`, `schedulers get`) are **read-only** and **idempotent**. They perform no writes to Redis and can be called any number of times without side effects. Agents should rely on this guarantee.
+
+Agents can safely:
+
+- Poll the same command repeatedly for monitoring
+- Retry on transient failures without risk of duplicate actions
+- Run multiple commands in parallel against the same queues
+
+When destructive subcommands are added (e.g., `jobs delete`, `jobs retry`):
+- They **MUST** support `--dry-run` to preview the effect without executing it.
+- They **MUST** support `--yes` / `--force` to skip interactive confirmation (agents cannot answer prompts).
+- They **MUST** be idempotent — retrying the same command with the same arguments must produce the same result and not cause unintended duplicate side effects.
 
 ### Structured Error Output (stderr)
 
 All errors are written to `stderr` as JSON:
 
 ```json
-{ "error": "Redis connection failed", "code": "REDIS_ERROR", "details": "connect ECONNREFUSED 127.0.0.1:6379" }
+{
+  "error": "Redis connection failed",
+  "code": "REDIS_ERROR",
+  "details": "connect ECONNREFUSED 127.0.0.1:6379"
+}
 ```
 
 Error codes: `CONFIG_ERROR`, `REDIS_ERROR`, `RUNTIME_ERROR`
@@ -104,13 +274,22 @@ Error codes: `CONFIG_ERROR`, `REDIS_ERROR`, `RUNTIME_ERROR`
 
 ```bash
 # Check if any queue has failed jobs
-bullmq-dash --json --redis-host localhost | jq '.queues[] | select(.counts.failed > 0)'
+bullmq-dash queues list --redis-host localhost | jq '.queues[] | select(.counts.failed > 0)'
 
 # Get total waiting jobs across all queues
-bullmq-dash --json --redis-host localhost | jq '[.queues[].counts.wait] | add'
+bullmq-dash queues list --redis-host localhost | jq '[.queues[].counts.wait] | add'
 
 # Check if a specific queue exists and get its stats
-bullmq-dash --json --redis-host localhost --queues email | jq '.queues[0]'
+bullmq-dash queues list --redis-host localhost | jq '.queues[] | select(.name == "email")'
+
+# Get all failed jobs in a queue with their IDs
+bullmq-dash jobs list email --redis-host localhost --job-state failed | jq '.jobs[] | {id, name, timestamp}'
+
+# Get the stacktrace of a specific failed job
+bullmq-dash jobs get email 42 --redis-host localhost | jq '.job.stacktrace'
+
+# List all cron schedulers and their next run times
+bullmq-dash schedulers list email --redis-host localhost | jq '.schedulers[] | {key, pattern, next}'
 ```
 
 ## Project Structure
@@ -120,12 +299,16 @@ src/
 ├── index.ts          # Entry point - minimal bootstrap
 ├── app.ts            # Main App class with lifecycle
 ├── config.ts         # Zod-validated config from CLI args
+├── errors.ts         # Structured JSON error output to stderr
+├── formatters.ts     # Human-friendly table/text formatters
+├── json-reporter.ts  # Headless subcommand data fetching + output
 ├── state.ts          # Singleton state manager
 ├── polling.ts        # Polling manager singleton
 ├── data/             # Data layer
 │   ├── redis.ts      # Redis connection
 │   ├── queues.ts     # Queue operations
 │   ├── jobs.ts       # Job operations
+│   ├── schedulers.ts # Scheduler operations
 │   └── metrics.ts    # Global metrics
 └── ui/               # UI components (@opentui/core)
     ├── layout.ts
@@ -313,5 +496,3 @@ Uses Catppuccin Mocha palette. Key colors:
 | `ioredis`       | Redis client          |
 | `zod`           | Schema validation     |
 | `tsup`          | Build tool            |
-
-

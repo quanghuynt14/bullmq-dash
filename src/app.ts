@@ -42,11 +42,7 @@ import {
   updateGlobalMetrics,
   type GlobalMetricsElements,
 } from "./ui/global-metrics.js";
-import {
-  createPageJump,
-  updatePageJump,
-  type PageJumpElements,
-} from "./ui/page-jump.js";
+import { createPageJump, updatePageJump, type PageJumpElements } from "./ui/page-jump.js";
 
 interface AppElements {
   layout: LayoutElements;
@@ -240,7 +236,11 @@ export class App {
 
       case "d":
         // Delete only works for regular jobs, not schedulers
-        if (state.focusedPane === "jobs" && state.jobsStatus !== "schedulers" && state.jobs.length > 0) {
+        if (
+          state.focusedPane === "jobs" &&
+          state.jobsStatus !== "schedulers" &&
+          state.jobs.length > 0
+        ) {
           stateManager.showDeleteConfirm();
         }
         break;
