@@ -243,11 +243,18 @@ interface SchedulerDetailOutput {
 
 ### Idempotency
 
-All current subcommands (`queues list`, `jobs list`, `jobs get`, `schedulers list`, `schedulers get`) are **read-only** operations and are inherently idempotent — safe to retry freely. Agents should rely on this guarantee.
+All current subcommands (`queues list`, `jobs list`, `jobs get`, `schedulers list`, `schedulers get`) are **read-only** and **idempotent**. They perform no writes to Redis and can be called any number of times without side effects. Agents should rely on this guarantee.
+
+Agents can safely:
+
+- Poll the same command repeatedly for monitoring
+- Retry on transient failures without risk of duplicate actions
+- Run multiple commands in parallel against the same queues
 
 When destructive subcommands are added (e.g., `jobs delete`, `jobs retry`):
 - They **MUST** support `--dry-run` to preview the effect without executing it.
 - They **MUST** support `--yes` / `--force` to skip interactive confirmation (agents cannot answer prompts).
+- They **MUST** be idempotent — retrying the same command with the same arguments must produce the same result and not cause unintended duplicate side effects.
 
 ### Structured Error Output (stderr)
 
@@ -262,18 +269,6 @@ All errors are written to `stderr` as JSON:
 ```
 
 Error codes: `CONFIG_ERROR`, `REDIS_ERROR`, `RUNTIME_ERROR`
-
-### Idempotency
-
-All current subcommands (`queues list`, `jobs list`, `jobs get`, `schedulers list`, `schedulers get`) are **read-only** and **idempotent**. They perform no writes to Redis and can be called any number of times without side effects.
-
-Agents can safely:
-
-- Poll the same command repeatedly for monitoring
-- Retry on transient failures without risk of duplicate actions
-- Run multiple commands in parallel against the same queues
-
-If **write commands** are added in the future (e.g. `jobs retry`, `jobs remove`, `queues pause`), they **MUST** be idempotent — retrying the same command with the same arguments must produce the same result and not cause unintended duplicate side effects.
 
 ### Common Agent Tasks
 

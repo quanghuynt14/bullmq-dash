@@ -355,7 +355,12 @@ function parseSubcommand(
         }
         return { kind: "jobs-get", queue, jobId };
       }
-      break;
+      writeError(
+        `Invalid action '${action}' for jobs`,
+        "CONFIG_ERROR",
+        "Available actions: list, get. Use --help for usage.",
+      );
+      process.exit(2);
     }
 
     case "schedulers": {
@@ -404,7 +409,12 @@ function parseSubcommand(
         }
         return { kind: "schedulers-get", queue, schedulerId };
       }
-      break;
+      writeError(
+        `Invalid action '${action}' for schedulers`,
+        "CONFIG_ERROR",
+        "Available actions: list, get. Use --help for usage.",
+      );
+      process.exit(2);
     }
   }
 

@@ -96,18 +96,13 @@ export function formatQueuesOverview(data: QueuesOverviewData): string {
     "",
   ];
 
-  const lines = [table(headers, rows, align)];
-  const colWidths = headers.map((h, i) => {
-    let max = h.length;
-    for (const row of rows) {
-      max = Math.max(max, (row[i] ?? "").length);
-    }
-    return max;
-  });
-  const totalPad = (val: string, i: number) =>
-    align[i] === "r" ? padLeft(val, colWidths[i]!) : padRight(val, colWidths[i]!);
+  const allRows = [...rows, totals];
+  const tbl = table(headers, allRows, align);
 
-  lines.push(totals.map(totalPad).join("  "));
+  // Insert a separator line before the totals row
+  const lines = tbl.split("\n");
+  const sepLine = lines[1]!; // reuse the header separator style
+  lines.splice(lines.length - 1, 0, sepLine);
 
   return lines.join("\n");
 }
