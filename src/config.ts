@@ -560,9 +560,16 @@ export function parseCliArgs(): CliArgs {
       format,
     };
   } catch (error) {
-    if (error instanceof Error && error.message.includes("Unknown option")) {
-      writeError(error.message, "CONFIG_ERROR", "Use --help to see available options.");
-      process.exit(2);
+    if (error instanceof Error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (error.message.includes("Unknown option")) {
+        writeError(error.message, "CONFIG_ERROR", "Use --help to see available options.");
+        process.exit(2);
+      }
+      if (code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE") {
+        writeError(error.message, "CONFIG_ERROR", "Use --help to see available options.");
+        process.exit(2);
+      }
     }
     throw error;
   }

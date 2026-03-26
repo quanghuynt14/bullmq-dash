@@ -1,6 +1,12 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
-import { extractSubcommand, getVersionText, parseNumericFlag, parseQueueNames } from "../src/config.js";
+import {
+  extractSubcommand,
+  getVersionText,
+  parseCliArgs,
+  parseNumericFlag,
+  parseQueueNames,
+} from "../src/config.js";
 
 const packageJson = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
@@ -168,5 +174,63 @@ describe("parseNumericFlag", () => {
 
   it("allows value equal to min", () => {
     expect(parseNumericFlag("page-size", "1", { min: 1 })).toBe(1);
+  });
+});
+
+describe("parseCliArgs", () => {
+  let originalArgv: string[];
+
+  beforeEach(() => {
+    originalArgv = process.argv;
+  });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+  });
+
+  it("exits with code 2 for --page-size -1 (space-separated negative value)", () => {
+    // BUG-001 regression: parseArgs throws ERR_PARSE_ARGS_INVALID_OPTION_VALUE
+    // when a negative number is passed space-separated, which was previously
+    // uncaught and caused a raw TypeError stack trace (exit 1) instead of a
+    // structured JSON error (exit 2).
+    process.argv = ["bun", "index.ts", "jobs", "list", "email", "--redis-host", "localhost", "--page-size", "-1"];
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 for --redis-port -1 (space-separated negative value)", () => {
+    process.argv = ["bun", "index.ts", "--tui", "--redis-host", "localhost", "--redis-port", "-1"];
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 for unknown options", () => {
+    process.argv = ["bun", "index.ts", "queues", "list", "--redis-host", "localhost", "--bogus"];
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
   });
 });
