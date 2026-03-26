@@ -550,11 +550,11 @@ export function parseCliArgs(): CliArgs {
   } catch (error) {
     if (error instanceof Error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (error.message.includes("Unknown option")) {
-        writeError(error.message, "CONFIG_ERROR", "Use --help to see available options.");
-        process.exit(2);
-      }
-      if (code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE") {
+      if (
+        error.message.includes("Unknown option") ||
+        code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" ||
+        code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL"
+      ) {
         writeError(error.message, "CONFIG_ERROR", "Use --help to see available options.");
         process.exit(2);
       }

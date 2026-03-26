@@ -63,7 +63,11 @@ async function fetchJobDetail(queueName: string, jobId: string) {
 
   if (!job) {
     writeError(`Job '${jobId}' not found in queue '${queueName}'`, "RUNTIME_ERROR");
-    await cleanup();
+    try {
+      await cleanup();
+    } catch {
+      // Ignore cleanup errors
+    }
     process.exit(1);
   }
 
@@ -94,7 +98,11 @@ async function fetchSchedulerDetail(queueName: string, schedulerKey: string) {
 
   if (!scheduler) {
     writeError(`Scheduler '${schedulerKey}' not found in queue '${queueName}'`, "RUNTIME_ERROR");
-    await cleanup();
+    try {
+      await cleanup();
+    } catch {
+      // Ignore cleanup errors
+    }
     process.exit(1);
   }
 
@@ -148,6 +156,11 @@ async function routeAndFetch(subcommand: Subcommand): Promise<unknown> {
 
     case "schedulers-get":
       return fetchSchedulerDetail(subcommand.queue, subcommand.schedulerId);
+
+    default: {
+      const _exhaustive: never = subcommand;
+      throw new Error(`Unhandled subcommand: ${(_exhaustive as Subcommand).kind}`);
+    }
   }
 }
 
@@ -169,6 +182,11 @@ function formatOutput(result: unknown, subcommand: Subcommand, humanFriendly: bo
       return formatSchedulersList(result as Parameters<typeof formatSchedulersList>[0]);
     case "schedulers-get":
       return formatSchedulerDetail(result as Parameters<typeof formatSchedulerDetail>[0]);
+
+    default: {
+      const _exhaustive: never = subcommand;
+      throw new Error(`Unhandled subcommand format: ${(_exhaustive as Subcommand).kind}`);
+    }
   }
 }
 
@@ -202,7 +220,11 @@ export async function runJsonMode(
       "RUNTIME_ERROR",
       error instanceof Error ? error.message : String(error),
     );
-    await cleanup();
+    try {
+      await cleanup();
+    } catch {
+      // Ignore cleanup errors — the original error has already been reported
+    }
     process.exit(1);
   }
 
