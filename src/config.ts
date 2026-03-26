@@ -26,8 +26,6 @@ export type Subcommand =
   | { kind: "schedulers-list"; queue: string; pageSize?: number }
   | { kind: "schedulers-get"; queue: string; schedulerId: string };
 
-export type OutputFormat = "json" | "table";
-
 export interface CliArgs {
   redisHost?: string;
   redisPort?: number;
@@ -40,7 +38,7 @@ export interface CliArgs {
   version?: boolean;
   tui?: boolean;
   subcommand?: Subcommand;
-  format?: OutputFormat;
+  humanFriendly?: boolean;
 }
 
 let packageVersion: string | null = null;
@@ -69,7 +67,7 @@ Connection Options (all commands):
   --prefix <prefix>        BullMQ key prefix (default: bull)
 
 Output Options:
-  --format <format>        Output format: json (default) | table
+  --human-friendly         Human-readable table output (default: JSON)
 
 TUI Options:
   --tui                    Launch interactive terminal dashboard
@@ -83,7 +81,7 @@ General:
 Examples:
   bullmq-dash --tui --redis-host 192.168.1.100 --redis-port 6380
   bullmq-dash queues list --redis-host localhost
-  bullmq-dash queues list --redis-host localhost --format table
+  bullmq-dash queues list --redis-host localhost --human-friendly
   bullmq-dash jobs list email --redis-host localhost --job-state failed
   bullmq-dash jobs get email 123 --redis-host localhost
 `;
@@ -99,7 +97,7 @@ Connection Options:
   --prefix <prefix>        BullMQ key prefix (default: bull)
 
 Output Options:
-  --format <format>        Output format: json (default) | table`;
+  --human-friendly         Human-readable table output (default: JSON)`;
 
 const QUEUES_HELP = `
 Usage: bullmq-dash queues <action> [options]
@@ -470,7 +468,7 @@ export function parseCliArgs(): CliArgs {
         // Command-specific flags
         "job-state": { type: "string" },
         "page-size": { type: "string" },
-        format: { type: "string" },
+        "human-friendly": { type: "boolean" },
       },
       strict: true,
     });
@@ -481,17 +479,7 @@ export function parseCliArgs(): CliArgs {
     const pollInterval = parseNumericFlag("poll-interval", values["poll-interval"]);
     const pageSize = parseNumericFlag("page-size", values["page-size"], { min: 1 });
 
-    // Validate --format value and narrow type without a cast
-    const rawFormat = values.format;
-    const format: OutputFormat | undefined =
-      rawFormat === "json" || rawFormat === "table" ? rawFormat : undefined;
-    if (rawFormat !== undefined && format === undefined) {
-      writeError(
-        `Invalid value for --format: '${rawFormat}'. Valid values: json, table`,
-        "CONFIG_ERROR",
-      );
-      process.exit(2);
-    }
+    const humanFriendly = values["human-friendly"] ?? false;
 
     // Parse subcommand from positionals
     const subcommand = parseSubcommand(positionals, !!values.help, values["job-state"], pageSize);
@@ -518,11 +506,11 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    if (format && !subcommand) {
+    if (humanFriendly && !subcommand) {
       writeError(
-        "--format can only be used with subcommands",
+        "--human-friendly can only be used with subcommands",
         "CONFIG_ERROR",
-        "Usage: bullmq-dash <command> --format table. Use --help for usage.",
+        "Usage: bullmq-dash <command> --human-friendly. Use --help for usage.",
       );
       process.exit(2);
     }
@@ -536,11 +524,11 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    if (format && values.tui) {
+    if (humanFriendly && values.tui) {
       writeError(
-        "--format cannot be used with --tui",
+        "--human-friendly cannot be used with --tui",
         "CONFIG_ERROR",
-        "--format is for formatting subcommand output. Use --tui alone for the dashboard.",
+        "--human-friendly is for formatting subcommand output. Use --tui alone for the dashboard.",
       );
       process.exit(2);
     }
@@ -557,7 +545,7 @@ export function parseCliArgs(): CliArgs {
       version: values.version,
       tui: values.tui,
       subcommand,
-      format,
+      humanFriendly,
     };
   } catch (error) {
     if (error instanceof Error) {

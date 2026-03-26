@@ -39,7 +39,7 @@ async function main() {
     }
 
     const config = loadConfig(cliArgs);
-    await runJsonMode(config, cliArgs.subcommand, cliArgs.format);
+    await runJsonMode(config, cliArgs.subcommand, cliArgs.humanFriendly);
     return;
   }
 

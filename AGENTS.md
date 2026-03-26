@@ -85,7 +85,7 @@ bullmq-dash jobs list email --redis-host localhost --page-size 50
 | --------------------- | ------- | ------------------------------ | --------------------------------------------------------------- |
 | `--job-state <state>` | string  | `jobs list`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed` |
 | `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000, must be >= 1)             |
-| `--format <format>`   | string  | all subcommands                | Output format: `json` (default) or `table` (human-readable)     |
+| `--human-friendly`    | boolean | all subcommands                | Human-readable table output (default: JSON)                     |
 
 ### Progressive Help
 
