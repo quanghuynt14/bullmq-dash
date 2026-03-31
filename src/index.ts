@@ -43,6 +43,24 @@ async function main() {
     return;
   }
 
+  // Web dashboard mode
+  if (cliArgs.web) {
+    if (!hasRedisHostConfig(cliArgs)) {
+      writeError(
+        "Redis host is not configured",
+        "CONFIG_ERROR",
+        "Use --redis-host <host> to specify the Redis server.",
+      );
+      process.exit(2);
+    }
+    const config = loadConfig(cliArgs);
+    setConfig(config);
+    console.log(`Starting web dashboard on port ${config.webPort}...`);
+    console.log(`Open http://localhost:${config.webPort} in your browser`);
+    // TODO: Import and call startWebServer() in Task 3
+    return;
+  }
+
   // TUI mode (requires --tui flag)
   if (cliArgs.tui) {
     let config;

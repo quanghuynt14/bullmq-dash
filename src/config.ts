@@ -13,6 +13,8 @@ const configSchema = z.object({
   pollInterval: z.coerce.number().int().positive().default(3000),
   prefix: z.string().default("bull"),
   queueNames: z.array(z.string()).optional(),
+  web: z.boolean().default(false),
+  webPort: z.coerce.number().int().min(1).max(65535).default(8080),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -37,6 +39,8 @@ export interface CliArgs {
   help?: boolean;
   version?: boolean;
   tui?: boolean;
+  web?: boolean;
+  webPort?: number;
   subcommand?: Subcommand;
   humanFriendly?: boolean;
 }
@@ -48,6 +52,7 @@ bullmq-dash - Terminal UI dashboard for BullMQ queue monitoring
 
 Usage:
   bullmq-dash --tui [options]                            Launch interactive TUI
+  bullmq-dash --web [options]                            Launch web dashboard
   bullmq-dash <command> [options]                        Headless JSON output
 
 Commands:
@@ -73,6 +78,10 @@ TUI Options:
   --tui                    Launch interactive terminal dashboard
   --poll-interval <ms>     Polling interval in ms (default: 3000)
   --queues <names>         Comma-separated queue names to monitor
+
+Web Options:
+  --web                    Launch web dashboard (incompatible with --tui)
+  --web-port <port>        Web dashboard port (default: 8080)
 
 General:
   -v, --version            Show version
@@ -465,6 +474,8 @@ export function parseCliArgs(): CliArgs {
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
         tui: { type: "boolean" },
+        web: { type: "boolean" },
+        "web-port": { type: "string" },
         // Command-specific flags
         "job-state": { type: "string" },
         "page-size": { type: "string" },
@@ -478,6 +489,7 @@ export function parseCliArgs(): CliArgs {
     const redisDb = parseNumericFlag("redis-db", values["redis-db"]);
     const pollInterval = parseNumericFlag("poll-interval", values["poll-interval"]);
     const pageSize = parseNumericFlag("page-size", values["page-size"], { min: 1 });
+    const webPort = parseNumericFlag("web-port", values["web-port"], { min: 1 });
 
     const humanFriendly = values["human-friendly"] ?? false;
 
@@ -524,6 +536,24 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
+    if (values.web && values.tui) {
+      writeError(
+        "--web and --tui are mutually exclusive",
+        "CONFIG_ERROR",
+        "Use --web for web dashboard or --tui for terminal UI.",
+      );
+      process.exit(2);
+    }
+
+    if (values.web && subcommand) {
+      writeError(
+        "--web cannot be used with subcommands",
+        "CONFIG_ERROR",
+        "Use --web to launch the web dashboard, or use subcommands for headless output.",
+      );
+      process.exit(2);
+    }
+
     if (humanFriendly && values.tui) {
       writeError(
         "--human-friendly cannot be used with --tui",
@@ -544,6 +574,8 @@ export function parseCliArgs(): CliArgs {
       help: values.help,
       version: values.version,
       tui: values.tui,
+      web: values.web,
+      webPort,
       subcommand,
       humanFriendly,
     };
@@ -624,6 +656,8 @@ export function loadConfig(cliArgs: CliArgs): Config {
     pollInterval: cliArgs.pollInterval,
     prefix: cliArgs.prefix,
     queueNames: cliArgs.queues,
+    web: cliArgs.web,
+    webPort: cliArgs.webPort,
   };
 
   const result = configSchema.safeParse(raw);
@@ -654,6 +688,8 @@ export function createConfigFromPrompt(
     pollInterval: cliArgs.pollInterval,
     prefix: cliArgs.prefix,
     queueNames: cliArgs.queues,
+    web: cliArgs.web,
+    webPort: cliArgs.webPort,
   };
 
   const result = configSchema.safeParse(raw);
