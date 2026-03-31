@@ -40,6 +40,30 @@ bullmq-dash jobs get email 42 --redis-host localhost
 bullmq-dash --tui --redis-host localhost
 ```
 
+## Web Dashboard Mode
+
+```bash
+# Start web dashboard
+bullmq-dash --web --redis-host localhost --web-port 8080
+# Open http://localhost:8080 in your browser
+```
+
+### Web Mode Features
+- Global metrics dashboard with queue cards
+- Job search via SQLite sidecar index (sub-5ms at 5M rows)
+- Sortable columns (ID, name, state, timestamp)
+- State filter (All, Active, Waiting, Completed, Failed, Delayed)
+- Paginated job list
+- Job detail view with collapsible JSON
+- Scheduler list and detail
+
+### Web Mode CLI Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--web` | boolean | false | Start web dashboard server |
+| `--web-port` | number | 8080 | Port for the web server |
+
 **No test framework configured.** If adding tests, use Bun's built-in test runner.
 
 ## Non-Interactive / Headless Mode (AI Agent Usage)
