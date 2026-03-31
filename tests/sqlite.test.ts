@@ -1,0 +1,328 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { unlinkSync } from "node:fs";
+import { setConfig } from "../src/config.js";
+import {
+  closeSqliteDb,
+  createSqliteDb,
+  deleteStaleJobs,
+  getJobFromDb,
+  getSqliteDb,
+  queryJobs,
+  upsertJobs,
+  type JobRow,
+} from "../src/web/sqlite.js";
+
+const TEST_DB_PATH = `${import.meta.dirname}/test-sqlite.db`;
+
+beforeEach(() => {
+  setConfig({
+    redis: { host: "localhost", port: 6379, db: 0 },
+    pollInterval: 3000,
+    prefix: "bull",
+    web: false,
+    webPort: 8080,
+  });
+  createSqliteDb(TEST_DB_PATH);
+});
+
+afterEach(() => {
+  closeSqliteDb();
+  try {
+    unlinkSync(TEST_DB_PATH);
+  } catch {
+    // ignore
+  }
+  try {
+    unlinkSync(`${TEST_DB_PATH}-wal`);
+  } catch {
+    // ignore
+  }
+  try {
+    unlinkSync(`${TEST_DB_PATH}-shm`);
+  } catch {
+    // ignore
+  }
+});
+
+describe("createSqliteDb", () => {
+  it("creates the jobs table with correct schema", () => {
+    const db = getSqliteDb();
+    const tableInfo = db.prepare("PRAGMA table_info(jobs)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      pk: number;
+    }>;
+
+    const columnNames = tableInfo.map((c) => c.name);
+    expect(columnNames).toEqual(["id", "queue", "name", "state", "timestamp", "data_preview"]);
+
+    const pkCols = tableInfo.filter((c) => c.pk > 0).map((c) => c.name);
+    expect(pkCols).toEqual(["id", "queue"]);
+  });
+
+  it("creates required indexes", () => {
+    const db = getSqliteDb();
+    const indexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='jobs'")
+      .all() as Array<{ name: string }>;
+
+    const indexNames = indexes.map((i) => i.name);
+    expect(indexNames).toContain("idx_jobs_queue_state");
+    expect(indexNames).toContain("idx_jobs_name");
+    expect(indexNames).toContain("idx_jobs_timestamp");
+  });
+
+  it("sets WAL journal mode", () => {
+    const db = getSqliteDb();
+    const result = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+    expect(result.journal_mode).toBe("wal");
+  });
+});
+
+describe("upsertJobs", () => {
+  it("inserts new jobs", () => {
+    upsertJobs("email", [
+      { id: "1", name: "send-welcome", state: "completed", timestamp: 1000 },
+      { id: "2", name: "send-newsletter", state: "active", timestamp: 2000 },
+    ]);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id").all("email") as JobRow[];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.id).toBe("1");
+    expect(rows[0]!.name).toBe("send-welcome");
+    expect(rows[0]!.state).toBe("completed");
+    expect(rows[1]!.id).toBe("2");
+  });
+
+  it("updates existing jobs on conflict", () => {
+    upsertJobs("email", [{ id: "1", name: "send-welcome", state: "active", timestamp: 1000 }]);
+    upsertJobs("email", [{ id: "1", name: "send-welcome", state: "completed", timestamp: 2000 }]);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("email") as JobRow[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.state).toBe("completed");
+    expect(rows[0]!.timestamp).toBe(2000);
+  });
+
+  it("stores data_preview truncated to 500 chars", () => {
+    const longData = { message: "x".repeat(600) };
+    upsertJobs("email", [{ id: "1", name: "job", state: "active", timestamp: 1000, data: longData }]);
+
+    const db = getSqliteDb();
+    const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get("1") as JobRow;
+    expect(row.data_preview).not.toBeNull();
+    expect(row.data_preview!.length).toBeLessThanOrEqual(500);
+  });
+
+  it("stores null data_preview when no data", () => {
+    upsertJobs("email", [{ id: "1", name: "job", state: "active", timestamp: 1000 }]);
+
+    const db = getSqliteDb();
+    const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get("1") as JobRow;
+    expect(row.data_preview).toBeNull();
+  });
+
+  it("handles jobs across different queues", () => {
+    upsertJobs("email", [{ id: "1", name: "send", state: "active", timestamp: 1000 }]);
+    upsertJobs("sms", [{ id: "1", name: "send", state: "completed", timestamp: 2000 }]);
+
+    const db = getSqliteDb();
+    const emailRows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("email") as JobRow[];
+    const smsRows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("sms") as JobRow[];
+    expect(emailRows).toHaveLength(1);
+    expect(smsRows).toHaveLength(1);
+    expect(emailRows[0]!.state).toBe("active");
+    expect(smsRows[0]!.state).toBe("completed");
+  });
+});
+
+describe("queryJobs", () => {
+  beforeEach(() => {
+    upsertJobs("email", [
+      { id: "1", name: "send-welcome", state: "completed", timestamp: 1000 },
+      { id: "2", name: "send-newsletter", state: "active", timestamp: 3000 },
+      { id: "3", name: "send-receipt", state: "completed", timestamp: 2000 },
+      { id: "4", name: "send-promo", state: "failed", timestamp: 4000 },
+      { id: "5", name: "send-alert", state: "active", timestamp: 5000 },
+    ]);
+  });
+
+  it("returns all jobs for a queue", () => {
+    const result = queryJobs({ queue: "email" });
+    expect(result.jobs).toHaveLength(5);
+    expect(result.total).toBe(5);
+  });
+
+  it("filters by state", () => {
+    const result = queryJobs({ queue: "email", state: "completed" });
+    expect(result.jobs).toHaveLength(2);
+    expect(result.total).toBe(2);
+    expect(result.jobs.every((j) => j.state === "completed")).toBe(true);
+  });
+
+  it("treats state 'all' as no filter", () => {
+    const result = queryJobs({ queue: "email", state: "all" });
+    expect(result.jobs).toHaveLength(5);
+    expect(result.total).toBe(5);
+  });
+
+  it("searches by name substring", () => {
+    const result = queryJobs({ queue: "email", search: "newsletter" });
+    expect(result.jobs).toHaveLength(1);
+    expect(result.jobs[0]!.name).toBe("send-newsletter");
+  });
+
+  it("search is case-insensitive for LIKE", () => {
+    // SQLite LIKE is case-insensitive for ASCII by default
+    const result = queryJobs({ queue: "email", search: "Welcome" });
+    expect(result.jobs).toHaveLength(1);
+    expect(result.jobs[0]!.name).toBe("send-welcome");
+  });
+
+  it("combines state and search filters", () => {
+    const result = queryJobs({ queue: "email", state: "active", search: "send" });
+    expect(result.jobs).toHaveLength(2);
+    expect(result.total).toBe(2);
+  });
+
+  it("sorts by timestamp descending by default", () => {
+    const result = queryJobs({ queue: "email" });
+    expect(result.jobs[0]!.id).toBe("5");
+    expect(result.jobs[4]!.id).toBe("1");
+  });
+
+  it("sorts by timestamp ascending", () => {
+    const result = queryJobs({ queue: "email", sort: "timestamp", order: "asc" });
+    expect(result.jobs[0]!.id).toBe("1");
+    expect(result.jobs[4]!.id).toBe("5");
+  });
+
+  it("sorts by name ascending", () => {
+    const result = queryJobs({ queue: "email", sort: "name", order: "asc" });
+    expect(result.jobs[0]!.name).toBe("send-alert");
+    expect(result.jobs[4]!.name).toBe("send-welcome");
+  });
+
+  it("falls back to timestamp for invalid sort column", () => {
+    const result = queryJobs({ queue: "email", sort: "invalid_col" });
+    expect(result.jobs[0]!.id).toBe("5");
+  });
+
+  it("paginates results", () => {
+    const page1 = queryJobs({ queue: "email", page: 1, pageSize: 2 });
+    expect(page1.jobs).toHaveLength(2);
+    expect(page1.total).toBe(5);
+    expect(page1.jobs[0]!.id).toBe("5");
+
+    const page2 = queryJobs({ queue: "email", page: 2, pageSize: 2 });
+    expect(page2.jobs).toHaveLength(2);
+    expect(page2.total).toBe(5);
+    expect(page2.jobs[0]!.id).toBe("2");
+
+    const page3 = queryJobs({ queue: "email", page: 3, pageSize: 2 });
+    expect(page3.jobs).toHaveLength(1);
+    expect(page3.total).toBe(5);
+    expect(page3.jobs[0]!.id).toBe("1");
+  });
+
+  it("returns empty for nonexistent queue", () => {
+    const result = queryJobs({ queue: "nonexistent" });
+    expect(result.jobs).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+
+  it("returns empty when search matches nothing", () => {
+    const result = queryJobs({ queue: "email", search: "zzz_not_found" });
+    expect(result.jobs).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+
+  it("returns empty when state filter matches nothing", () => {
+    const result = queryJobs({ queue: "email", state: "delayed" });
+    expect(result.jobs).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+});
+
+describe("deleteStaleJobs", () => {
+  beforeEach(() => {
+    upsertJobs("email", [
+      { id: "1", name: "job-a", state: "completed", timestamp: 1000 },
+      { id: "2", name: "job-b", state: "active", timestamp: 2000 },
+      { id: "3", name: "job-c", state: "failed", timestamp: 3000 },
+    ]);
+  });
+
+  it("removes jobs not in activeIds", () => {
+    const removed = deleteStaleJobs("email", ["2", "3"]);
+    expect(removed).toBe(1);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id").all("email") as JobRow[];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.id)).toEqual(["2", "3"]);
+  });
+
+  it("removes all jobs when activeIds is empty (no-op)", () => {
+    const removed = deleteStaleJobs("email", []);
+    expect(removed).toBe(0);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("email") as JobRow[];
+    expect(rows).toHaveLength(3);
+  });
+
+  it("removes nothing when all ids are active", () => {
+    const removed = deleteStaleJobs("email", ["1", "2", "3"]);
+    expect(removed).toBe(0);
+  });
+
+  it("only affects the specified queue", () => {
+    upsertJobs("sms", [{ id: "1", name: "sms-job", state: "active", timestamp: 1000 }]);
+
+    deleteStaleJobs("email", ["1"]);
+
+    const db = getSqliteDb();
+    const smsRows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("sms") as JobRow[];
+    expect(smsRows).toHaveLength(1);
+  });
+});
+
+describe("getJobFromDb", () => {
+  it("returns a job row for existing job", () => {
+    upsertJobs("email", [{ id: "42", name: "my-job", state: "completed", timestamp: 5000 }]);
+
+    const row = getJobFromDb("email", "42");
+    expect(row).not.toBeNull();
+    expect(row!.id).toBe("42");
+    expect(row!.name).toBe("my-job");
+    expect(row!.state).toBe("completed");
+  });
+
+  it("returns null for nonexistent job", () => {
+    const row = getJobFromDb("email", "999");
+    expect(row).toBeNull();
+  });
+
+  it("returns null when queue does not match", () => {
+    upsertJobs("email", [{ id: "42", name: "my-job", state: "completed", timestamp: 5000 }]);
+
+    const row = getJobFromDb("sms", "42");
+    expect(row).toBeNull();
+  });
+});
+
+describe("closeSqliteDb", () => {
+  it("allows re-creation after close", () => {
+    upsertJobs("email", [{ id: "1", name: "job", state: "active", timestamp: 1000 }]);
+    closeSqliteDb();
+
+    createSqliteDb(TEST_DB_PATH);
+    const row = getJobFromDb("email", "1");
+    expect(row).not.toBeNull();
+    expect(row!.id).toBe("1");
+  });
+});
