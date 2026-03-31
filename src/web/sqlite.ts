@@ -126,23 +126,23 @@ export function upsertJobs(
 }
 
 export function deleteStaleJobs(queue: string, activeIds: string[]): number {
-  const db = getSqliteDb();
+  const database = getSqliteDb();
   if (activeIds.length === 0) {
-    const result = db.prepare("DELETE FROM jobs WHERE queue = ?").run(queue);
+    const result = database.prepare("DELETE FROM jobs WHERE queue = ?").run(queue);
     return result.changes;
   }
 
   const BATCH_SIZE = 900;
   if (activeIds.length <= BATCH_SIZE) {
     const placeholders = activeIds.map(() => "?").join(",");
-    const result = db.prepare(
+    const result = database.prepare(
       `DELETE FROM jobs WHERE queue = ? AND id NOT IN (${placeholders})`,
     ).run(queue, ...activeIds);
     return result.changes;
   }
 
   const activeIdSet = new Set(activeIds);
-  const allJobs = db
+  const allJobs = database
     .prepare("SELECT id FROM jobs WHERE queue = ?")
     .all(queue) as JobRow[];
   const staleIds = allJobs
@@ -150,12 +150,12 @@ export function deleteStaleJobs(queue: string, activeIds: string[]): number {
     .map((row) => row.id);
 
   let totalDeleted = 0;
-  const deleteStaleInBatches = db.transaction(() => {
+  const deleteStaleInBatches = database.transaction(() => {
     for (let i = 0; i < staleIds.length; i += BATCH_SIZE) {
       const batch = staleIds.slice(i, i + BATCH_SIZE);
       if (batch.length === 0) continue;
       const placeholders = batch.map(() => "?").join(",");
-      const result = db.prepare(
+      const result = database.prepare(
         `DELETE FROM jobs WHERE queue = ? AND id IN (${placeholders})`,
       ).run(queue, ...batch);
       totalDeleted += result.changes;
