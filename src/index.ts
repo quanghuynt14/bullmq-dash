@@ -57,7 +57,8 @@ async function main() {
     setConfig(config);
     console.log(`Starting web dashboard on port ${config.webPort}...`);
     console.log(`Open http://localhost:${config.webPort} in your browser`);
-    // TODO: Import and call startWebServer() in Task 3
+    const { startWebServer } = await import("./web/server.js");
+    await startWebServer();
     return;
   }
 
