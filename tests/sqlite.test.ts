@@ -266,13 +266,13 @@ describe("deleteStaleJobs", () => {
     expect(rows.map((r) => r.id)).toEqual(["2", "3"]);
   });
 
-  it("removes all jobs when activeIds is empty (no-op)", () => {
+  it("removes all jobs when activeIds is empty", () => {
     const removed = deleteStaleJobs("email", []);
-    expect(removed).toBe(0);
 
     const db = getSqliteDb();
     const rows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("email") as JobRow[];
-    expect(rows).toHaveLength(3);
+    expect(removed).toBe(3);
+    expect(rows).toHaveLength(0);
   });
 
   it("removes nothing when all ids are active", () => {
@@ -288,6 +288,66 @@ describe("deleteStaleJobs", () => {
     const db = getSqliteDb();
     const smsRows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("sms") as JobRow[];
     expect(smsRows).toHaveLength(1);
+  });
+
+  it("handles more than 999 active IDs by chunking batches", () => {
+    const activeIds: string[] = [];
+    for (let i = 1; i <= 1500; i++) {
+      activeIds.push(String(i));
+    }
+    activeIds.forEach((id) =>
+      upsertJobs("email", [{ id, name: "job", state: "active", timestamp: Number(id) }]),
+    );
+
+    const removed = deleteStaleJobs("email", activeIds);
+    expect(removed).toBe(0);
+
+    const db = getSqliteDb();
+    const countResult = db.prepare("SELECT COUNT(*) as total FROM jobs WHERE queue = ?").get("email") as { total: number };
+    expect(countResult.total).toBe(1500);
+  });
+
+  it("deletes all jobs for a queue when activeIds is empty", () => {
+    upsertJobs("cleanup-test", [
+      { id: "1", name: "job-a", state: "completed", timestamp: 1000 },
+      { id: "2", name: "job-b", state: "failed", timestamp: 2000 },
+    ]);
+
+    const removed = deleteStaleJobs("cleanup-test", []);
+    expect(removed).toBe(2);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("cleanup-test") as JobRow[];
+    expect(rows).toHaveLength(0);
+  });
+
+  it("deletes stale jobs in batches even with more than 999 IDs", () => {
+    // Insert 2000 jobs: 1000 stale (1-1000) + 1000 active (1001-2000)
+    const allJobs: { id: string; name: string; state: string; timestamp: number }[] = [];
+    for (let i = 1; i <= 2000; i++) {
+      allJobs.push({
+        id: String(i),
+        name: i <= 1000 ? "stale-job" : "active-job",
+        state: i <= 1000 ? "completed" : "active",
+        timestamp: i,
+      });
+    }
+    upsertJobs("email", allJobs);
+
+    // Active IDs are 1001-2000 (the jobs we want to keep)
+    const activeIds: string[] = [];
+    for (let i = 1001; i <= 2000; i++) {
+      activeIds.push(String(i));
+    }
+
+    const removed = deleteStaleJobs("email", activeIds);
+    expect(removed).toBe(1000);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id").all("email") as JobRow[];
+    expect(rows).toHaveLength(1000);
+    expect(rows[0]!.id).toBe("1001");
+    expect(rows[999]!.id).toBe("2000");
   });
 });
 

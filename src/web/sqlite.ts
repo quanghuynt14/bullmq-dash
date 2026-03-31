@@ -126,14 +126,44 @@ export function upsertJobs(
 }
 
 export function deleteStaleJobs(queue: string, activeIds: string[]): number {
-  const database = getSqliteDb();
-  if (activeIds.length === 0) return 0;
+  const db = getSqliteDb();
+  if (activeIds.length === 0) {
+    const result = db.prepare("DELETE FROM jobs WHERE queue = ?").run(queue);
+    return result.changes;
+  }
 
-  const placeholders = activeIds.map(() => "?").join(",");
-  const result = database.prepare(
-    `DELETE FROM jobs WHERE queue = ? AND id NOT IN (${placeholders})`,
-  ).run(queue, ...activeIds);
-  return result.changes;
+  const BATCH_SIZE = 900;
+  if (activeIds.length <= BATCH_SIZE) {
+    const placeholders = activeIds.map(() => "?").join(",");
+    const result = db.prepare(
+      `DELETE FROM jobs WHERE queue = ? AND id NOT IN (${placeholders})`,
+    ).run(queue, ...activeIds);
+    return result.changes;
+  }
+
+  const activeIdSet = new Set(activeIds);
+  const allJobs = db
+    .prepare("SELECT id FROM jobs WHERE queue = ?")
+    .all(queue) as JobRow[];
+  const staleIds = allJobs
+    .filter((row) => !activeIdSet.has(row.id))
+    .map((row) => row.id);
+
+  let totalDeleted = 0;
+  const deleteStaleInBatches = db.transaction(() => {
+    for (let i = 0; i < staleIds.length; i += BATCH_SIZE) {
+      const batch = staleIds.slice(i, i + BATCH_SIZE);
+      if (batch.length === 0) continue;
+      const placeholders = batch.map(() => "?").join(",");
+      const result = db.prepare(
+        `DELETE FROM jobs WHERE queue = ? AND id IN (${placeholders})`,
+      ).run(queue, ...batch);
+      totalDeleted += result.changes;
+    }
+  });
+
+  deleteStaleInBatches();
+  return totalDeleted;
 }
 
 export function getJobFromDb(queue: string, jobId: string): JobRow | null {
@@ -142,22 +172,32 @@ export function getJobFromDb(queue: string, jobId: string): JobRow | null {
 }
 
 export async function syncQueue(queueName: string): Promise<void> {
-  const { getAllJobs } = await import("../data/jobs.js");
-  const jobs = await getAllJobs(queueName, undefined, 10000);
-  const rows = jobs.jobs.map((j) => ({
-    id: j.id,
-    name: j.name,
-    state: j.state,
-    timestamp: j.timestamp,
-    data: undefined,
-  }));
-  upsertJobs(queueName, rows);
+  try {
+    const { getAllJobs } = await import("../data/jobs.js");
+    const jobs = await getAllJobs(queueName, undefined, 10000);
+    const rows = jobs.jobs.map((j) => ({
+      id: j.id,
+      name: j.name,
+      state: j.state,
+      timestamp: j.timestamp,
+    }));
+    // Note: data_preview will be null because getAllJobs returns JobSummary
+    // which doesn't include job data. Individual job details are fetched
+    // from Redis directly via getJobDetail() when viewing a single job.
+    rows.forEach((r) => upsertJobs(queueName, [{ ...r, data: undefined }]));
+  } catch (error) {
+    console.error(`SQLite sync failed for queue "${queueName}":`, error);
+  }
 }
 
 export async function fullSync(): Promise<void> {
-  const { discoverQueueNames } = await import("../data/queues.js");
-  const queues = await discoverQueueNames();
-  for (const queueName of queues) {
-    await syncQueue(queueName);
+  try {
+    const { discoverQueueNames } = await import("../data/queues.js");
+    const queues = await discoverQueueNames();
+    for (const queueName of queues) {
+      await syncQueue(queueName);
+    }
+  } catch (error) {
+    console.error("SQLite full sync failed:", error);
   }
 }
