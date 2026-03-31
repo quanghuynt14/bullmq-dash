@@ -1,6 +1,6 @@
 import { getConfig } from "../config.js";
 import { connectRedis } from "../data/redis.js";
-import { createSqliteDb } from "./sqlite.js";
+import { createSqliteDb, fullSync } from "./sqlite.js";
 import {
   handleQueuesList,
   handleJobsList,
@@ -88,11 +88,20 @@ function routeApi(pathname: string, url: URL): Promise<Response> | Response | nu
   return handleNotFound();
 }
 
+const FULL_SYNC_INTERVAL_MS = 60_000;
+
 export async function startWebServer(): Promise<void> {
   const config = getConfig();
 
   await connectRedis();
   createSqliteDb();
+
+  console.log("Starting initial SQLite sync...");
+  fullSync().catch((err) => console.error("Initial sync failed:", err));
+
+  setInterval(() => {
+    fullSync().catch((err) => console.error("Periodic full sync failed:", err));
+  }, FULL_SYNC_INTERVAL_MS);
 
   const server = Bun.serve({
     port: config.webPort,

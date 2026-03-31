@@ -52,3 +52,13 @@ export interface GlobalMetrics {
     dequeuedPerMin: number;
   };
 }
+
+export interface Scheduler {
+  key: string;
+  name: string;
+  pattern?: string;
+  every?: number;
+  next?: number;
+  iterationCount?: number;
+  tz?: string;
+}

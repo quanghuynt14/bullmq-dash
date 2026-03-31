@@ -1,8 +1,8 @@
 import { getAllQueueStats } from "../data/queues.js";
-import { getJobDetail } from "../data/jobs.js";
+import { getJobDetail, getJobs } from "../data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "../data/schedulers.js";
 import { getGlobalMetrics } from "../data/metrics.js";
-import { queryJobs } from "./sqlite.js";
+import { queryJobs, getQueueJobCount } from "./sqlite.js";
 
 export async function handleQueuesList(): Promise<Response> {
   const queues = await getAllQueueStats();
@@ -16,6 +16,19 @@ export async function handleJobsList(queueName: string, url: URL): Promise<Respo
   const order = (url.searchParams.get("order") ?? "desc") as "asc" | "desc";
   const page = parseInt(url.searchParams.get("page") ?? "1", 10);
   const pageSize = parseInt(url.searchParams.get("pageSize") ?? "25", 10);
+
+  // Fallback to Redis if SQLite has no data for this queue (still indexing)
+  if (!search && getQueueJobCount(queueName) === 0) {
+    const statusMap: Record<string, string> = { waiting: "wait", active: "active", completed: "completed", failed: "failed", delayed: "delayed" };
+    const redisStatus = (state && state !== "all") ? (statusMap[state] ?? "latest") as "wait" | "active" | "completed" | "failed" | "delayed" | "latest" : "latest";
+    const result = await getJobs(queueName, redisStatus, isNaN(page) ? 1 : page, isNaN(pageSize) ? 25 : Math.min(pageSize, 100));
+    return Response.json({
+      timestamp: new Date().toISOString(),
+      queue: queueName,
+      jobs: result.jobs.map((j) => ({ ...j, queue: queueName, data_preview: null })),
+      total: result.total,
+    });
+  }
 
   const result = queryJobs({
     queue: queueName,

@@ -171,6 +171,12 @@ export function getJobFromDb(queue: string, jobId: string): JobRow | null {
   return database.prepare("SELECT * FROM jobs WHERE queue = ? AND id = ?").get(queue, jobId) as JobRow | null;
 }
 
+export function getQueueJobCount(queue: string): number {
+  const database = getSqliteDb();
+  const result = database.prepare("SELECT COUNT(*) as total FROM jobs WHERE queue = ?").get(queue) as { total: number };
+  return result.total;
+}
+
 export async function syncQueue(queueName: string): Promise<void> {
   try {
     const { getAllJobs } = await import("../data/jobs.js");
@@ -194,9 +200,7 @@ export async function fullSync(): Promise<void> {
   try {
     const { discoverQueueNames } = await import("../data/queues.js");
     const queues = await discoverQueueNames();
-    for (const queueName of queues) {
-      await syncQueue(queueName);
-    }
+    await Promise.allSettled(queues.map((q) => syncQueue(q)));
   } catch (error) {
     console.error("SQLite full sync failed:", error);
   }

@@ -1,4 +1,4 @@
-import type { QueueStats, JobRow, JobDetail, GlobalMetrics } from "./types";
+import type { QueueStats, JobRow, JobDetail, GlobalMetrics, Scheduler } from "./types";
 
 const BASE = "/api";
 
@@ -40,6 +40,19 @@ export async function getJobDetail(
 ): Promise<{ job: JobDetail }> {
   return fetchJson(
     `${BASE}/queues/${encodeURIComponent(queue)}/jobs/${encodeURIComponent(jobId)}`,
+  );
+}
+
+export async function getSchedulers(queue: string): Promise<{ schedulers: Scheduler[] }> {
+  return fetchJson(`${BASE}/queues/${encodeURIComponent(queue)}/schedulers`);
+}
+
+export async function getSchedulerDetail(
+  queue: string,
+  key: string,
+): Promise<{ scheduler: Scheduler }> {
+  return fetchJson(
+    `${BASE}/queues/${encodeURIComponent(queue)}/schedulers/${encodeURIComponent(key)}`,
   );
 }
 

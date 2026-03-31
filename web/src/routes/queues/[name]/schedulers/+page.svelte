@@ -1,17 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { page } from "$app/stores";
+  import { getSchedulers } from "$lib/api";
+  import type { Scheduler } from "$lib/types";
 
   let queueName = $derived($page.params.name);
-  let schedulers: any[] = $state([]);
+  let schedulers: Scheduler[] = $state([]);
   let loading = $state(true);
 
   onMount(async () => {
     try {
-      const res = await fetch(
-        `/api/queues/${encodeURIComponent(queueName)}/schedulers`,
-      );
-      const data = await res.json();
+      const data = await getSchedulers(queueName);
       schedulers = data.schedulers;
     } catch (e) {
       console.error("Failed to fetch schedulers", e);
@@ -20,7 +19,7 @@
     }
   });
 
-  function formatSchedule(s: any): string {
+  function formatSchedule(s: Scheduler): string {
     if (s.pattern) return s.pattern;
     if (s.every) return `every ${s.every}ms`;
     return "—";
