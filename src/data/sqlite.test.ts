@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { setConfig } from "../src/config.js";
+import { setConfig } from "../config.js";
 import {
   closeSqliteDb,
   createSqliteDb,
@@ -10,7 +10,7 @@ import {
   queryJobs,
   upsertJobs,
   type JobRow,
-} from "../src/data/sqlite.js";
+} from "./sqlite.js";
 
 const TEST_DB_PATH = `${import.meta.dirname}/test-sqlite.db`;
 

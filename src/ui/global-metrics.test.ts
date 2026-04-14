@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { formatNumber } from "../src/ui/global-metrics.js";
+import { formatNumber } from "./global-metrics.js";
 
 describe("formatNumber", () => {
   describe("small numbers (< 1000)", () => {

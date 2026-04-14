@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { getStatusFromKey } from "../src/ui/status-filter.js";
+import { getStatusFromKey } from "./status-filter.js";
 
 describe("getStatusFromKey", () => {
   describe("valid keys", () => {

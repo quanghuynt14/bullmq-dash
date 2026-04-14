@@ -6,7 +6,7 @@ import {
   parseCliArgs,
   parseNumericFlag,
   parseQueueNames,
-} from "../src/config.js";
+} from "./config.js";
 
 const packageJson = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
