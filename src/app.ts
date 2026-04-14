@@ -6,6 +6,8 @@ import { getJobSchedulerDetail } from "./data/schedulers.js";
 import { disconnectRedis } from "./data/redis.js";
 import { closeAllQueues } from "./data/queues.js";
 import { getConfig } from "./config.js";
+import { createSqliteDb, closeSqliteDb } from "./data/sqlite.js";
+import { fullSync } from "./data/sync.js";
 
 // UI imports
 import { createLayout, updateHeaderStatus, type LayoutElements } from "./ui/layout.js";
@@ -62,6 +64,7 @@ export class App {
   private renderer: CliRenderer | null = null;
   private elements: AppElements | null = null;
   private unsubscribeState: (() => void) | null = null;
+  private syncIntervalId: ReturnType<typeof setInterval> | null = null;
 
   async start(): Promise<void> {
     // Create renderer
@@ -83,8 +86,19 @@ export class App {
       this.render();
     });
 
+    // Initialize SQLite (always on — core infrastructure)
+    createSqliteDb();
+
     // Start polling
     pollingManager.start();
+
+    // Run initial full sync in background (non-blocking)
+    fullSync().catch(() => {});
+
+    // Schedule background full sync every 60s
+    this.syncIntervalId = setInterval(() => {
+      fullSync().catch(() => {});
+    }, 60_000);
 
     // Initial render
     this.render();
@@ -485,8 +499,12 @@ export class App {
   }
 
   private async cleanup(): Promise<void> {
-    // Stop polling
+    // Stop polling and background sync
     pollingManager.stop();
+    if (this.syncIntervalId) {
+      clearInterval(this.syncIntervalId);
+      this.syncIntervalId = null;
+    }
 
     // Unsubscribe from state
     if (this.unsubscribeState) {
@@ -496,6 +514,9 @@ export class App {
     // Close connections
     await closeAllQueues();
     await disconnectRedis();
+
+    // Close SQLite
+    closeSqliteDb();
 
     // Destroy renderer
     if (this.renderer) {

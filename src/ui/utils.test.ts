@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { StyledText, t, fg } from "@opentui/core";
-import { concatStyledText } from "../src/ui/utils.js";
+import { concatStyledText } from "./utils.js";
 
 describe("concatStyledText", () => {
   describe("string inputs", () => {

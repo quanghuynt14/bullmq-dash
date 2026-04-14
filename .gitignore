@@ -27,3 +27,6 @@ npm-debug.log*
 
 # npm
 .npmrc
+
+# Worktrees
+.worktrees/

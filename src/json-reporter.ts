@@ -4,6 +4,7 @@ import { getAllJobs, getJobDetail, VALID_JOB_STATUSES } from "./data/jobs.js";
 import type { JsonJobStatus } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
 import { writeError } from "./errors.js";
+import { createSqliteDb, closeSqliteDb, upsertJobs } from "./data/sqlite.js";
 import type { Config, Subcommand } from "./config.js";
 import { setConfig } from "./config.js";
 import {
@@ -46,6 +47,21 @@ async function fetchQueuesOverview() {
 
 async function fetchJobsList(queueName: string, jobState?: JsonJobStatus, maxResults?: number) {
   const { jobs, total } = await getAllJobs(queueName, jobState, maxResults);
+
+  // Side effect: populate SQLite cache with fetched jobs (best-effort)
+  try {
+    upsertJobs(
+      queueName,
+      jobs.map((j) => ({
+        id: j.id,
+        name: j.name,
+        state: j.state,
+        timestamp: j.timestamp,
+      })),
+    );
+  } catch {
+    // SQLite upsert is best-effort; don't break CLI output on failure
+  }
 
   return {
     timestamp: new Date().toISOString(),
@@ -134,6 +150,7 @@ function validateJobState(jobState: string | undefined): JsonJobStatus | undefin
 async function cleanup(): Promise<void> {
   await closeAllQueues();
   await disconnectRedis();
+  closeSqliteDb();
 }
 
 // ── Route and execute ───────────────────────────────────────────────────
@@ -209,6 +226,9 @@ export async function runJsonMode(
     );
     process.exit(3);
   }
+
+  // Initialize SQLite (always on — core infrastructure)
+  createSqliteDb();
 
   try {
     const result = await routeAndFetch(subcommand);
