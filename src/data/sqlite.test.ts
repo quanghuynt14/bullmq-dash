@@ -9,6 +9,14 @@ import {
   getSqliteDb,
   queryJobs,
   upsertJobs,
+  upsertJobStubs,
+  getSyncState,
+  upsertSyncState,
+  createSyncStaging,
+  insertStagingBatch,
+  deleteStaleByStagingDiff,
+  findNewIdsByStagingDiff,
+  dropSyncStaging,
   type JobRow,
 } from "./sqlite.js";
 
@@ -407,7 +415,7 @@ describe("FTS5 full-text search", () => {
   it("search by name uses FTS5 and returns matches", () => {
     const result = queryJobs({ queue: "email", search: "send" });
     expect(result.total).toBe(4);
-    expect(result.jobs.every((j) => j.name.includes("send"))).toBe(true);
+    expect(result.jobs.every((j) => j.name?.includes("send"))).toBe(true);
   });
 
   it("search by name prefix works with FTS5", () => {
@@ -471,5 +479,184 @@ describe("FTS5 full-text search", () => {
     const result = queryJobs({ queue: "email", search: "send", sort: "timestamp", order: "asc" });
     expect(result.jobs[0]!.id).toBe("1");
     expect(result.jobs[result.jobs.length - 1]!.id).toBe("5");
+  });
+});
+
+describe("upsertJobStubs", () => {
+  it("inserts job stubs with null name and timestamp", () => {
+    upsertJobStubs("email", [
+      { id: "1", state: "active" },
+      { id: "2", state: "completed" },
+    ]);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id").all("email") as JobRow[];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.id).toBe("1");
+    expect(rows[0]!.state).toBe("active");
+    expect(rows[0]!.name).toBeNull();
+    expect(rows[0]!.timestamp).toBeNull();
+  });
+
+  it("updates state without overwriting non-null name", () => {
+    upsertJobs("email", [
+      { id: "1", name: "send-email", state: "active", timestamp: 1000 },
+    ]);
+    upsertJobStubs("email", [{ id: "1", state: "completed" }]);
+
+    const db = getSqliteDb();
+    const row = db.prepare("SELECT * FROM jobs WHERE queue = ? AND id = ?").get("email", "1") as JobRow;
+    expect(row.state).toBe("completed");
+    expect(row.name).toBe("send-email");
+    expect(row.timestamp).toBe(1000);
+  });
+
+  it("does not overwrite name with null on stub upsert", () => {
+    upsertJobs("email", [
+      { id: "1", name: "my-job", state: "active", timestamp: 5000, data: { key: "val" } },
+    ]);
+    upsertJobStubs("email", [{ id: "1", state: "failed" }]);
+
+    const row = getJobFromDb("email", "1");
+    expect(row!.state).toBe("failed");
+    expect(row!.name).toBe("my-job");
+    expect(row!.timestamp).toBe(5000);
+    expect(row!.data_preview).not.toBeNull();
+  });
+});
+
+describe("sync_state", () => {
+  it("getSyncState returns null for unknown queue", () => {
+    const state = getSyncState("nonexistent");
+    expect(state).toBeNull();
+  });
+
+  it("upsertSyncState creates new entry", () => {
+    upsertSyncState("email", { jobCount: 100, syncedAt: 1000 });
+
+    const state = getSyncState("email");
+    expect(state).not.toBeNull();
+    expect(state!.queue).toBe("email");
+    expect(state!.jobCount).toBe(100);
+    expect(state!.syncedAt).toBe(1000);
+  });
+
+  it("upsertSyncState updates existing entry", () => {
+    upsertSyncState("email", { jobCount: 100, syncedAt: 1000 });
+    upsertSyncState("email", { jobCount: 200, syncedAt: 2000 });
+
+    const state = getSyncState("email");
+    expect(state!.jobCount).toBe(200);
+    expect(state!.syncedAt).toBe(2000);
+  });
+
+  it("handles queues independently", () => {
+    upsertSyncState("email", { jobCount: 10, syncedAt: 1000 });
+    upsertSyncState("sms", { jobCount: 20, syncedAt: 2000 });
+
+    expect(getSyncState("email")!.jobCount).toBe(10);
+    expect(getSyncState("sms")!.jobCount).toBe(20);
+  });
+});
+
+describe("staging table diff", () => {
+  beforeEach(() => {
+    upsertJobs("email", [
+      { id: "1", name: "job-a", state: "active", timestamp: 1000 },
+      { id: "2", name: "job-b", state: "completed", timestamp: 2000 },
+      { id: "3", name: "job-c", state: "failed", timestamp: 3000 },
+    ]);
+  });
+
+  it("finds new IDs not in jobs table", () => {
+    createSyncStaging();
+    insertStagingBatch("email", [
+      { id: "1", state: "active" },
+      { id: "2", state: "completed" },
+      { id: "3", state: "failed" },
+      { id: "4", state: "active" },
+      { id: "5", state: "delayed" },
+    ]);
+
+    const newIds = findNewIdsByStagingDiff("email");
+    expect(newIds.sort()).toEqual(["4", "5"]);
+    dropSyncStaging();
+  });
+
+  it("deletes stale jobs not in staging", () => {
+    createSyncStaging();
+    insertStagingBatch("email", [
+      { id: "1", state: "active" },
+      { id: "3", state: "failed" },
+    ]);
+
+    const deleted = deleteStaleByStagingDiff("email");
+    expect(deleted).toBe(1);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT id FROM jobs WHERE queue = ? ORDER BY id").all("email") as Array<{ id: string }>;
+    expect(rows.map((r) => r.id)).toEqual(["1", "3"]);
+    dropSyncStaging();
+  });
+
+  it("deletes all jobs when staging is empty for queue", () => {
+    createSyncStaging();
+    // Insert staging for a different queue
+    insertStagingBatch("sms", [{ id: "x", state: "active" }]);
+
+    const deleted = deleteStaleByStagingDiff("email");
+    expect(deleted).toBe(3);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("email") as JobRow[];
+    expect(rows).toHaveLength(0);
+    dropSyncStaging();
+  });
+
+  it("updates state for changed jobs via upsertJobStubs", () => {
+    createSyncStaging();
+    insertStagingBatch("email", [
+      { id: "1", state: "completed" },
+      { id: "2", state: "completed" },
+      { id: "3", state: "active" },
+    ]);
+
+    // Find IDs whose state changed
+    const db = getSqliteDb();
+    const changed = db.prepare(`
+      SELECT s.id, s.state FROM sync_staging s
+      JOIN jobs j ON s.queue = j.queue AND s.id = j.id
+      WHERE s.queue = ? AND s.state != j.state
+    `).all("email") as Array<{ id: string; state: string }>;
+
+    expect(changed).toHaveLength(2);
+    expect(changed.map((c) => c.id).sort()).toEqual(["1", "3"]);
+
+    // Apply state updates via stubs
+    upsertJobStubs("email", changed);
+
+    const row1 = getJobFromDb("email", "1");
+    expect(row1!.state).toBe("completed");
+    expect(row1!.name).toBe("job-a"); // preserved
+
+    const row3 = getJobFromDb("email", "3");
+    expect(row3!.state).toBe("active");
+    expect(row3!.name).toBe("job-c"); // preserved
+
+    dropSyncStaging();
+  });
+
+  it("handles large batches in staging", () => {
+    createSyncStaging();
+    const batch: Array<{ id: string; state: string }> = [];
+    for (let i = 0; i < 5000; i++) {
+      batch.push({ id: String(i), state: "active" });
+    }
+    insertStagingBatch("email", batch);
+
+    const db = getSqliteDb();
+    const count = db.prepare("SELECT COUNT(*) as total FROM sync_staging WHERE queue = ?").get("email") as { total: number };
+    expect(count.total).toBe(5000);
+    dropSyncStaging();
   });
 });

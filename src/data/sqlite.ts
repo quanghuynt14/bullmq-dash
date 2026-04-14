@@ -7,9 +7,9 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT NOT NULL,
   queue TEXT NOT NULL,
-  name TEXT NOT NULL,
+  name TEXT,
   state TEXT NOT NULL,
-  timestamp INTEGER NOT NULL,
+  timestamp INTEGER,
   data_preview TEXT,
   PRIMARY KEY (queue, id)
 );
@@ -48,6 +48,14 @@ CREATE TRIGGER IF NOT EXISTS jobs_au AFTER UPDATE ON jobs BEGIN
 END;
 `;
 
+const SYNC_STATE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS sync_state (
+  queue TEXT PRIMARY KEY,
+  job_count INTEGER NOT NULL DEFAULT 0,
+  synced_at INTEGER NOT NULL DEFAULT 0
+);
+`;
+
 export function createSqliteDb(dbPath?: string): Database {
   const config = getConfig();
   const path = dbPath ?? `/tmp/bullmq-dash-${config.redis.host}-${config.redis.port}.db`;
@@ -56,6 +64,7 @@ export function createSqliteDb(dbPath?: string): Database {
   db.exec("PRAGMA synchronous=NORMAL");
   db.exec(SCHEMA);
   db.exec(FTS_SCHEMA);
+  db.exec(SYNC_STATE_SCHEMA);
   return db;
 }
 
@@ -76,9 +85,9 @@ export function closeSqliteDb(): void {
 export interface JobRow {
   id: string;
   queue: string;
-  name: string;
+  name: string | null;
   state: string;
-  timestamp: number;
+  timestamp: number | null;
   data_preview: string | null;
 }
 
@@ -249,4 +258,169 @@ export function getQueueJobCount(queue: string): number {
 export function rebuildFtsIndex(): void {
   const database = getSqliteDb();
   database.exec("INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild')");
+}
+
+/**
+ * Upsert job stubs — only id, queue, and state.
+ *
+ * Used by incremental sync to cheaply record job existence and state
+ * without fetching full job data from Redis. Preserves existing name,
+ * timestamp, and data_preview if the job already exists.
+ */
+export function upsertJobStubs(
+  queue: string,
+  jobs: Array<{ id: string; state: string }>,
+): void {
+  const database = getSqliteDb();
+  const stmt = database.prepare(`
+    INSERT INTO jobs (id, queue, name, state, timestamp, data_preview)
+    VALUES (?, ?, NULL, ?, NULL, NULL)
+    ON CONFLICT(queue, id) DO UPDATE SET
+      state = excluded.state
+  `);
+
+  const upsert = database.transaction((items: typeof jobs) => {
+    for (const job of items) {
+      stmt.run(job.id, queue, job.state);
+    }
+  });
+
+  upsert(jobs);
+}
+
+export interface SyncState {
+  queue: string;
+  jobCount: number;
+  syncedAt: number;
+}
+
+export function getSyncState(queue: string): SyncState | null {
+  const database = getSqliteDb();
+  const row = database.prepare(
+    "SELECT queue, job_count, synced_at FROM sync_state WHERE queue = ?",
+  ).get(queue) as { queue: string; job_count: number; synced_at: number } | null;
+
+  if (!row) return null;
+
+  return {
+    queue: row.queue,
+    jobCount: row.job_count,
+    syncedAt: row.synced_at,
+  };
+}
+
+export function upsertSyncState(
+  queue: string,
+  input: { jobCount: number; syncedAt: number },
+): void {
+  const database = getSqliteDb();
+  database.prepare(`
+    INSERT INTO sync_state (queue, job_count, synced_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(queue) DO UPDATE SET
+      job_count = excluded.job_count,
+      synced_at = excluded.synced_at
+  `).run(queue, input.jobCount, input.syncedAt);
+}
+
+/**
+ * Create the sync_staging temporary table.
+ * Called at the start of each sync cycle, dropped at the end.
+ */
+export function createSyncStaging(): void {
+  const database = getSqliteDb();
+  database.exec(`
+    DROP TABLE IF EXISTS sync_staging;
+    CREATE TABLE sync_staging (
+      id TEXT NOT NULL,
+      queue TEXT NOT NULL,
+      state TEXT NOT NULL,
+      PRIMARY KEY (queue, id)
+    );
+  `);
+}
+
+/**
+ * Insert a batch of job IDs + states into the staging table.
+ * Called repeatedly during paginated getRanges() fetching.
+ */
+export function insertStagingBatch(
+  queue: string,
+  jobs: Array<{ id: string; state: string }>,
+): void {
+  if (jobs.length === 0) return;
+  const database = getSqliteDb();
+  const stmt = database.prepare(
+    "INSERT OR IGNORE INTO sync_staging (id, queue, state) VALUES (?, ?, ?)",
+  );
+
+  const insert = database.transaction((items: typeof jobs) => {
+    for (const job of items) {
+      stmt.run(job.id, queue, job.state);
+    }
+  });
+
+  insert(jobs);
+}
+
+/**
+ * Find job IDs that exist in staging but not in the jobs table.
+ * These are new jobs that need to be inserted.
+ */
+export function findNewIdsByStagingDiff(queue: string): string[] {
+  const database = getSqliteDb();
+  const rows = database.prepare(`
+    SELECT s.id FROM sync_staging s
+    LEFT JOIN jobs j ON s.queue = j.queue AND s.id = j.id
+    WHERE s.queue = ? AND j.id IS NULL
+  `).all(queue) as Array<{ id: string }>;
+
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Find job IDs that exist in both staging and jobs table but have different states.
+ * Returns the staging (new) state for each changed job.
+ */
+export function findChangedIdsByStagingDiff(
+  queue: string,
+): Array<{ id: string; state: string }> {
+  const database = getSqliteDb();
+  return database.prepare(`
+    SELECT s.id, s.state FROM sync_staging s
+    JOIN jobs j ON s.queue = j.queue AND s.id = j.id
+    WHERE s.queue = ? AND s.state != j.state
+  `).all(queue) as Array<{ id: string; state: string }>;
+}
+
+/**
+ * Delete jobs that exist in the jobs table but NOT in staging.
+ * These are stale jobs that were removed from Redis.
+ * Returns the number of deleted rows.
+ */
+export function deleteStaleByStagingDiff(queue: string): number {
+  const database = getSqliteDb();
+  const count = (database.prepare(`
+    SELECT COUNT(*) as total FROM jobs j
+    LEFT JOIN sync_staging s ON j.queue = s.queue AND j.id = s.id
+    WHERE j.queue = ? AND s.id IS NULL
+  `).get(queue) as { total: number }).total;
+
+  if (count > 0) {
+    database.prepare(`
+      DELETE FROM jobs WHERE queue = ? AND id NOT IN (
+        SELECT id FROM sync_staging WHERE queue = ?
+      )
+    `).run(queue, queue);
+  }
+
+  return count;
+}
+
+/**
+ * Drop the staging table. Called at the end of each sync cycle.
+ */
+export function dropSyncStaging(): void {
+  const database = getSqliteDb();
+  database.exec("DROP TABLE IF EXISTS sync_staging");
 }
