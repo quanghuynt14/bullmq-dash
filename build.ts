@@ -1,5 +1,4 @@
-import { rmSync, writeFileSync, readFileSync, cpSync, existsSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { rmSync, writeFileSync, readFileSync } from "node:fs";
 
 // Clean dist folder
 rmSync("./dist", { recursive: true, force: true });
@@ -41,18 +40,6 @@ const exitCode = await tsc.exited;
 if (exitCode !== 0) {
   console.error("Declaration generation failed");
   process.exit(1);
-}
-
-// Copy web build output
-const webBuildDir = resolve(import.meta.dirname, "web/build");
-const webOutputDir = resolve(import.meta.dirname, "dist/web");
-
-if (existsSync(webBuildDir)) {
-  mkdirSync(webOutputDir, { recursive: true });
-  cpSync(webBuildDir, webOutputDir, { recursive: true });
-  console.log("Copied web build to dist/web/");
-} else {
-  console.warn("Warning: web/build not found. Run 'bun run build:web' first.");
 }
 
 console.log("Build completed successfully");

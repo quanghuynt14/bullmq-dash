@@ -10,7 +10,7 @@ import {
   queryJobs,
   upsertJobs,
   type JobRow,
-} from "../src/web/sqlite.js";
+} from "../src/data/sqlite.js";
 
 const TEST_DB_PATH = `${import.meta.dirname}/test-sqlite.db`;
 
@@ -19,8 +19,6 @@ beforeEach(() => {
     redis: { host: "localhost", port: 6379, db: 0 },
     pollInterval: 3000,
     prefix: "bull",
-    web: false,
-    webPort: 8080,
   });
   createSqliteDb(TEST_DB_PATH);
 });
@@ -384,5 +382,94 @@ describe("closeSqliteDb", () => {
     const row = getJobFromDb("email", "1");
     expect(row).not.toBeNull();
     expect(row!.id).toBe("1");
+  });
+});
+
+describe("FTS5 full-text search", () => {
+  beforeEach(() => {
+    upsertJobs("email", [
+      { id: "1", name: "send-welcome-email", state: "completed", timestamp: 1000, data: { to: "alice@example.com" } },
+      { id: "2", name: "send-newsletter", state: "active", timestamp: 3000, data: { subject: "Weekly digest" } },
+      { id: "3", name: "send-receipt", state: "completed", timestamp: 2000, data: { orderId: "ORD-123" } },
+      { id: "4", name: "process-payment", state: "failed", timestamp: 4000, data: { amount: 99.99 } },
+      { id: "5", name: "send-alert-notification", state: "active", timestamp: 5000 },
+    ]);
+  });
+
+  it("FTS5 virtual table is created", () => {
+    const db = getSqliteDb();
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs_fts'")
+      .all() as Array<{ name: string }>;
+    expect(tables).toHaveLength(1);
+  });
+
+  it("search by name uses FTS5 and returns matches", () => {
+    const result = queryJobs({ queue: "email", search: "send" });
+    expect(result.total).toBe(4);
+    expect(result.jobs.every((j) => j.name.includes("send"))).toBe(true);
+  });
+
+  it("search by name prefix works with FTS5", () => {
+    const result = queryJobs({ queue: "email", search: "news" });
+    expect(result.total).toBe(1);
+    expect(result.jobs[0]!.name).toBe("send-newsletter");
+  });
+
+  it("search finds matches in data_preview", () => {
+    const result = queryJobs({ queue: "email", search: "alice" });
+    expect(result.total).toBe(1);
+    expect(result.jobs[0]!.id).toBe("1");
+  });
+
+  it("search combined with state filter", () => {
+    const result = queryJobs({ queue: "email", search: "send", state: "completed" });
+    expect(result.total).toBe(2);
+    expect(result.jobs.every((j) => j.state === "completed")).toBe(true);
+  });
+
+  it("FTS5 respects pagination", () => {
+    const page1 = queryJobs({ queue: "email", search: "send", page: 1, pageSize: 2 });
+    expect(page1.jobs).toHaveLength(2);
+    expect(page1.total).toBe(4);
+
+    const page2 = queryJobs({ queue: "email", search: "send", page: 2, pageSize: 2 });
+    expect(page2.jobs).toHaveLength(2);
+    expect(page2.total).toBe(4);
+  });
+
+  it("FTS5 search returns empty for no match", () => {
+    const result = queryJobs({ queue: "email", search: "zzz_not_found" });
+    expect(result.total).toBe(0);
+    expect(result.jobs).toHaveLength(0);
+  });
+
+  it("FTS5 index stays in sync after updates", () => {
+    // Update job name
+    upsertJobs("email", [{ id: "1", name: "updated-job-name", state: "completed", timestamp: 1000 }]);
+
+    // Old name should not match
+    const oldResult = queryJobs({ queue: "email", search: "welcome" });
+    expect(oldResult.total).toBe(0);
+
+    // New name should match
+    const newResult = queryJobs({ queue: "email", search: "updated" });
+    expect(newResult.total).toBe(1);
+    expect(newResult.jobs[0]!.id).toBe("1");
+  });
+
+  it("FTS5 index stays in sync after deletes", () => {
+    deleteStaleJobs("email", ["2", "3"]);
+
+    // Deleted jobs should not appear in search
+    const result = queryJobs({ queue: "email", search: "send" });
+    // Only jobs 2 and 3 remain, both have "send" in name
+    expect(result.total).toBe(2);
+  });
+
+  it("sort order works with FTS5 search", () => {
+    const result = queryJobs({ queue: "email", search: "send", sort: "timestamp", order: "asc" });
+    expect(result.jobs[0]!.id).toBe("1");
+    expect(result.jobs[result.jobs.length - 1]!.id).toBe("5");
   });
 });

@@ -4,7 +4,7 @@ import { getJobs } from "./data/jobs.js";
 import { getJobSchedulers } from "./data/schedulers.js";
 import { getGlobalMetrics, resetMetricsTracker } from "./data/metrics.js";
 import { stateManager } from "./state.js";
-import { upsertJobs } from "./web/sqlite.js";
+import { upsertJobs } from "./data/sqlite.js";
 
 class PollingManager {
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -97,22 +97,19 @@ class PollingManager {
             schedulersTotalPages: 0,
           });
 
-          // Sync fetched jobs to SQLite sidecar when in web mode
-          const config = getConfig();
-          if (config.web) {
-            try {
-              upsertJobs(
-                selectedQueue.name,
-                jobsResult.jobs.map((j) => ({
-                  id: j.id,
-                  name: j.name,
-                  state: j.state,
-                  timestamp: j.timestamp,
-                })),
-              );
-            } catch {
-              // SQLite sync failure is non-critical
-            }
+          // Upsert fetched jobs into SQLite (best-effort, non-blocking)
+          try {
+            upsertJobs(
+              selectedQueue.name,
+              jobsResult.jobs.map((j) => ({
+                id: j.id,
+                name: j.name,
+                state: j.state,
+                timestamp: j.timestamp,
+              })),
+            );
+          } catch {
+            // SQLite upsert is best-effort; don't break polling on failure
           }
         }
       } else {

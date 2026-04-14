@@ -29,9 +29,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "dev": "bun src/index.ts",
-    "dev:web": "cd web && bun run dev",
-    "build": "bun run build:web && bun build.ts",
-    "build:web": "cd web && bun run build",
+    "build": "bun build.ts",
     "start": "bun dist/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
