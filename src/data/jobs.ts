@@ -1,4 +1,4 @@
-import type { Job } from "bullmq";
+import type { Job, JobType } from "bullmq";
 import { getQueue } from "./queues.js";
 
 export type JobListView =
@@ -41,6 +41,12 @@ export interface JobsResult {
 
 const PAGE_SIZE = 25;
 const DEFAULT_MAX_RESULTS = 1000;
+
+/** All job states we sync (BullMQ JobType values). */
+const SYNC_JOB_TYPES: JobType[] = ["active", "waiting", "completed", "failed", "delayed", "prioritized"];
+
+/** Number of IDs to fetch per Redis call during sync. */
+const SYNC_PAGE_SIZE = 5000;
 
 /**
  * Valid job state values for the --job-state flag
@@ -146,6 +152,42 @@ export async function getAllJobs(
   }));
 
   return { jobs: jobSummaries, total };
+}
+
+/**
+ * Paginate through all job IDs in a queue, yielding batches.
+ *
+ * Uses `queue.getRanges()` per state, paginating in chunks of SYNC_PAGE_SIZE.
+ * Each yielded batch contains `{ id, state }` pairs ready for staging insertion.
+ *
+ * This never holds more than one page of IDs in memory at a time, making it
+ * safe for queues with millions of jobs.
+ */
+export async function* getAllJobIds(
+  queueName: string,
+): AsyncGenerator<Array<{ id: string; state: string }>> {
+  const queue = getQueue(queueName);
+
+  for (const type of SYNC_JOB_TYPES) {
+    let offset = 0;
+    while (true) {
+      const end = offset + SYNC_PAGE_SIZE - 1;
+      const ids = await queue.getRanges([type], offset, end);
+
+      if (ids.length === 0) break;
+
+      const batch = ids
+        .filter((id) => id != null && id !== "")
+        .map((id) => ({ id, state: type as string }));
+
+      if (batch.length > 0) {
+        yield batch;
+      }
+
+      if (ids.length < SYNC_PAGE_SIZE) break;
+      offset += SYNC_PAGE_SIZE;
+    }
+  }
 }
 
 /**
