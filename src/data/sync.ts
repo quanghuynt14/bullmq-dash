@@ -1,72 +1,128 @@
-import { getAllJobs } from "./jobs.js";
+import { getAllJobIds } from "./jobs.js";
 import { discoverQueueNames } from "./queues.js";
-import { upsertJobs, deleteStaleJobs } from "./sqlite.js";
+import {
+  createSyncStaging,
+  insertStagingBatch,
+  findNewIdsByStagingDiff,
+  findChangedIdsByStagingDiff,
+  deleteStaleByStagingDiff,
+  dropSyncStaging,
+  upsertJobStubs,
+  upsertSyncState,
+  getSqliteDb,
+} from "./sqlite.js";
 
-const DEFAULT_MAX_SYNC_JOBS = 10_000;
+export interface SyncResult {
+  inserted: number;
+  stateUpdated: number;
+  deleted: number;
+  total: number;
+}
 
 /**
- * Sync a single queue from Redis to SQLite.
+ * Sync a single queue from Redis to SQLite — incrementally at scale.
  *
- * Fetches all jobs, upserts them into SQLite, then deletes stale entries
- * that no longer exist in Redis. The deleteStaleJobs call is the P0 fix —
- * without it, jobs that are removed from Redis accumulate as ghost rows.
+ * Uses a staging table for SQL-side diffing:
+ * 1. Paginate all job IDs from Redis into staging (5000 at a time)
+ * 2. SQL JOIN to find new IDs → insert as stubs (id + state, no data)
+ * 3. SQL JOIN to find changed states → update state only
+ * 4. SQL LEFT JOIN to find stale IDs → delete
+ * 5. Update sync_state metadata
+ *
+ * Name, timestamp, and data_preview are populated lazily when jobs are
+ * viewed in TUI or fetched via CLI — not during background sync.
  */
-export async function syncQueue(
-  queueName: string,
-  maxResults: number = DEFAULT_MAX_SYNC_JOBS,
-): Promise<{ upserted: number; deleted: number }> {
+export async function syncQueue(queueName: string): Promise<SyncResult> {
   try {
-    const result = await getAllJobs(queueName, undefined, maxResults);
+    createSyncStaging();
 
-    const rows = result.jobs.map((j) => ({
-      id: j.id,
-      name: j.name,
-      state: j.state,
-      timestamp: j.timestamp,
-    }));
-
-    // Batch upsert all jobs at once (not one-at-a-time like the old code)
-    if (rows.length > 0) {
-      upsertJobs(queueName, rows);
+    // Step 1: Paginate all IDs from Redis into staging
+    let total = 0;
+    for await (const batch of getAllJobIds(queueName)) {
+      insertStagingBatch(queueName, batch);
+      total += batch.length;
     }
 
-    // P0 fix: delete stale jobs that no longer exist in Redis
-    const activeIds = rows.map((r) => r.id);
-    const deleted = deleteStaleJobs(queueName, activeIds);
+    // Step 2: Find and insert new jobs as stubs
+    const newIds = findNewIdsByStagingDiff(queueName);
+    if (newIds.length > 0) {
+      // Look up the state for each new ID from staging
+      const database = getSqliteDb();
+      const BATCH = 900;
+      const stubs: Array<{ id: string; state: string }> = [];
 
-    return { upserted: rows.length, deleted };
+      for (let i = 0; i < newIds.length; i += BATCH) {
+        const chunk = newIds.slice(i, i + BATCH);
+        const placeholders = chunk.map(() => "?").join(",");
+        const rows = database.prepare(
+          `SELECT id, state FROM sync_staging WHERE queue = ? AND id IN (${placeholders})`,
+        ).all(queueName, ...chunk) as Array<{ id: string; state: string }>;
+        stubs.push(...rows);
+      }
+
+      upsertJobStubs(queueName, stubs);
+    }
+
+    // Step 3: Find and update changed states
+    const changed = findChangedIdsByStagingDiff(queueName);
+    if (changed.length > 0) {
+      upsertJobStubs(queueName, changed);
+    }
+
+    // Step 4: Delete stale jobs
+    const deleted = deleteStaleByStagingDiff(queueName);
+
+    // Step 5: Update sync state
+    upsertSyncState(queueName, {
+      jobCount: total,
+      syncedAt: Date.now(),
+    });
+
+    dropSyncStaging();
+
+    return {
+      inserted: newIds.length,
+      stateUpdated: changed.length,
+      deleted,
+      total,
+    };
   } catch (error) {
     console.error(`SQLite sync failed for queue "${queueName}":`, error);
-    return { upserted: 0, deleted: 0 };
+    try {
+      dropSyncStaging();
+    } catch {
+      // ignore cleanup errors
+    }
+    return { inserted: 0, stateUpdated: 0, deleted: 0, total: 0 };
   }
 }
 
 /**
- * Full sync: discover all queues and sync each one.
+ * Full sync: discover all queues and sync each one sequentially.
  *
- * Uses Promise.allSettled so one queue failure doesn't block the others.
+ * Sequential because they share the same staging table. Each queue
+ * creates/drops the staging table in its own syncQueue() call.
  */
-export async function fullSync(
-  maxResultsPerQueue: number = DEFAULT_MAX_SYNC_JOBS,
-): Promise<{ queues: number; totalUpserted: number; totalDeleted: number }> {
+export async function fullSync(): Promise<{
+  queues: number;
+  totalInserted: number;
+  totalDeleted: number;
+}> {
   try {
     const queues = await discoverQueueNames();
-    const results = await Promise.allSettled(
-      queues.map((q) => syncQueue(q, maxResultsPerQueue)),
-    );
 
-    let totalUpserted = 0;
+    let totalInserted = 0;
     let totalDeleted = 0;
-    for (const result of results) {
-      if (result.status === "fulfilled") {
-        totalUpserted += result.value.upserted;
-        totalDeleted += result.value.deleted;
-      }
+
+    for (const q of queues) {
+      const result = await syncQueue(q);
+      totalInserted += result.inserted;
+      totalDeleted += result.deleted;
     }
 
-    return { queues: queues.length, totalUpserted, totalDeleted };
+    return { queues: queues.length, totalInserted, totalDeleted };
   } catch (error) {
     console.error("SQLite full sync failed:", error);
-    return { queues: 0, totalUpserted: 0, totalDeleted: 0 };
+    return { queues: 0, totalInserted: 0, totalDeleted: 0 };
   }
 }
