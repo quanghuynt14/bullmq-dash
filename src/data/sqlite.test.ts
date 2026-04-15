@@ -579,7 +579,7 @@ describe("staging table diff", () => {
     ]);
 
     const newIds = findNewIdsByStagingDiff("email");
-    expect(newIds.sort()).toEqual(["4", "5"]);
+    expect(newIds.toSorted()).toEqual(["4", "5"]);
     dropSyncStaging();
   });
 
@@ -630,7 +630,7 @@ describe("staging table diff", () => {
     `).all("email") as Array<{ id: string; state: string }>;
 
     expect(changed).toHaveLength(2);
-    expect(changed.map((c) => c.id).sort()).toEqual(["1", "3"]);
+    expect(changed.map((c) => c.id).toSorted()).toEqual(["1", "3"]);
 
     // Apply state updates via stubs
     upsertJobStubs("email", changed);
