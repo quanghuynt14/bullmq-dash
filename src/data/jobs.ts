@@ -69,6 +69,7 @@ export async function getAllJobs(
   queueName: string,
   status?: JsonJobStatus,
   maxResults: number = DEFAULT_MAX_RESULTS,
+  includeData: boolean = false,
 ): Promise<{ jobs: JobSummary[]; total: number }> {
   const queue = getQueue(queueName);
   const end = maxResults - 1;
@@ -144,12 +145,18 @@ export async function getAllJobs(
     }
   }
 
-  const jobSummaries: JobSummary[] = tagged.map(({ job, state }) => ({
-    id: job.id || "unknown",
-    name: job.name,
-    state,
-    timestamp: job.timestamp || 0,
-  }));
+  const jobSummaries: JobSummary[] = tagged.map(({ job, state }) => {
+    const summary: Record<string, unknown> = {
+      id: job.id || "unknown",
+      name: job.name,
+      state,
+      timestamp: job.timestamp || 0,
+    };
+    if (includeData) {
+      summary.data = job.data;
+    }
+    return summary as unknown as JobSummary;
+  });
 
   return { jobs: jobSummaries, total };
 }
@@ -198,6 +205,7 @@ export async function getJobs(
   status: JobListView,
   page: number = 1,
   pageSize: number = PAGE_SIZE,
+  includeData: boolean = false,
 ): Promise<JobsResult> {
   const queue = getQueue(queueName);
   const start = (page - 1) * pageSize;
@@ -296,12 +304,18 @@ export async function getJobs(
   }
 
   // Convert tagged jobs to summaries (no extra Redis calls needed)
-  const jobSummaries: JobSummary[] = tagged.map(({ job, state }) => ({
-    id: job.id || "unknown",
-    name: job.name,
-    state,
-    timestamp: job.timestamp || 0,
-  }));
+  const jobSummaries: JobSummary[] = tagged.map(({ job, state }) => {
+    const summary: Record<string, unknown> = {
+      id: job.id || "unknown",
+      name: job.name,
+      state,
+      timestamp: job.timestamp || 0,
+    };
+    if (includeData) {
+      summary.data = job.data;
+    }
+    return summary as unknown as JobSummary;
+  });
 
   return {
     jobs: jobSummaries,

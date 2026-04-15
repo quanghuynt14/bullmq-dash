@@ -46,7 +46,7 @@ async function fetchQueuesOverview() {
 // ── Jobs list ───────────────────────────────────────────────────────────
 
 async function fetchJobsList(queueName: string, jobState?: JsonJobStatus, maxResults?: number) {
-  const { jobs, total } = await getAllJobs(queueName, jobState, maxResults);
+  const { jobs, total } = await getAllJobs(queueName, jobState, maxResults, true);
 
   // Side effect: populate SQLite cache with fetched jobs (best-effort)
   try {
@@ -57,6 +57,7 @@ async function fetchJobsList(queueName: string, jobState?: JsonJobStatus, maxRes
         name: j.name,
         state: j.state,
         timestamp: j.timestamp,
+        data: (j as unknown as Record<string, unknown>).data,
       })),
     );
   } catch {
