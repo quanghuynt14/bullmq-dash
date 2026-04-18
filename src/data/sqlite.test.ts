@@ -579,7 +579,9 @@ describe("staging table diff", () => {
     ]);
 
     const newIds = findNewIdsByStagingDiff("email");
-    expect(newIds.toSorted()).toEqual(["4", "5"]);
+    expect(newIds.map((r) => r.id).toSorted()).toEqual(["4", "5"]);
+    expect(newIds.find((r) => r.id === "4")?.state).toBe("active");
+    expect(newIds.find((r) => r.id === "5")?.state).toBe("delayed");
     dropSyncStaging();
   });
 

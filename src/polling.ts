@@ -108,7 +108,7 @@ class PollingManager {
                 name: j.name,
                 state: j.state,
                 timestamp: j.timestamp,
-                data: (j as unknown as Record<string, unknown>).data,
+                data: j.data,
               })),
             );
           } catch {

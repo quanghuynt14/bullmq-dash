@@ -15,6 +15,12 @@ export interface JobSummary {
   name: string;
   state: string;
   timestamp: number;
+  /**
+   * Optional preview payload. Populated by the Redis fetch path so callers
+   * (sync, polling, JSON reporter) can write `data_preview` to SQLite without
+   * casting through `unknown`. Not loaded from SQLite reads.
+   */
+  data?: unknown;
 }
 
 export interface JobDetail extends JobSummary {
@@ -146,7 +152,7 @@ export async function getAllJobs(
   }
 
   const jobSummaries: JobSummary[] = tagged.map(({ job, state }) => {
-    const summary: Record<string, unknown> = {
+    const summary: JobSummary = {
       id: job.id || "unknown",
       name: job.name,
       state,
@@ -155,7 +161,7 @@ export async function getAllJobs(
     if (includeData) {
       summary.data = job.data;
     }
-    return summary as unknown as JobSummary;
+    return summary;
   });
 
   return { jobs: jobSummaries, total };
@@ -184,7 +190,7 @@ export async function* getAllJobIds(
       if (ids.length === 0) break;
 
       const batch = ids
-        .filter((id) => id != null && id !== "")
+        .filter((id): id is string => typeof id === "string" && id !== "")
         .map((id) => ({ id, state: type as string }));
 
       if (batch.length > 0) {
@@ -305,7 +311,7 @@ export async function getJobs(
 
   // Convert tagged jobs to summaries (no extra Redis calls needed)
   const jobSummaries: JobSummary[] = tagged.map(({ job, state }) => {
-    const summary: Record<string, unknown> = {
+    const summary: JobSummary = {
       id: job.id || "unknown",
       name: job.name,
       state,
@@ -314,7 +320,7 @@ export async function getJobs(
     if (includeData) {
       summary.data = job.data;
     }
-    return summary as unknown as JobSummary;
+    return summary;
   });
 
   return {

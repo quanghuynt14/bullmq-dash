@@ -326,12 +326,19 @@ export function upsertSyncState(
 /**
  * Create the sync_staging temporary table.
  * Called at the start of each sync cycle, dropped at the end.
+ *
+ * Uses a TEMP table so it never touches disk, is automatically scoped to the
+ * current connection (we use a single shared connection — see getSqliteDb),
+ * and is cleaned up if the process exits unexpectedly. We also drop any
+ * leftover `main.sync_staging` from a previous version that created it on
+ * disk, so upgrades don't trip over a stale table.
  */
 export function createSyncStaging(): void {
   const database = getSqliteDb();
   database.exec(`
-    DROP TABLE IF EXISTS sync_staging;
-    CREATE TABLE sync_staging (
+    DROP TABLE IF EXISTS main.sync_staging;
+    DROP TABLE IF EXISTS temp.sync_staging;
+    CREATE TEMP TABLE sync_staging (
       id TEXT NOT NULL,
       queue TEXT NOT NULL,
       state TEXT NOT NULL,
@@ -365,17 +372,18 @@ export function insertStagingBatch(
 
 /**
  * Find job IDs that exist in staging but not in the jobs table.
- * These are new jobs that need to be inserted.
+ * These are new jobs that need to be inserted. Returns id + state so the
+ * caller can build job stubs without a second round-trip to SQLite.
  */
-export function findNewIdsByStagingDiff(queue: string): string[] {
+export function findNewIdsByStagingDiff(
+  queue: string,
+): Array<{ id: string; state: string }> {
   const database = getSqliteDb();
-  const rows = database.prepare(`
-    SELECT s.id FROM sync_staging s
+  return database.prepare(`
+    SELECT s.id, s.state FROM sync_staging s
     LEFT JOIN jobs j ON s.queue = j.queue AND s.id = j.id
     WHERE s.queue = ? AND j.id IS NULL
-  `).all(queue) as Array<{ id: string }>;
-
-  return rows.map((r) => r.id);
+  `).all(queue) as Array<{ id: string; state: string }>;
 }
 
 /**
@@ -397,6 +405,16 @@ export function findChangedIdsByStagingDiff(
  * Delete jobs that exist in the jobs table but NOT in staging.
  * These are stale jobs that were removed from Redis.
  * Returns the number of deleted rows.
+ *
+ * Uses a LEFT JOIN anti-join (rather than `NOT IN (subquery)`) so SQLite can
+ * use the (queue, id) primary key on both sides and avoid materializing the
+ * staging subquery for every row in `jobs`. This matters at 5M+ scale.
+ *
+ * NOTE: We pre-count instead of using `result.changes` because `bun:sqlite`'s
+ * `changes` includes trigger-cascaded modifications (FTS shadow table writes
+ * from `jobs_ad`), which would over-report the user-visible delete count.
+ * The pre-count uses the same index as the DELETE and is cheap relative to
+ * the DELETE itself.
  */
 export function deleteStaleByStagingDiff(queue: string): number {
   const database = getSqliteDb();
@@ -408,10 +426,12 @@ export function deleteStaleByStagingDiff(queue: string): number {
 
   if (count > 0) {
     database.prepare(`
-      DELETE FROM jobs WHERE queue = ? AND id NOT IN (
-        SELECT id FROM sync_staging WHERE queue = ?
+      DELETE FROM jobs WHERE rowid IN (
+        SELECT j.rowid FROM jobs j
+        LEFT JOIN sync_staging s ON j.queue = s.queue AND j.id = s.id
+        WHERE j.queue = ? AND s.id IS NULL
       )
-    `).run(queue, queue);
+    `).run(queue);
   }
 
   return count;
