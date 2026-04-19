@@ -5,6 +5,7 @@ import type { JsonJobStatus } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
 import { writeError } from "./errors.js";
 import { createSqliteDb, closeSqliteDb, upsertJobs } from "./data/sqlite.js";
+import { markPolledWrites } from "./data/sync.js";
 import type { Config, Subcommand } from "./config.js";
 import { setConfig } from "./config.js";
 import {
@@ -46,9 +47,11 @@ async function fetchQueuesOverview() {
 // ── Jobs list ───────────────────────────────────────────────────────────
 
 async function fetchJobsList(queueName: string, jobState?: JsonJobStatus, maxResults?: number) {
-  const { jobs, total } = await getAllJobs(queueName, jobState, maxResults);
+  const { jobs, total } = await getAllJobs(queueName, jobState, maxResults, true);
 
-  // Side effect: populate SQLite cache with fetched jobs (best-effort)
+  // Side effect: populate SQLite cache with fetched jobs (best-effort).
+  // markPolledWrites tells the background sync not to overwrite this fresh
+  // state with a stale staging snapshot.
   try {
     upsertJobs(
       queueName,
@@ -57,7 +60,12 @@ async function fetchJobsList(queueName: string, jobState?: JsonJobStatus, maxRes
         name: j.name,
         state: j.state,
         timestamp: j.timestamp,
+        data: j.data,
       })),
+    );
+    markPolledWrites(
+      queueName,
+      jobs.map((j) => j.id),
     );
   } catch {
     // SQLite upsert is best-effort; don't break CLI output on failure

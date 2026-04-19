@@ -72,6 +72,9 @@ export async function discoverQueueNames(): Promise<string[]> {
 
   let cursor = "0";
   do {
+    // Sequential by necessity: each SCAN call returns the cursor for the
+    // next call. Can't parallelize a cursor-based Redis scan.
+    // eslint-disable-next-line no-await-in-loop
     const [nextCursor, keys] = await redis.scan(
       cursor,
       "MATCH",
