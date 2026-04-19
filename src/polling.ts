@@ -5,6 +5,7 @@ import { getJobSchedulers } from "./data/schedulers.js";
 import { getGlobalMetrics, resetMetricsTracker } from "./data/metrics.js";
 import { stateManager } from "./state.js";
 import { upsertJobs } from "./data/sqlite.js";
+import { markPolledWrites } from "./data/sync.js";
 
 class PollingManager {
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -99,7 +100,9 @@ class PollingManager {
             schedulersTotalPages: 0,
           });
 
-          // Upsert fetched jobs into SQLite (best-effort, non-blocking)
+          // Upsert fetched jobs into SQLite (best-effort, non-blocking).
+          // markPolledWrites tells the background sync not to overwrite this
+          // fresh state with a stale staging snapshot.
           try {
             upsertJobs(
               selectedQueue.name,
@@ -110,6 +113,10 @@ class PollingManager {
                 timestamp: j.timestamp,
                 data: j.data,
               })),
+            );
+            markPolledWrites(
+              selectedQueue.name,
+              jobsResult.jobs.map((j) => j.id),
             );
           } catch {
             // SQLite upsert is best-effort; don't break polling on failure
