@@ -185,6 +185,10 @@ export async function* getAllJobIds(
     let offset = 0;
     while (true) {
       const end = offset + SYNC_PAGE_SIZE - 1;
+      // Sequential by necessity: we paginate by offset and stop when a page
+      // returns fewer than SYNC_PAGE_SIZE items. Total count isn't known
+      // upfront, so we can't fire all pages in parallel.
+      // eslint-disable-next-line no-await-in-loop
       const ids = await queue.getRanges([type], offset, end);
 
       if (ids.length === 0) break;

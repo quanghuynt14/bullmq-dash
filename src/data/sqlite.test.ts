@@ -4,7 +4,6 @@ import { setConfig } from "../config.js";
 import {
   closeSqliteDb,
   createSqliteDb,
-  deleteStaleJobs,
   getJobFromDb,
   getSqliteDb,
   queryJobs,
@@ -14,8 +13,10 @@ import {
   upsertSyncState,
   createSyncStaging,
   insertStagingBatch,
-  deleteStaleByStagingDiff,
+  findStaleIdsByStagingDiff,
+  deleteJobsByIds,
   findNewIdsByStagingDiff,
+  findChangedIdsByStagingDiff,
   dropSyncStaging,
   type JobRow,
 } from "./sqlite.js";
@@ -129,6 +130,27 @@ describe("upsertJobs", () => {
     const db = getSqliteDb();
     const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get("1") as JobRow;
     expect(row.data_preview).toBeNull();
+  });
+
+  it("returns null data_preview when JSON.stringify throws (BigInt)", () => {
+    // BigInt is not JSON-serializable; safeDataPreview must catch.
+    const bad = { amount: 42n };
+    upsertJobs("email", [{ id: "1", name: "job", state: "active", timestamp: 1000, data: bad }]);
+
+    const row = getSqliteDb().prepare("SELECT * FROM jobs WHERE id = ?").get("1") as JobRow;
+    expect(row.data_preview).toBeNull();
+    // The row itself still got upserted — one bad payload must not poison the batch.
+    expect(row.id).toBe("1");
+  });
+
+  it("returns null data_preview when JSON.stringify throws (circular ref)", () => {
+    const circular: Record<string, unknown> = { a: 1 };
+    circular.self = circular;
+    upsertJobs("email", [{ id: "1", name: "job", state: "active", timestamp: 1000, data: circular }]);
+
+    const row = getSqliteDb().prepare("SELECT * FROM jobs WHERE id = ?").get("1") as JobRow;
+    expect(row.data_preview).toBeNull();
+    expect(row.id).toBe("1");
   });
 
   it("handles jobs across different queues", () => {
@@ -253,110 +275,6 @@ describe("queryJobs", () => {
   });
 });
 
-describe("deleteStaleJobs", () => {
-  beforeEach(() => {
-    upsertJobs("email", [
-      { id: "1", name: "job-a", state: "completed", timestamp: 1000 },
-      { id: "2", name: "job-b", state: "active", timestamp: 2000 },
-      { id: "3", name: "job-c", state: "failed", timestamp: 3000 },
-    ]);
-  });
-
-  it("removes jobs not in activeIds", () => {
-    const removed = deleteStaleJobs("email", ["2", "3"]);
-    expect(removed).toBe(1);
-
-    const db = getSqliteDb();
-    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id").all("email") as JobRow[];
-    expect(rows).toHaveLength(2);
-    expect(rows.map((r) => r.id)).toEqual(["2", "3"]);
-  });
-
-  it("removes all jobs when activeIds is empty", () => {
-    const removed = deleteStaleJobs("email", []);
-
-    const db = getSqliteDb();
-    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("email") as JobRow[];
-    expect(removed).toBe(3);
-    expect(rows).toHaveLength(0);
-  });
-
-  it("removes nothing when all ids are active", () => {
-    const removed = deleteStaleJobs("email", ["1", "2", "3"]);
-    expect(removed).toBe(0);
-  });
-
-  it("only affects the specified queue", () => {
-    upsertJobs("sms", [{ id: "1", name: "sms-job", state: "active", timestamp: 1000 }]);
-
-    deleteStaleJobs("email", ["1"]);
-
-    const db = getSqliteDb();
-    const smsRows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("sms") as JobRow[];
-    expect(smsRows).toHaveLength(1);
-  });
-
-  it("handles more than 999 active IDs by chunking batches", () => {
-    const activeIds: string[] = [];
-    for (let i = 1; i <= 1500; i++) {
-      activeIds.push(String(i));
-    }
-    activeIds.forEach((id) =>
-      upsertJobs("email", [{ id, name: "job", state: "active", timestamp: Number(id) }]),
-    );
-
-    const removed = deleteStaleJobs("email", activeIds);
-    expect(removed).toBe(0);
-
-    const db = getSqliteDb();
-    const countResult = db.prepare("SELECT COUNT(*) as total FROM jobs WHERE queue = ?").get("email") as { total: number };
-    expect(countResult.total).toBe(1500);
-  });
-
-  it("deletes all jobs for a queue when activeIds is empty", () => {
-    upsertJobs("cleanup-test", [
-      { id: "1", name: "job-a", state: "completed", timestamp: 1000 },
-      { id: "2", name: "job-b", state: "failed", timestamp: 2000 },
-    ]);
-
-    const removed = deleteStaleJobs("cleanup-test", []);
-    expect(removed).toBe(2);
-
-    const db = getSqliteDb();
-    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("cleanup-test") as JobRow[];
-    expect(rows).toHaveLength(0);
-  });
-
-  it("deletes stale jobs in batches even with more than 999 IDs", () => {
-    // Insert 2000 jobs: 1000 stale (1-1000) + 1000 active (1001-2000)
-    const allJobs: { id: string; name: string; state: string; timestamp: number }[] = [];
-    for (let i = 1; i <= 2000; i++) {
-      allJobs.push({
-        id: String(i),
-        name: i <= 1000 ? "stale-job" : "active-job",
-        state: i <= 1000 ? "completed" : "active",
-        timestamp: i,
-      });
-    }
-    upsertJobs("email", allJobs);
-
-    // Active IDs are 1001-2000 (the jobs we want to keep)
-    const activeIds: string[] = [];
-    for (let i = 1001; i <= 2000; i++) {
-      activeIds.push(String(i));
-    }
-
-    const removed = deleteStaleJobs("email", activeIds);
-    expect(removed).toBe(1000);
-
-    const db = getSqliteDb();
-    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id").all("email") as JobRow[];
-    expect(rows).toHaveLength(1000);
-    expect(rows[0]!.id).toBe("1001");
-    expect(rows[999]!.id).toBe("2000");
-  });
-});
-
 describe("getJobFromDb", () => {
   it("returns a job row for existing job", () => {
     upsertJobs("email", [{ id: "42", name: "my-job", state: "completed", timestamp: 5000 }]);
@@ -467,7 +385,7 @@ describe("FTS5 full-text search", () => {
   });
 
   it("FTS5 index stays in sync after deletes", () => {
-    deleteStaleJobs("email", ["2", "3"]);
+    deleteJobsByIds("email", ["1", "4", "5"]);
 
     // Deleted jobs should not appear in search
     const result = queryJobs({ queue: "email", search: "send" });
@@ -585,14 +503,17 @@ describe("staging table diff", () => {
     dropSyncStaging();
   });
 
-  it("deletes stale jobs not in staging", () => {
+  it("finds and deletes stale jobs not in staging", () => {
     createSyncStaging();
     insertStagingBatch("email", [
       { id: "1", state: "active" },
       { id: "3", state: "failed" },
     ]);
 
-    const deleted = deleteStaleByStagingDiff("email");
+    const staleIds = findStaleIdsByStagingDiff("email");
+    expect(staleIds.toSorted()).toEqual(["2"]);
+
+    const deleted = deleteJobsByIds("email", staleIds);
     expect(deleted).toBe(1);
 
     const db = getSqliteDb();
@@ -601,17 +522,38 @@ describe("staging table diff", () => {
     dropSyncStaging();
   });
 
-  it("deletes all jobs when staging is empty for queue", () => {
+  it("finds all jobs stale when staging is empty for queue", () => {
     createSyncStaging();
     // Insert staging for a different queue
     insertStagingBatch("sms", [{ id: "x", state: "active" }]);
 
-    const deleted = deleteStaleByStagingDiff("email");
+    const staleIds = findStaleIdsByStagingDiff("email");
+    expect(staleIds).toHaveLength(3);
+
+    const deleted = deleteJobsByIds("email", staleIds);
     expect(deleted).toBe(3);
 
     const db = getSqliteDb();
     const rows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("email") as JobRow[];
     expect(rows).toHaveLength(0);
+    dropSyncStaging();
+  });
+
+  it("findStaleIdsByStagingDiff filter path enables sync to skip recently-polled rows", () => {
+    createSyncStaging();
+    // Staging only has id 1 — ids 2 and 3 would normally be stale
+    insertStagingBatch("email", [{ id: "1", state: "active" }]);
+
+    // Simulate "polling just wrote id=3": filter it out of the stale list
+    const recentlyPolled = new Set(["3"]);
+    const toDelete = findStaleIdsByStagingDiff("email").filter((id) => !recentlyPolled.has(id));
+    expect(toDelete.toSorted()).toEqual(["2"]);
+
+    deleteJobsByIds("email", toDelete);
+
+    const db = getSqliteDb();
+    const rows = db.prepare("SELECT id FROM jobs WHERE queue = ? ORDER BY id").all("email") as Array<{ id: string }>;
+    expect(rows.map((r) => r.id)).toEqual(["1", "3"]);
     dropSyncStaging();
   });
 
@@ -623,13 +565,7 @@ describe("staging table diff", () => {
       { id: "3", state: "active" },
     ]);
 
-    // Find IDs whose state changed
-    const db = getSqliteDb();
-    const changed = db.prepare(`
-      SELECT s.id, s.state FROM sync_staging s
-      JOIN jobs j ON s.queue = j.queue AND s.id = j.id
-      WHERE s.queue = ? AND s.state != j.state
-    `).all("email") as Array<{ id: string; state: string }>;
+    const changed = findChangedIdsByStagingDiff("email");
 
     expect(changed).toHaveLength(2);
     expect(changed.map((c) => c.id).toSorted()).toEqual(["1", "3"]);
