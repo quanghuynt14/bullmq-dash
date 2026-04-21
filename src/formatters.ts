@@ -1,5 +1,5 @@
 import type { QueueStats } from "./data/queues.js";
-import type { JobSummary, JobDetail } from "./data/jobs.js";
+import type { JobSummary, JobDetail, RetryResult } from "./data/jobs.js";
 import type { JobSchedulerSummary, JobSchedulerDetail, RecentJobInfo } from "./data/schedulers.js";
 import { formatInterval } from "./data/schedulers.js";
 
@@ -273,6 +273,76 @@ export function formatSchedulerDetail(data: SchedulerDetailData): string {
     ]);
 
     lines.push(table(columns, rows, align));
+  }
+
+  return lines.join("\n");
+}
+
+// ── Jobs retry ──────────────────────────────────────────────────────────
+
+const MAX_DISPLAYED_ERRORS = 10;
+
+interface JobsRetryInput {
+  dryRun: boolean;
+  queue: string;
+  filter: { jobState: string; since?: string; name?: string };
+  matched: number;
+  retried: number;
+  errors: RetryResult["errors"];
+  sampleJobIds: string[];
+  totalFailed: number;
+  truncated: boolean;
+}
+
+export function formatJobsRetry(r: JobsRetryInput): string {
+  const lines: string[] = [];
+
+  const filterParts: string[] = [`state=${r.filter.jobState}`];
+  if (r.filter.since) filterParts.push(`since=${r.filter.since}`);
+  if (r.filter.name) filterParts.push(`name=${r.filter.name}`);
+
+  if (r.dryRun) {
+    lines.push(`DRY RUN: would retry ${r.matched} jobs in queue '${r.queue}'`);
+  } else {
+    lines.push(`Retry complete for queue '${r.queue}'`);
+  }
+  lines.push(`Filter:       ${filterParts.join(", ")}`);
+  lines.push(`Total failed: ${r.totalFailed}`);
+  lines.push(`Matched:      ${r.matched}`);
+  if (!r.dryRun) {
+    lines.push(`Retried:      ${r.retried}`);
+    lines.push(`Errors:       ${r.errors.length}`);
+  }
+  if (r.truncated) {
+    lines.push("");
+    lines.push(
+      "NOTE: more failed jobs exist than were fetched. Narrow with --since/--name or raise --page-size (max 10000).",
+    );
+  }
+
+  if (r.sampleJobIds.length > 0) {
+    lines.push("");
+    lines.push("Sample matched IDs:");
+    for (const id of r.sampleJobIds) {
+      lines.push(`  ${id}`);
+    }
+  }
+
+  if (!r.dryRun && r.errors.length > 0) {
+    lines.push("");
+    lines.push("Errors:");
+    const rows = r.errors.slice(0, MAX_DISPLAYED_ERRORS).map((e) => [e.jobId, e.error]);
+    lines.push(table(["JOB ID", "ERROR"], rows));
+    if (r.errors.length > MAX_DISPLAYED_ERRORS) {
+      lines.push(
+        `  ... and ${r.errors.length - MAX_DISPLAYED_ERRORS} more (see JSON output with --human-friendly off)`,
+      );
+    }
+  }
+
+  if (r.dryRun) {
+    lines.push("");
+    lines.push("Run without --dry-run to retry these jobs.");
   }
 
   return lines.join("\n");

@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { formatRelativeTime, formatTimestamp } from "./jobs.js";
+import { formatRelativeTime, formatTimestamp, parseDuration } from "./jobs.js";
 
 describe("formatRelativeTime", () => {
   let originalDateNow: typeof Date.now;
@@ -118,5 +118,46 @@ describe("formatTimestamp", () => {
       expect(result).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
       expect(result.length).toBe(19); // "YYYY-MM-DD HH:MM:SS" = 19 chars
     }
+  });
+});
+
+describe("parseDuration", () => {
+  it("parses seconds", () => {
+    expect(parseDuration("30s")).toBe(30 * 1000);
+    expect(parseDuration("1s")).toBe(1000);
+  });
+
+  it("parses minutes", () => {
+    expect(parseDuration("5m")).toBe(5 * 60 * 1000);
+    expect(parseDuration("1m")).toBe(60 * 1000);
+  });
+
+  it("parses hours", () => {
+    expect(parseDuration("1h")).toBe(60 * 60 * 1000);
+    expect(parseDuration("24h")).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("parses days", () => {
+    expect(parseDuration("1d")).toBe(24 * 60 * 60 * 1000);
+    expect(parseDuration("7d")).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it("returns null for invalid format", () => {
+    expect(parseDuration("")).toBeNull();
+    expect(parseDuration("abc")).toBeNull();
+    expect(parseDuration("1")).toBeNull();
+    expect(parseDuration("s")).toBeNull();
+    expect(parseDuration("1.5h")).toBeNull();
+    expect(parseDuration("-1h")).toBeNull();
+    expect(parseDuration("1y")).toBeNull(); // unsupported unit
+    expect(parseDuration(" 1h")).toBeNull(); // leading space
+    expect(parseDuration("1h ")).toBeNull(); // trailing space
+    expect(parseDuration("1 h")).toBeNull(); // space inside
+  });
+
+  it("returns null for zero", () => {
+    // Zero durations don't make sense as a filter — should fail explicitly
+    expect(parseDuration("0s")).toBeNull();
+    expect(parseDuration("0h")).toBeNull();
   });
 });

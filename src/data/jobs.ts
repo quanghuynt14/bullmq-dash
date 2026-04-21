@@ -383,6 +383,141 @@ export async function deleteJob(queueName: string, jobId: string): Promise<boole
   return true;
 }
 
+// ── jobs retry ──────────────────────────────────────────────────────────
+
+const DURATION_PATTERN = /^(\d+)([smhd])$/;
+const MS_PER_UNIT: Record<string, number> = {
+  s: 1000,
+  m: 60 * 1000,
+  h: 60 * 60 * 1000,
+  d: 24 * 60 * 60 * 1000,
+};
+
+export const DEFAULT_RETRY_PAGE_SIZE = 1000;
+export const MAX_RETRY_PAGE_SIZE = 10000;
+const SAMPLE_ID_COUNT = 5;
+
+/**
+ * Parse a duration string like "30s", "5m", "1h", "24h", "7d" into milliseconds.
+ * Returns null if the string is invalid. Callers should translate null into a
+ * structured CLI error.
+ */
+export function parseDuration(raw: string): number | null {
+  const match = DURATION_PATTERN.exec(raw);
+  if (!match) return null;
+  const n = parseInt(match[1]!, 10);
+  const unit = match[2]!;
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const unitMs = MS_PER_UNIT[unit];
+  if (!unitMs) return null;
+  return n * unitMs;
+}
+
+export interface RetryResult {
+  matched: number;
+  retried: number;
+  errors: Array<{ jobId: string; error: string }>;
+  sampleJobIds: string[];
+  totalFailed: number;
+  truncated: boolean;
+}
+
+/**
+ * Bulk-retry failed jobs in a queue, optionally filtered by age and name.
+ * Operates on failed jobs only. Partial failures are best-effort: per-job
+ * errors are collected into `errors[]` and the function completes. Callers
+ * decide exit code based on `errors.length > 0`.
+ */
+export async function retryFailedJobs(
+  queueName: string,
+  options: {
+    since?: string;
+    name?: string;
+    pageSize?: number;
+    dryRun?: boolean;
+  },
+): Promise<RetryResult> {
+  const pageSize = Math.min(
+    options.pageSize ?? DEFAULT_RETRY_PAGE_SIZE,
+    MAX_RETRY_PAGE_SIZE,
+  );
+  const dryRun = options.dryRun ?? false;
+
+  let cutoffMs: number | undefined;
+  if (options.since !== undefined) {
+    const durationMs = parseDuration(options.since);
+    if (durationMs === null) {
+      throw new Error(
+        `Invalid --since value '${options.since}'. Expected format: 30s, 5m, 1h, 24h, 7d`,
+      );
+    }
+    cutoffMs = Date.now() - durationMs;
+  }
+
+  const queue = getQueue(queueName);
+
+  const [failedJobs, counts] = await Promise.all([
+    queue.getFailed(0, pageSize - 1),
+    queue.getJobCounts("failed"),
+  ]);
+  const totalFailed = counts.failed || 0;
+
+  // Apply client-side filters. finishedOn is when the job transitioned to
+  // failed; fall back to timestamp (creation) if finishedOn isn't set yet.
+  const matched = failedJobs.filter((job) => {
+    if (cutoffMs !== undefined) {
+      const whenFailed = job.finishedOn ?? job.timestamp ?? 0;
+      if (whenFailed < cutoffMs) return false;
+    }
+    if (options.name !== undefined && job.name !== options.name) return false;
+    return true;
+  });
+
+  const matchedIds = matched
+    .map((job) => job.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+
+  const sampleIds = matchedIds.slice(0, SAMPLE_ID_COUNT);
+
+  // Dry-run: don't touch Redis, just report what would happen.
+  if (dryRun) {
+    return {
+      matched: matched.length,
+      retried: 0,
+      errors: [],
+      sampleJobIds: sampleIds,
+      totalFailed,
+      truncated: totalFailed > failedJobs.length,
+    };
+  }
+
+  // Live retry: call job.retry() per-match, collecting errors.
+  let retried = 0;
+  const errors: RetryResult["errors"] = [];
+
+  for (const job of matched) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await job.retry("failed");
+      retried += 1;
+    } catch (err) {
+      errors.push({
+        jobId: job.id ?? "unknown",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return {
+    matched: matched.length,
+    retried,
+    errors,
+    sampleJobIds: sampleIds,
+    totalFailed,
+    truncated: totalFailed > failedJobs.length,
+  };
+}
+
 /**
  * Format timestamp to relative time string
  */
