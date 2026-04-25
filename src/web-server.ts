@@ -55,8 +55,7 @@ function createWebClientHtml(websocketPath: string): string {
   <body>
     <div id="terminal"></div>
     <script type="module">
-      import { WTerm } from "https://esm.sh/@wterm/dom@0.0.20";
-      import "https://esm.sh/@wterm/dom@0.0.20/css";
+      import { WTerm } from "https://cdn.jsdelivr.net/npm/@wterm/dom@0.1.9/dist/index.js";
 
       const terminalNode = document.getElementById("terminal");
       const wsUrl = new URL("${websocketPath}", window.location.href);
