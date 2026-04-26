@@ -36,7 +36,7 @@ function buildTuiArgs(config: Config): string[] {
   return args;
 }
 
-function createWebClientHtml(websocketPath: string): string {
+export function createWebClientHtml(websocketPath: string): string {
   return `<!doctype html>
 <html lang="en">
   <head>
