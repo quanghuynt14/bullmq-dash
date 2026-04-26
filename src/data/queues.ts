@@ -193,11 +193,12 @@ export async function deleteQueue(
   };
 
   if (!dryRun) {
-    await queue.obliterate();
+    await queue.obliterate({ force: true });
 
     const config = getConfig();
     const redis = getRedisClient();
-    const repeatKeyPattern = `${config.prefix}:${queueName}:*`;
+    const escapedQueueName = queueName.replace(/[[*?]/g, "\\$&");
+    const repeatKeyPattern = `${config.prefix}:${escapedQueueName}:*`;
     let cursor = "0";
     do {
       // eslint-disable-next-line no-await-in-loop
