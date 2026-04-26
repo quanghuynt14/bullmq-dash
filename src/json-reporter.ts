@@ -17,6 +17,8 @@ import {
   formatQueuesDelete,
 } from "./formatters.js";
 
+import readline from "node:readline";
+
 // ── Queues overview (default) ───────────────────────────────────────────
 
 async function fetchQueuesOverview() {
@@ -174,7 +176,7 @@ function validateJobState(jobState: string | undefined): JsonJobStatus | undefin
 
 function promptConfirmation(message: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const rl = require("node:readline").createInterface({
+    const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout,
     });

@@ -600,6 +600,15 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
+    if (dryRun && yes) {
+      writeError(
+        "--dry-run and --yes cannot be used together",
+        "CONFIG_ERROR",
+        "Usage: queues delete <queue> [--dry-run] or queues delete <queue> --yes",
+      );
+      process.exit(2);
+    }
+
     if (values.web && subcommand) {
       writeError(
         "--web cannot be used with subcommands",
