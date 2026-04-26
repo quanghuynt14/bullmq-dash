@@ -179,6 +179,18 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
       },
     });
 
+    let alive = true;
+
+    function killTerm(): void {
+      if (!alive) return;
+      alive = false;
+      try {
+        term.kill();
+      } catch {
+        // pty already gone
+      }
+    }
+
     term.onData((chunk: string) => {
       if (socket.readyState === socket.OPEN) {
         socket.send(chunk);
@@ -186,12 +198,14 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
     });
 
     term.onExit(() => {
+      alive = false;
       if (socket.readyState === socket.OPEN) {
         socket.close();
       }
     });
 
     socket.on("message", (raw: ArrayBuffer | Buffer | string) => {
+      if (!alive) return;
       const data = String(raw);
       const resizeMatch = data.match(/^\x1b\[RESIZE:(\d+);(\d+)\]$/);
 
@@ -199,20 +213,32 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
         const cols = Number(resizeMatch[1]);
         const rows = Number(resizeMatch[2]);
         if (Number.isFinite(cols) && Number.isFinite(rows)) {
-          term.resize(cols, rows);
+          try {
+            term.resize(cols, rows);
+          } catch (err) {
+            app.log.warn({ err }, "pty resize failed, killing terminal");
+            killTerm();
+            if (socket.readyState === socket.OPEN) socket.close();
+          }
         }
         return;
       }
 
-      term.write(data);
+      try {
+        term.write(data);
+      } catch (err) {
+        app.log.warn({ err }, "pty write failed, killing terminal");
+        killTerm();
+        if (socket.readyState === socket.OPEN) socket.close();
+      }
     });
 
     socket.on("close", () => {
-      term.kill();
+      killTerm();
     });
 
     socket.on("error", () => {
-      term.kill();
+      killTerm();
     });
   });
 
