@@ -267,13 +267,22 @@ export async function runJsonMode(
   setConfig(config);
 
   if (subcommand.kind === "queues-delete" && !yes && !dryRun) {
-    const confirmed = await promptConfirmation(
-      `Delete queue '${subcommand.queue}' and all its jobs? This cannot be undone.`,
-    );
-    if (!confirmed) {
-      console.log("Cancelled.");
-      await cleanup();
-      process.exit(1);
+    if (process.stdin.isTTY) {
+      const confirmed = await promptConfirmation(
+        `Delete queue '${subcommand.queue}' and all its jobs? This cannot be undone.`,
+      );
+      if (!confirmed) {
+        process.stderr.write("Cancelled.\n");
+        await cleanup();
+        process.exit(1);
+      }
+    } else {
+      writeError(
+        "Confirmation required: run with --yes flag in non-interactive mode",
+        "CONFIG_ERROR",
+        "Use --yes to skip confirmation in scripts, or run in interactive terminal.",
+      );
+      process.exit(2);
     }
   }
 

@@ -199,6 +199,8 @@ export async function deleteQueue(
     const redis = getRedisClient();
     const escapedQueueName = queueName.replace(/[[*?]/g, "\\$&");
     const repeatKeyPattern = `${config.prefix}:${escapedQueueName}:*`;
+
+    const allKeys: string[] = [];
     let cursor = "0";
     do {
       // eslint-disable-next-line no-await-in-loop
@@ -210,11 +212,12 @@ export async function deleteQueue(
         SCAN_COUNT,
       );
       cursor = nextCursor;
-      if (keys.length > 0) {
-        // eslint-disable-next-line no-await-in-loop
-        await redis.del(...keys);
-      }
+      allKeys.push(...keys);
     } while (cursor !== "0");
+
+    if (allKeys.length > 0) {
+      await redis.del(...allKeys);
+    }
 
     await queue.close();
     queueCache.delete(queueName);
