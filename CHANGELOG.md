@@ -5,6 +5,11 @@ All notable changes to bullmq-dash are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-04-26
+
+### Fixed
+- **Web terminal keyboard input.** Custom key handler now captures all keydown events and sends escape sequences directly via WebSocket, bypassing xterm's built-in handling that wasn't forwarding keys to the PTY. Added `tabindex="0"` for terminal focus and removed deprecated `allowProposedApi` option.
+
 ## [0.2.0] - 2026-04-19
 
 ### Added
