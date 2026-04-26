@@ -67,14 +67,14 @@ function createWebClientHtml(websocketPath: string): string {
           socket.send(data);
         },
         onResize(cols, rows) {
-          socket.send("\\x1b[RESIZE:\${cols};\${rows}]");
+          socket.send(\`\\x1b[RESIZE:\${cols};\${rows}]\`);
         },
       });
 
       await term.init();
 
       socket.addEventListener("open", () => {
-        socket.send("\\x1b[RESIZE:\${term.cols};\${term.rows}]");
+        socket.send(\`\\x1b[RESIZE:\${term.cols};\${term.rows}]\`);
         term.focus();
       });
 
