@@ -21,6 +21,7 @@ export type Config = z.infer<typeof configSchema>;
 
 export type Subcommand =
   | { kind: "queues-list" }
+  | { kind: "queues-delete"; queue: string; dryRun?: boolean; yes?: boolean }
   | { kind: "jobs-list"; queue: string; jobState?: string; pageSize?: number }
   | { kind: "jobs-get"; queue: string; jobId: string }
   | { kind: "schedulers-list"; queue: string; pageSize?: number }
@@ -42,6 +43,8 @@ export interface CliArgs {
   webPort?: number;
   subcommand?: Subcommand;
   humanFriendly?: boolean;
+  dryRun?: boolean;
+  yes?: boolean;
 }
 
 let packageVersion: string | null = null;
@@ -56,6 +59,7 @@ Usage:
 
 Commands:
   queues list                            List all queues with job counts
+  queues delete <queue>                  Delete a queue and all its jobs
   jobs list <queue>                      List jobs in a queue
   jobs get <queue> <job-id>              Get full detail for a single job
   schedulers list <queue>                List schedulers in a queue
@@ -113,9 +117,10 @@ const QUEUES_HELP = `
 Usage: bullmq-dash queues <action> [options]
 
 Actions:
-  list    List all queues with job counts
+  list                       List all queues with job counts
+  delete <queue>              Permanently delete a queue and all its jobs
 
-Run 'bullmq-dash queues list --help' for action-specific help.
+Run 'bullmq-dash queues <action> --help' for action-specific help.
 `;
 
 const QUEUES_LIST_HELP = `
@@ -128,6 +133,22 @@ Examples:
   bullmq-dash queues list --redis-host localhost
   bullmq-dash queues list --redis-host localhost --redis-port 6380
   bullmq-dash queues list --redis-host localhost | jq '.queues[] | select(.counts.failed > 0)'
+`;
+
+const QUEUES_DELETE_HELP = `
+Usage: bullmq-dash queues delete <queue> [options]
+
+Permanently delete a queue and all its jobs from Redis.
+
+Options:
+  --dry-run               Preview what would be deleted without making changes
+  --yes                   Skip confirmation prompt (for scripting)
+${CONNECTION_OPTIONS_HELP}
+
+Examples:
+  bullmq-dash queues delete email --redis-host localhost
+  bullmq-dash queues delete email --redis-host localhost --dry-run
+  bullmq-dash queues delete email --redis-host localhost --yes
 `;
 
 const JOBS_HELP = `
@@ -208,7 +229,7 @@ Examples:
 // ── Known subcommands ───────────────────────────────────────────────────
 
 const RESOURCE_COMMANDS = new Set(["queues", "jobs", "schedulers"]);
-const ACTIONS = new Set(["list", "get"]);
+const ACTIONS = new Set(["list", "get", "delete"]);
 
 /**
  * Separate subcommand tokens (positional args) from flag tokens.
@@ -255,6 +276,8 @@ function parseSubcommand(
   help: boolean,
   jobState: string | undefined,
   pageSize: number | undefined,
+  dryRun: boolean = false,
+  yes: boolean = false,
 ): Subcommand | undefined {
   if (positionals.length === 0) return undefined;
 
@@ -296,25 +319,45 @@ function parseSubcommand(
 
   switch (resource) {
     case "queues": {
-      if (action !== "list") {
-        writeError(
-          `Invalid action '${action}' for queues`,
-          "CONFIG_ERROR",
-          "Only 'queues list' is supported.",
-        );
-        process.exit(2);
+      if (action === "list") {
+        if (help) showSubcommandHelp(QUEUES_LIST_HELP);
+        if (positionals.length > 2) {
+          writeError(
+            `Unexpected arguments: ${positionals.slice(2).join(" ")}`,
+            "CONFIG_ERROR",
+            "Usage: queues list [options]",
+          );
+          process.exit(2);
+        }
+        return { kind: "queues-list" };
       }
-      // Action-level help: `bullmq-dash queues list --help`
-      if (help) showSubcommandHelp(QUEUES_LIST_HELP);
-      if (positionals.length > 2) {
-        writeError(
-          `Unexpected arguments: ${positionals.slice(2).join(" ")}`,
-          "CONFIG_ERROR",
-          "Usage: queues list [options]",
-        );
-        process.exit(2);
+      if (action === "delete") {
+        if (help) showSubcommandHelp(QUEUES_DELETE_HELP);
+        const queue = positionals[2];
+        if (!queue) {
+          writeError(
+            "Missing required argument: <queue>",
+            "CONFIG_ERROR",
+            "Usage: queues delete <queue> [--dry-run] [--yes]",
+          );
+          process.exit(2);
+        }
+        if (positionals.length > 3) {
+          writeError(
+            `Unexpected arguments: ${positionals.slice(3).join(" ")}`,
+            "CONFIG_ERROR",
+            "Usage: queues delete <queue> [--dry-run] [--yes]",
+          );
+          process.exit(2);
+        }
+        return { kind: "queues-delete", queue, dryRun, yes };
       }
-      return { kind: "queues-list" };
+      writeError(
+        `Invalid action '${action}' for queues`,
+        "CONFIG_ERROR",
+        "Available actions: list, delete. Use --help for usage.",
+      );
+      process.exit(2);
     }
 
     case "jobs": {
@@ -482,6 +525,8 @@ export function parseCliArgs(): CliArgs {
         "job-state": { type: "string" },
         "page-size": { type: "string" },
         "human-friendly": { type: "boolean" },
+        "dry-run": { type: "boolean" },
+        yes: { type: "boolean" },
       },
       strict: true,
     });
@@ -494,9 +539,17 @@ export function parseCliArgs(): CliArgs {
     const webPort = parseNumericFlag("web-port", values["web-port"], { min: 1 });
 
     const humanFriendly = values["human-friendly"] ?? false;
+    const dryRun = values["dry-run"] ?? false;
+    const yes = values.yes ?? false;
 
-    // Parse subcommand from positionals
-    const subcommand = parseSubcommand(positionals, !!values.help, values["job-state"], pageSize);
+    const subcommand = parseSubcommand(
+      positionals,
+      !!values.help,
+      values["job-state"],
+      pageSize,
+      dryRun,
+      yes,
+    );
 
     // Validate that command-specific flags are only used with the right commands
     if (values["job-state"] && (!subcommand || subcommand.kind !== "jobs-list")) {
@@ -534,6 +587,24 @@ export function parseCliArgs(): CliArgs {
         "--tui cannot be used with subcommands",
         "CONFIG_ERROR",
         "Use --tui to launch the interactive dashboard, or use subcommands for headless output.",
+      );
+      process.exit(2);
+    }
+
+    if ((dryRun || yes) && (!subcommand || subcommand.kind !== "queues-delete")) {
+      writeError(
+        "--dry-run and --yes can only be used with 'queues delete'",
+        "CONFIG_ERROR",
+        "Usage: queues delete <queue> [--dry-run] [--yes]",
+      );
+      process.exit(2);
+    }
+
+    if (dryRun && yes) {
+      writeError(
+        "--dry-run and --yes cannot be used together",
+        "CONFIG_ERROR",
+        "Usage: queues delete <queue> [--dry-run] or queues delete <queue> --yes",
       );
       process.exit(2);
     }
@@ -590,6 +661,8 @@ export function parseCliArgs(): CliArgs {
       webPort,
       subcommand,
       humanFriendly,
+      dryRun,
+      yes,
     };
   } catch (error) {
     if (error instanceof Error) {

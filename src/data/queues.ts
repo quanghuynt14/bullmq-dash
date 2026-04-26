@@ -13,6 +13,7 @@ let queueNamesCache: {
 
 const QUEUE_NAMES_CACHE_TTL = 5000; // 5 seconds
 const SCAN_COUNT = 1000;
+const DEL_BATCH_SIZE = 500;
 
 export interface QueueStats {
   name: string;
@@ -160,4 +161,75 @@ export async function closeAllQueues(): Promise<void> {
   await Promise.all(closePromises);
   queueCache.clear();
   queueNamesCache = null;
+}
+
+export interface DeleteQueueResult {
+  name: string;
+  counts: {
+    wait: number;
+    active: number;
+    completed: number;
+    failed: number;
+    delayed: number;
+  };
+}
+
+export async function deleteQueue(
+  queueName: string,
+  dryRun: boolean = false,
+): Promise<DeleteQueueResult> {
+  const queue = getQueue(queueName);
+
+  const counts = await queue.getJobCounts();
+
+  const result: DeleteQueueResult = {
+    name: queueName,
+    counts: {
+      wait: (counts.waiting || 0) + (counts.prioritized || 0),
+      active: counts.active || 0,
+      completed: counts.completed || 0,
+      failed: counts.failed || 0,
+      delayed: counts.delayed || 0,
+    },
+  };
+
+  if (!dryRun) {
+    await queue.obliterate({ force: true });
+
+    const config = getConfig();
+    const redis = getRedisClient();
+    const escapedQueueName = queueName.replace(/[[*?]/g, "\\$&");
+    const repeatKeyPattern = `${config.prefix}:${escapedQueueName}:*`;
+
+    const allKeys: string[] = [];
+    let cursor = "0";
+    do {
+      // eslint-disable-next-line no-await-in-loop
+      const [nextCursor, keys] = await redis.scan(
+        cursor,
+        "MATCH",
+        repeatKeyPattern,
+        "COUNT",
+        SCAN_COUNT,
+      );
+      cursor = nextCursor;
+      allKeys.push(...keys);
+    } while (cursor !== "0");
+
+    if (allKeys.length > 0) {
+      for (let i = 0; i < allKeys.length; i += DEL_BATCH_SIZE) {
+        const batch = allKeys.slice(i, i + DEL_BATCH_SIZE);
+        // eslint-disable-next-line no-await-in-loop
+        await redis.del(...batch);
+      }
+    }
+
+    await queue.close();
+    queueCache.delete(queueName);
+    if (queueNamesCache) {
+      queueNamesCache.names = queueNamesCache.names.filter((n) => n !== queueName);
+    }
+  }
+
+  return result;
 }
