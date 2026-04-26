@@ -161,3 +161,65 @@ export async function closeAllQueues(): Promise<void> {
   queueCache.clear();
   queueNamesCache = null;
 }
+
+export interface DeleteQueueResult {
+  name: string;
+  counts: {
+    wait: number;
+    active: number;
+    completed: number;
+    failed: number;
+    delayed: number;
+  };
+}
+
+export async function deleteQueue(
+  queueName: string,
+  dryRun: boolean = false,
+): Promise<DeleteQueueResult> {
+  const queue = getQueue(queueName);
+
+  const counts = await queue.getJobCounts();
+
+  const result: DeleteQueueResult = {
+    name: queueName,
+    counts: {
+      wait: (counts.waiting || 0) + (counts.prioritized || 0),
+      active: counts.active || 0,
+      completed: counts.completed || 0,
+      failed: counts.failed || 0,
+      delayed: counts.delayed || 0,
+    },
+  };
+
+  if (!dryRun) {
+    await queue.obliterate();
+
+    const config = getConfig();
+    const redis = getRedisClient();
+    const repeatKeyPattern = `${config.prefix}:${queueName}:*`;
+    let cursor = "0";
+    do {
+      // eslint-disable-next-line no-await-in-loop
+      const [nextCursor, keys] = await redis.scan(
+        cursor,
+        "MATCH",
+        repeatKeyPattern,
+        "COUNT",
+        SCAN_COUNT,
+      );
+      cursor = nextCursor;
+      if (keys.length > 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await redis.del(...keys);
+      }
+    } while (cursor !== "0");
+
+    queueCache.delete(queueName);
+    if (queueNamesCache) {
+      queueNamesCache.names = queueNamesCache.names.filter((n) => n !== queueName);
+    }
+  }
+
+  return result;
+}

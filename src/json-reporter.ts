@@ -1,5 +1,5 @@
 import { connectRedis, disconnectRedis } from "./data/redis.js";
-import { discoverQueueNames, getQueueStats, closeAllQueues } from "./data/queues.js";
+import { discoverQueueNames, getQueueStats, closeAllQueues, deleteQueue } from "./data/queues.js";
 import { getAllJobs, getJobDetail, VALID_JOB_STATUSES } from "./data/jobs.js";
 import type { JsonJobStatus } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
@@ -14,6 +14,7 @@ import {
   formatJobDetail,
   formatSchedulersList,
   formatSchedulerDetail,
+  formatQueuesDelete,
 } from "./formatters.js";
 
 // ── Queues overview (default) ───────────────────────────────────────────
@@ -41,6 +42,24 @@ async function fetchQueuesOverview() {
       queueCount: queues.length,
       jobCounts,
     },
+  };
+}
+
+async function fetchQueuesDelete(queueName: string, dryRun: boolean) {
+  const result = await deleteQueue(queueName, dryRun);
+
+  return {
+    timestamp: new Date().toISOString(),
+    queue: queueName,
+    deleted: !dryRun,
+    dryRun,
+    jobCounts: result.counts,
+    totalJobs:
+      result.counts.wait +
+      result.counts.active +
+      result.counts.completed +
+      result.counts.failed +
+      result.counts.delayed,
   };
 }
 
@@ -153,6 +172,20 @@ function validateJobState(jobState: string | undefined): JsonJobStatus | undefin
   return jobState as JsonJobStatus;
 }
 
+function promptConfirmation(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const rl = require("node:readline").createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    rl.question(`${message} [y/N] `, (answer: string) => {
+      rl.close();
+      resolve(answer.toLowerCase() === "y");
+    });
+  });
+}
+
 // ── Cleanup helper ──────────────────────────────────────────────────────
 
 async function cleanup(): Promise<void> {
@@ -167,6 +200,9 @@ async function routeAndFetch(subcommand: Subcommand): Promise<unknown> {
   switch (subcommand.kind) {
     case "queues-list":
       return fetchQueuesOverview();
+
+    case "queues-delete":
+      return fetchQueuesDelete(subcommand.queue, subcommand.dryRun ?? false);
 
     case "jobs-list": {
       const validState = validateJobState(subcommand.jobState);
@@ -199,6 +235,8 @@ function formatOutput(result: unknown, subcommand: Subcommand, humanFriendly: bo
   switch (subcommand.kind) {
     case "queues-list":
       return formatQueuesOverview(result as Parameters<typeof formatQueuesOverview>[0]);
+    case "queues-delete":
+      return formatQueuesDelete(result as Parameters<typeof formatQueuesDelete>[0]);
     case "jobs-list":
       return formatJobsList(result as Parameters<typeof formatJobsList>[0]);
     case "jobs-get":
@@ -221,8 +259,21 @@ export async function runJsonMode(
   config: Config,
   subcommand: Subcommand,
   humanFriendly: boolean = false,
+  dryRun: boolean = false,
+  yes: boolean = false,
 ): Promise<void> {
   setConfig(config);
+
+  if (subcommand.kind === "queues-delete" && !yes && !dryRun) {
+    const confirmed = await promptConfirmation(
+      `Delete queue '${subcommand.queue}' and all its jobs? This cannot be undone.`,
+    );
+    if (!confirmed) {
+      console.log("Cancelled.");
+      await cleanup();
+      process.exit(0);
+    }
+  }
 
   try {
     await connectRedis();
