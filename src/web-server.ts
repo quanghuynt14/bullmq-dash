@@ -87,7 +87,7 @@ export function createWebClientHtml(websocketPath: string): string {
   </head>
   <body>
     <div id="status" role="status" aria-live="polite"></div>
-    <div id="terminal"></div>
+    <div id="terminal" tabindex="0"></div>
 <script type="module">
       import { Terminal } from "https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm";
       import { FitAddon } from "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/+esm";
@@ -135,15 +135,47 @@ export function createWebClientHtml(websocketPath: string): string {
         },
         cursorBlink: true,
         cursorStyle: 'block',
-        allowProposedApi: true,
       });
 
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
 
+// Key handler: send directly to socket via exposed reference  
+      function handleKey(e) {
+        var ws = window.ws;
+        if (!ws || ws.readyState !== 1) return;
+        
+        var key = e.key;
+        var seq = '';
+        
+        if (key === 'ArrowUp') seq = String.fromCharCode(27) + '[A';
+        else if (key === 'ArrowDown') seq = String.fromCharCode(27) + '[B';
+        else if (key === 'ArrowRight') seq = String.fromCharCode(27) + '[C';
+        else if (key === 'ArrowLeft') seq = String.fromCharCode(27) + '[D';
+        else if (key === 'Enter') seq = String.fromCharCode(13);
+        else if (key === 'Escape') seq = String.fromCharCode(27);
+        else if (key === 'Backspace') seq = String.fromCharCode(127);
+        else if (key === 'Tab') seq = String.fromCharCode(9);
+        else if (key === 'j') seq = 'j';
+        else if (key === 'k') seq = 'k';
+        else if (key === 'q') seq = 'q';
+        else if (key === 'r') seq = 'r';
+        else if (key === 'd') seq = 'd';
+        else if (key === 'g') seq = 'g';
+        else if (key === 'y') seq = 'y';
+        else if (key === 'n') seq = 'n';
+        else if (key === 'c' && e.ctrlKey) seq = String.fromCharCode(3);
+        else if (key.length === 1) seq = key;
+        
+        if (seq) ws.send(seq);
+      }
+      
+      // Add to document with capture to ensure early handling
+      document.addEventListener('keydown', handleKey, true);
+
       term.open(terminalNode);
       fitAddon.fit();
-
+      term.focus();
       window.term = term;
 
       let socket = null;
@@ -157,12 +189,15 @@ export function createWebClientHtml(websocketPath: string): string {
         socket.send(\`\\x1b[RESIZE:\${cols};\${rows}]\`);
       }
 
-      function connect() {
+function connect() {
         attempt += 1;
         setStatus(attempt === 1 ? "connecting" : "reconnecting",
-          attempt === 1 ? "Connecting to bullmq-dash…" : \`Reconnecting (attempt \${attempt})…\`);
+          attempt === 1 ? "Connecting to bullmq-dash..." : ("Reconnecting (attempt " + attempt + ")..."));
 
         socket = new WebSocket(wsBase);
+        
+        // Expose socket globally for key handler
+        window.ws = socket;
 
         socket.addEventListener("open", () => {
           attempt = 0;
@@ -276,6 +311,8 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
     socket.on("message", (raw: ArrayBuffer | Buffer | string) => {
       if (!alive) return;
       const data = String(raw);
+      console.log('[WS->PTY] incoming:', JSON.stringify(data), 'len:', data.length);
+
       const resizeMatch = data.match(
         new RegExp(`^${String.fromCharCode(27)}\\[RESIZE:(\\d+);(\\d+)\\]$`),
       );
@@ -296,6 +333,7 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
       }
 
       try {
+        console.log('[WS->PTY] writing to pty:', data);
         terminal.write(data);
       } catch (err) {
         app.log.warn({ err }, "pty write failed, killing terminal");
