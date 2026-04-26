@@ -76,6 +76,25 @@ bullmq-dash --queues email,notifications,payments
 bullmq-dash --poll-interval 5000
 ```
 
+## Browser Terminal Mode
+
+`bullmq-dash` includes a built-in web terminal mode powered by a Fastify + PTY bridge.
+
+```bash
+bullmq-dash --web --redis-host localhost --redis-port 6379
+```
+
+Then open:
+
+```text
+http://127.0.0.1:3001
+```
+
+Optional web server flags:
+
+- `--web-host <host>` (default: `127.0.0.1`)
+- `--web-port <port>` (default: `3001`)
+
 ## Keyboard Shortcuts
 
 ### Navigation

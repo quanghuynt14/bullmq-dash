@@ -6,7 +6,7 @@ Reference for AI coding agents and developers working on this codebase.
 
 Terminal UI dashboard for monitoring BullMQ queues. Built with Bun, TypeScript, and @opentui/core.
 
-**Runtime:** Bun >= 1.0.0 (Node.js not supported - ESM import attributes)
+**Runtime:** Bun >= 1.3.0 (Node.js not supported - ESM import attributes)
 
 ## Commands
 
@@ -15,7 +15,7 @@ Terminal UI dashboard for monitoring BullMQ queues. Built with Bun, TypeScript, 
 bun run dev              # Run dev mode: bun src/index.ts
 
 # Build
-bun run build            # Production build: tsup
+bun run build            # Production build: bun build.ts
 
 # Type checking
 bun run typecheck        # tsc --noEmit
@@ -38,9 +38,13 @@ bullmq-dash jobs get email 42 --redis-host localhost
 
 # Interactive TUI mode (requires --tui flag)
 bullmq-dash --tui --redis-host localhost
+
+# Web server mode (browser-based terminal, requires --web flag)
+bullmq-dash --web --redis-host localhost
+bullmq-dash --web --redis-host localhost --web-port 3000
 ```
 
-**No test framework configured.** If adding tests, use Bun's built-in test runner.
+**Tests:** Uses Bun's built-in test runner (`bun test`).
 
 ## Non-Interactive / Headless Mode (AI Agent Usage)
 
@@ -64,6 +68,12 @@ bullmq-dash schedulers list email --redis-host localhost
 
 # Get a single scheduler's detail (includes next job + recent history)
 bullmq-dash schedulers get email my-cron --redis-host localhost
+
+# Delete a queue (destructive - with --dry-run preview)
+bullmq-dash queues delete email --redis-host localhost --dry-run
+
+# Delete a queue (destructive - skip confirmation)
+bullmq-dash queues delete email --redis-host localhost --yes
 
 # Limit results (default: 1000)
 bullmq-dash jobs list email --redis-host localhost --page-size 50
@@ -496,3 +506,9 @@ Uses Catppuccin Mocha palette. Key colors:
 | `ioredis`       | Redis client          |
 | `zod`           | Schema validation     |
 | `tsup`          | Build tool            |
+
+## Design System
+Always read DESIGN.md before making any visual or UI decisions.
+All font choices, colors, spacing, and aesthetic direction are defined there.
+Do not deviate without explicit user approval.
+In QA mode, flag any code that doesn't match DESIGN.md.

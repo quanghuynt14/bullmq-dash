@@ -107,6 +107,47 @@ export function formatQueuesOverview(data: QueuesOverviewData): string {
   return lines.join("\n");
 }
 
+interface QueuesDeleteData {
+  timestamp: string;
+  queue: string;
+  deleted: boolean;
+  dryRun: boolean;
+  jobCounts: {
+    wait: number;
+    active: number;
+    completed: number;
+    failed: number;
+    delayed: number;
+  };
+  totalJobs: number;
+}
+
+export function formatQueuesDelete(data: QueuesDeleteData): string {
+  const lines: string[] = [];
+
+  if (data.dryRun) {
+    lines.push(`[DRY RUN] Would delete queue '${data.queue}' with ${data.totalJobs} jobs:`);
+  } else {
+    lines.push(`Deleted queue '${data.queue}' with ${data.totalJobs} jobs:`);
+  }
+
+  lines.push("");
+  lines.push(`  Wait:      ${data.jobCounts.wait}`);
+  lines.push(`  Active:    ${data.jobCounts.active}`);
+  lines.push(`  Completed: ${data.jobCounts.completed}`);
+  lines.push(`  Failed:    ${data.jobCounts.failed}`);
+  lines.push(`  Delayed:   ${data.jobCounts.delayed}`);
+  lines.push(`  ─────────────`);
+  lines.push(`  Total:     ${data.totalJobs}`);
+
+  if (data.dryRun) {
+    lines.push("");
+    lines.push("(dry run - no changes made)");
+  }
+
+  return lines.join("\n");
+}
+
 // ── Jobs list ───────────────────────────────────────────────────────────
 
 interface JobsListData {

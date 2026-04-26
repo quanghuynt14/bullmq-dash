@@ -22,6 +22,7 @@ export type Config = z.infer<typeof configSchema>;
 
 export type Subcommand =
   | { kind: "queues-list" }
+  | { kind: "queues-delete"; queue: string; dryRun?: boolean; yes?: boolean }
   | { kind: "jobs-list"; queue: string; jobState?: string; pageSize?: number }
   | { kind: "jobs-get"; queue: string; jobId: string }
   | {
@@ -47,8 +48,13 @@ export interface CliArgs {
   help?: boolean;
   version?: boolean;
   tui?: boolean;
+  web?: boolean;
+  webHost?: string;
+  webPort?: number;
   subcommand?: Subcommand;
   humanFriendly?: boolean;
+  dryRun?: boolean;
+  yes?: boolean;
 }
 
 let packageVersion: string | null = null;
@@ -58,10 +64,12 @@ bullmq-dash - Terminal UI dashboard for BullMQ queue monitoring
 
 Usage:
   bullmq-dash --tui [options]                            Launch interactive TUI
+  bullmq-dash --web [options]                            Launch browser terminal server
   bullmq-dash <command> [options]                        Headless JSON output
 
 Commands:
   queues list                            List all queues with job counts
+  queues delete <queue>                  Delete a queue and all its jobs
   jobs list <queue>                      List jobs in a queue
   jobs get <queue> <job-id>              Get full detail for a single job
   jobs retry <queue>                     Bulk-retry failed jobs (supports --dry-run)
@@ -85,12 +93,18 @@ TUI Options:
   --poll-interval <ms>     Polling interval in ms (default: 3000)
   --queues <names>         Comma-separated queue names to monitor
 
+Web Options:
+  --web                    Launch built-in browser terminal server
+  --web-host <host>        Bind host for web server (default: 127.0.0.1)
+  --web-port <port>        Bind port for web server (default: 3001)
+
 General:
   -v, --version            Show version
   -h, --help               Show this help message
 
 Examples:
   bullmq-dash --tui --redis-host 192.168.1.100 --redis-port 6380
+  bullmq-dash --web --redis-host localhost --redis-port 6379
   bullmq-dash queues list --redis-host localhost
   bullmq-dash queues list --redis-host localhost --human-friendly
   bullmq-dash jobs list email --redis-host localhost --job-state failed
@@ -115,9 +129,10 @@ const QUEUES_HELP = `
 Usage: bullmq-dash queues <action> [options]
 
 Actions:
-  list    List all queues with job counts
+  list                       List all queues with job counts
+  delete <queue>              Permanently delete a queue and all its jobs
 
-Run 'bullmq-dash queues list --help' for action-specific help.
+Run 'bullmq-dash queues <action> --help' for action-specific help.
 `;
 
 const QUEUES_LIST_HELP = `
@@ -130,6 +145,22 @@ Examples:
   bullmq-dash queues list --redis-host localhost
   bullmq-dash queues list --redis-host localhost --redis-port 6380
   bullmq-dash queues list --redis-host localhost | jq '.queues[] | select(.counts.failed > 0)'
+`;
+
+const QUEUES_DELETE_HELP = `
+Usage: bullmq-dash queues delete <queue> [options]
+
+Permanently delete a queue and all its jobs from Redis.
+
+Options:
+  --dry-run               Preview what would be deleted without making changes
+  --yes                   Skip confirmation prompt (for scripting)
+${CONNECTION_OPTIONS_HELP}
+
+Examples:
+  bullmq-dash queues delete email --redis-host localhost
+  bullmq-dash queues delete email --redis-host localhost --dry-run
+  bullmq-dash queues delete email --redis-host localhost --yes
 `;
 
 const JOBS_HELP = `
@@ -252,7 +283,7 @@ Examples:
 // ── Known subcommands ───────────────────────────────────────────────────
 
 const RESOURCE_COMMANDS = new Set(["queues", "jobs", "schedulers"]);
-const ACTIONS = new Set(["list", "get", "retry"]);
+const ACTIONS = new Set(["list", "get", "retry", "delete"]);
 
 /**
  * Separate subcommand tokens (positional args) from flag tokens.
@@ -299,9 +330,10 @@ function parseSubcommand(
   help: boolean,
   jobState: string | undefined,
   pageSize: number | undefined,
-  since: string | undefined,
+since: string | undefined,
   name: string | undefined,
   dryRun: boolean,
+  yes: boolean = false,
 ): Subcommand | undefined {
   if (positionals.length === 0) return undefined;
 
@@ -343,25 +375,45 @@ function parseSubcommand(
 
   switch (resource) {
     case "queues": {
-      if (action !== "list") {
-        writeError(
-          `Invalid action '${action}' for queues`,
-          "CONFIG_ERROR",
-          "Only 'queues list' is supported.",
-        );
-        process.exit(2);
+      if (action === "list") {
+        if (help) showSubcommandHelp(QUEUES_LIST_HELP);
+        if (positionals.length > 2) {
+          writeError(
+            `Unexpected arguments: ${positionals.slice(2).join(" ")}`,
+            "CONFIG_ERROR",
+            "Usage: queues list [options]",
+          );
+          process.exit(2);
+        }
+        return { kind: "queues-list" };
       }
-      // Action-level help: `bullmq-dash queues list --help`
-      if (help) showSubcommandHelp(QUEUES_LIST_HELP);
-      if (positionals.length > 2) {
-        writeError(
-          `Unexpected arguments: ${positionals.slice(2).join(" ")}`,
-          "CONFIG_ERROR",
-          "Usage: queues list [options]",
-        );
-        process.exit(2);
+      if (action === "delete") {
+        if (help) showSubcommandHelp(QUEUES_DELETE_HELP);
+        const queue = positionals[2];
+        if (!queue) {
+          writeError(
+            "Missing required argument: <queue>",
+            "CONFIG_ERROR",
+            "Usage: queues delete <queue> [--dry-run] [--yes]",
+          );
+          process.exit(2);
+        }
+        if (positionals.length > 3) {
+          writeError(
+            `Unexpected arguments: ${positionals.slice(3).join(" ")}`,
+            "CONFIG_ERROR",
+            "Usage: queues delete <queue> [--dry-run] [--yes]",
+          );
+          process.exit(2);
+        }
+        return { kind: "queues-delete", queue, dryRun, yes };
       }
-      return { kind: "queues-list" };
+      writeError(
+        `Invalid action '${action}' for queues`,
+        "CONFIG_ERROR",
+        "Available actions: list, delete. Use --help for usage.",
+      );
+      process.exit(2);
     }
 
     case "jobs": {
@@ -561,14 +613,18 @@ export function parseCliArgs(): CliArgs {
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
         tui: { type: "boolean" },
+        web: { type: "boolean" },
+        "web-host": { type: "string" },
+        "web-port": { type: "string" },
         // Command-specific flags
         "job-state": { type: "string" },
         "page-size": { type: "string" },
-        "human-friendly": { type: "boolean" },
+"human-friendly": { type: "boolean" },
         // jobs retry flags
         since: { type: "string" },
         name: { type: "string" },
         "dry-run": { type: "boolean" },
+        yes: { type: "boolean" },
       },
       strict: true,
     });
@@ -578,6 +634,7 @@ export function parseCliArgs(): CliArgs {
     const redisDb = parseNumericFlag("redis-db", values["redis-db"]);
     const pollInterval = parseNumericFlag("poll-interval", values["poll-interval"]);
     const pageSize = parseNumericFlag("page-size", values["page-size"], { min: 1 });
+    const webPort = parseNumericFlag("web-port", values["web-port"], { min: 1 });
 
     // Safety rail against accidental multi-million-job retries.
     if (pageSize !== undefined && pageSize > MAX_RETRY_PAGE_SIZE) {
@@ -589,10 +646,11 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    const humanFriendly = values["human-friendly"] ?? false;
+const humanFriendly = values["human-friendly"] ?? false;
     const since = values.since;
     const nameFilter = values.name;
     const dryRun = values["dry-run"] ?? false;
+    const yes = values.yes ?? false;
 
     // Validate --since format at parse time so bad input fails fast with exit 2
     // (CONFIG_ERROR) instead of exit 1 (runtime error) deeper in the fetch path.
@@ -605,6 +663,18 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
+// Parse subcommand from positionals
+    const subcommand = parseSubcommand(
+      positionals,
+      !!values.help,
+      values["job-state"],
+      pageSize,
+      since,
+      nameFilter,
+      dryRun,
+yes ?? false,
+    );
+
     // Parse subcommand from positionals
     const subcommand = parseSubcommand(
       positionals,
@@ -614,6 +684,7 @@ export function parseCliArgs(): CliArgs {
       since,
       nameFilter,
       dryRun,
+      yes ?? false,
     );
 
     // Validate that command-specific flags are only used with the right commands
@@ -689,11 +760,56 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
+    if ((dryRun || yes) && (!subcommand || subcommand.kind !== "queues-delete")) {
+      writeError(
+        "--dry-run and --yes can only be used with 'queues delete'",
+        "CONFIG_ERROR",
+        "Usage: queues delete <queue> [--dry-run] [--yes]",
+      );
+      process.exit(2);
+    }
+
+    if (dryRun && yes) {
+      writeError(
+        "--dry-run and --yes cannot be used together",
+        "CONFIG_ERROR",
+        "Usage: queues delete <queue> [--dry-run] or queues delete <queue> --yes",
+      );
+      process.exit(2);
+    }
+
+    if (values.web && subcommand) {
+      writeError(
+        "--web cannot be used with subcommands",
+        "CONFIG_ERROR",
+        "Use --web for browser terminal mode, or subcommands for headless output.",
+      );
+      process.exit(2);
+    }
+
+    if (values.web && values.tui) {
+      writeError(
+        "--web cannot be used with --tui",
+        "CONFIG_ERROR",
+        "Use --tui for terminal mode or --web for browser mode.",
+      );
+      process.exit(2);
+    }
+
     if (humanFriendly && values.tui) {
       writeError(
         "--human-friendly cannot be used with --tui",
         "CONFIG_ERROR",
         "--human-friendly is for formatting subcommand output. Use --tui alone for the dashboard.",
+      );
+      process.exit(2);
+    }
+
+    if (humanFriendly && values.web) {
+      writeError(
+        "--human-friendly cannot be used with --web",
+        "CONFIG_ERROR",
+        "--human-friendly is only for headless subcommand output.",
       );
       process.exit(2);
     }
@@ -709,8 +825,13 @@ export function parseCliArgs(): CliArgs {
       help: values.help,
       version: values.version,
       tui: values.tui,
+      web: values.web,
+      webHost: values["web-host"],
+      webPort,
       subcommand,
       humanFriendly,
+      dryRun,
+      yes,
     };
   } catch (error) {
     if (error instanceof Error) {

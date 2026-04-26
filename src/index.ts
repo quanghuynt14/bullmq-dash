@@ -11,6 +11,7 @@ import {
 import { runConfigPrompt } from "./ui/config-prompt.js";
 import { runJsonMode } from "./json-reporter.js";
 import { writeError } from "./errors.js";
+import { startWebServer } from "./web-server.js";
 
 async function main() {
   // Parse CLI arguments
@@ -39,7 +40,13 @@ async function main() {
     }
 
     const config = loadConfig(cliArgs);
-    await runJsonMode(config, cliArgs.subcommand, cliArgs.humanFriendly);
+    await runJsonMode(
+      config,
+      cliArgs.subcommand,
+      cliArgs.humanFriendly,
+      cliArgs.dryRun,
+      cliArgs.yes,
+    );
     return;
   }
 
@@ -64,6 +71,32 @@ async function main() {
     } catch (error) {
       writeError(
         "Failed to start application",
+        "RUNTIME_ERROR",
+        error instanceof Error ? error.message : String(error),
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Web mode (requires --web flag)
+  if (cliArgs.web) {
+    if (!hasRedisHostConfig(cliArgs)) {
+      writeError(
+        "Redis host is not configured",
+        "CONFIG_ERROR",
+        "Use --redis-host <host> with --web mode.",
+      );
+      process.exit(2);
+    }
+
+    const config = loadConfig(cliArgs);
+
+    try {
+      await startWebServer(config, cliArgs);
+    } catch (error) {
+      writeError(
+        "Failed to start web server",
         "RUNTIME_ERROR",
         error instanceof Error ? error.message : String(error),
       );

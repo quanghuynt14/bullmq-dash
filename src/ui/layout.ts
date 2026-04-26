@@ -85,12 +85,12 @@ export function createLayout(renderer: CliRenderer): LayoutElements {
   });
   root.add(mainContent);
 
-  // Left pane (queues list) - fixed width
+  // Left pane (queues list) - wider for queue names
   const leftPane = new BoxRenderable(renderer, {
     id: "left-pane",
     flexDirection: "column",
-    width: 30,
-    minWidth: 20,
+    width: 80,
+    minWidth: 60,
     height: "100%",
     backgroundColor: colors.mantle,
     borderStyle: "single",
