@@ -105,7 +105,7 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
 
   app.get("/health", async () => ({ ok: true }));
 
-  app.get(websocketPath, { websocket: true }, (connection: any) => {
+  app.get(websocketPath, { websocket: true }, (socket: any) => {
     const term = pty.spawn(process.execPath, buildTuiArgs(config), {
       name: "xterm-256color",
       cols: 120,
@@ -118,18 +118,18 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
     });
 
     term.onData((chunk: string) => {
-      if (connection.socket.readyState === connection.socket.OPEN) {
-        connection.socket.send(chunk);
+      if (socket.readyState === socket.OPEN) {
+        socket.send(chunk);
       }
     });
 
     term.onExit(() => {
-      if (connection.socket.readyState === connection.socket.OPEN) {
-        connection.socket.close();
+      if (socket.readyState === socket.OPEN) {
+        socket.close();
       }
     });
 
-    connection.socket.on("message", (raw: ArrayBuffer | Buffer | string) => {
+    socket.on("message", (raw: ArrayBuffer | Buffer | string) => {
       const data = String(raw);
       const resizeMatch = data.match(/^\x1b\[RESIZE:(\d+);(\d+)\]$/);
 
@@ -145,11 +145,11 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
       term.write(data);
     });
 
-    connection.socket.on("close", () => {
+    socket.on("close", () => {
       term.kill();
     });
 
-    connection.socket.on("error", () => {
+    socket.on("error", () => {
       term.kill();
     });
   });
