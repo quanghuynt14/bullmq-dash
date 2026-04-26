@@ -13,6 +13,7 @@ let queueNamesCache: {
 
 const QUEUE_NAMES_CACHE_TTL = 5000; // 5 seconds
 const SCAN_COUNT = 1000;
+const DEL_BATCH_SIZE = 500;
 
 export interface QueueStats {
   name: string;
@@ -216,7 +217,11 @@ export async function deleteQueue(
     } while (cursor !== "0");
 
     if (allKeys.length > 0) {
-      await redis.del(...allKeys);
+      for (let i = 0; i < allKeys.length; i += DEL_BATCH_SIZE) {
+        const batch = allKeys.slice(i, i + DEL_BATCH_SIZE);
+        // eslint-disable-next-line no-await-in-loop
+        await redis.del(...batch);
+      }
     }
 
     await queue.close();
