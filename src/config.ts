@@ -215,7 +215,7 @@ Required:
 Filters:
   --since <duration>       Only jobs that failed within this window.
                            Formats: 30s | 5m | 1h | 24h | 7d
-  --name <pattern>         Only jobs whose name exactly matches this string
+  --name <exact>          Only jobs whose name exactly matches this string
   --page-size <n>          Max jobs to consider (default: 1000, max: 10000)
 
 Safety:
@@ -241,7 +241,7 @@ Examples:
   bullmq-dash jobs retry email --redis-host localhost --job-state failed --name welcome-email --dry-run
 
   # Pipe dry-run output through jq to extract sample IDs
-  bullmq-dash jobs retry payments --redis-host localhost --job-state failed --since 24h --dry-run | jq '.sample_job_ids'
+  bullmq-dash jobs retry payments --redis-host localhost --job-state failed --since 24h --dry-run | jq '.sampleJobIds'
 `;
 
 const SCHEDULERS_HELP = `
@@ -636,17 +636,7 @@ export function parseCliArgs(): CliArgs {
     const pageSize = parseNumericFlag("page-size", values["page-size"], { min: 1 });
     const webPort = parseNumericFlag("web-port", values["web-port"], { min: 1 });
 
-    // Safety rail against accidental multi-million-job retries.
-    if (pageSize !== undefined && pageSize > MAX_RETRY_PAGE_SIZE) {
-      writeError(
-        `--page-size exceeds ${MAX_RETRY_PAGE_SIZE}`,
-        "CONFIG_ERROR",
-        `--page-size is capped at ${MAX_RETRY_PAGE_SIZE}. For larger batches, run multiple passes with narrower filters (--since, --name).`,
-      );
-      process.exit(2);
-    }
-
-const humanFriendly = values["human-friendly"] ?? false;
+    const humanFriendly = values["human-friendly"] ?? false;
     const since = values.since;
     const nameFilter = values.name;
     const dryRun = values["dry-run"] ?? false;
@@ -663,19 +653,7 @@ const humanFriendly = values["human-friendly"] ?? false;
       process.exit(2);
     }
 
-// Parse subcommand from positionals
-    const subcommand = parseSubcommand(
-      positionals,
-      !!values.help,
-      values["job-state"],
-      pageSize,
-      since,
-      nameFilter,
-      dryRun,
-yes ?? false,
-    );
-
-    // Parse subcommand from positionals
+    // Parse subcommand from positionals FIRST, then validate pageSize cap
     const subcommand = parseSubcommand(
       positionals,
       !!values.help,
@@ -686,6 +664,19 @@ yes ?? false,
       dryRun,
       yes ?? false,
     );
+
+    // Safety rail against accidental multi-million-job retries (jobs-retry and queues-delete only).
+    // Validation happens AFTER subcommand is known.
+    const isRetryCommand =
+      subcommand && (subcommand.kind === "jobs-retry" || subcommand.kind === "queues-delete");
+    if (isRetryCommand && pageSize !== undefined && pageSize > MAX_RETRY_PAGE_SIZE) {
+      writeError(
+        `--page-size exceeds ${MAX_RETRY_PAGE_SIZE}`,
+        "CONFIG_ERROR",
+        `--page-size is capped at ${MAX_RETRY_PAGE_SIZE}. For larger batches, run multiple passes with narrower filters (--since, --name).`,
+      );
+      process.exit(2);
+    }
 
     // Validate that command-specific flags are only used with the right commands
     if (

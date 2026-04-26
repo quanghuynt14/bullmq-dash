@@ -364,7 +364,7 @@ export async function runJsonMode(
       "REDIS_ERROR",
       error instanceof Error ? error.message : String(error),
     );
-    process.exit(3);
+    process.exit(1);
   }
 
   // Initialize SQLite (always on — core infrastructure)
