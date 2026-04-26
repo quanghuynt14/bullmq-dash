@@ -271,7 +271,7 @@ export async function runJsonMode(
     if (!confirmed) {
       console.log("Cancelled.");
       await cleanup();
-      process.exit(0);
+      process.exit(1);
     }
   }
 

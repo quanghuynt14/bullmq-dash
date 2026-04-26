@@ -216,6 +216,7 @@ export async function deleteQueue(
       }
     } while (cursor !== "0");
 
+    await queue.close();
     queueCache.delete(queueName);
     if (queueNamesCache) {
       queueNamesCache.names = queueNamesCache.names.filter((n) => n !== queueName);
