@@ -44,47 +44,109 @@ function createWebClientHtml(websocketPath: string): string {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>bullmq-dash web</title>
     <style>
-      html, body, #terminal {
+      html, body {
         margin: 0;
         width: 100%;
         height: 100%;
         background: #11111b;
       }
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+      #status {
+        flex: 0 0 auto;
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: #cdd6f4;
+        background: #1e1e2e;
+        border-bottom: 1px solid #313244;
+        padding: 6px 10px;
+        display: none;
+      }
+      #status[data-state="connecting"] { display: block; color: #f9e2af; }
+      #status[data-state="reconnecting"] { display: block; color: #fab387; }
+      #status[data-state="error"] { display: block; color: #f38ba8; }
+      #terminal {
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+      }
     </style>
   </head>
   <body>
+    <div id="status" role="status" aria-live="polite"></div>
     <div id="terminal"></div>
     <script type="module">
       import { WTerm } from "https://cdn.jsdelivr.net/npm/@wterm/dom@0.1.9/+esm";
 
       const terminalNode = document.getElementById("terminal");
-      const wsUrl = new URL("${websocketPath}", window.location.href);
-      wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
+      const statusNode = document.getElementById("status");
+      const wsBase = new URL("${websocketPath}", window.location.href);
+      wsBase.protocol = wsBase.protocol === "https:" ? "wss:" : "ws:";
 
-      const socket = new WebSocket(wsUrl);
+      function setStatus(state, message) {
+        if (!message) {
+          statusNode.removeAttribute("data-state");
+          statusNode.textContent = "";
+          return;
+        }
+        statusNode.dataset.state = state;
+        statusNode.textContent = message;
+      }
+
       const term = new WTerm(terminalNode, {
         onData(data) {
-          socket.send(data);
+          if (socket && socket.readyState === WebSocket.OPEN) socket.send(data);
         },
         onResize(cols, rows) {
-          socket.send(\`\\x1b[RESIZE:\${cols};\${rows}]\`);
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(\`\\x1b[RESIZE:\${cols};\${rows}]\`);
+          }
         },
       });
 
       await term.init();
 
-      socket.addEventListener("open", () => {
-        socket.send(\`\\x1b[RESIZE:\${term.cols};\${term.rows}]\`);
-        term.focus();
+      let socket = null;
+      let attempt = 0;
+      let manualClose = false;
+
+      function connect() {
+        attempt += 1;
+        setStatus(attempt === 1 ? "connecting" : "reconnecting",
+          attempt === 1 ? "Connecting to bullmq-dash…" : \`Reconnecting (attempt \${attempt})…\`);
+
+        socket = new WebSocket(wsBase);
+
+        socket.addEventListener("open", () => {
+          attempt = 0;
+          setStatus(null);
+          socket.send(\`\\x1b[RESIZE:\${term.cols};\${term.rows}]\`);
+          term.focus();
+        });
+
+        socket.addEventListener("message", (event) => {
+          term.write(String(event.data));
+        });
+
+        socket.addEventListener("close", () => {
+          if (manualClose) return;
+          const delay = Math.min(15000, 500 * Math.pow(2, Math.min(attempt - 1, 5)));
+          setStatus("reconnecting", \`Lost connection — retrying in \${Math.round(delay / 1000)}s…\`);
+          setTimeout(connect, delay);
+        });
+
+        socket.addEventListener("error", () => {
+          setStatus("error", "WebSocket error — check the bullmq-dash server logs.");
+        });
+      }
+
+      window.addEventListener("beforeunload", () => {
+        manualClose = true;
+        if (socket) socket.close();
       });
 
-      socket.addEventListener("message", (event) => {
-        term.write(String(event.data));
-      });
-
-      socket.addEventListener("close", () => {
-        term.write("\\r\\n\\x1b[31m[disconnected]\\x1b[0m\\r\\n");
-      });
+      connect();
     </script>
   </body>
 </html>`;
