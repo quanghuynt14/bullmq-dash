@@ -1,6 +1,5 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
-import pty from "node-pty";
 import type { Config, CliArgs } from "./config.js";
 
 function buildTuiArgs(config: Config): string[] {
@@ -44,11 +43,14 @@ export function createWebClientHtml(websocketPath: string): string {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>bullmq-dash web</title>
     <style>
+      @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
+      @import url('https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css');
       html, body {
         margin: 0;
         width: 100%;
         height: 100%;
         background: #11111b;
+        overflow: hidden;
       }
       body {
         display: flex;
@@ -56,11 +58,11 @@ export function createWebClientHtml(websocketPath: string): string {
       }
       #status {
         flex: 0 0 auto;
-        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         color: #cdd6f4;
         background: #1e1e2e;
         border-bottom: 1px solid #313244;
-        padding: 6px 10px;
+        padding: 8px 12px;
         display: none;
       }
       #status[data-state="connecting"] { display: block; color: #f9e2af; }
@@ -70,18 +72,29 @@ export function createWebClientHtml(websocketPath: string): string {
         flex: 1 1 auto;
         min-height: 0;
         width: 100%;
+        padding: 8px;
+        box-sizing: border-box;
+        background: #11111b;
+      }
+      #terminal .xterm {
+        height: 100%;
+        padding: 8px;
+      }
+      #terminal .xterm-viewport {
+        overflow-y: auto !important;
       }
     </style>
   </head>
   <body>
     <div id="status" role="status" aria-live="polite"></div>
     <div id="terminal"></div>
-    <script type="module">
-      import { WTerm } from "https://cdn.jsdelivr.net/npm/@wterm/dom@0.1.9/+esm";
+<script type="module">
+      import { Terminal } from "https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm";
+      import { FitAddon } from "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/+esm";
 
       const terminalNode = document.getElementById("terminal");
       const statusNode = document.getElementById("status");
-      const wsBase = new URL("${websocketPath}", window.location.href);
+      const wsBase = new URL("/pty", window.location.href);
       wsBase.protocol = wsBase.protocol === "https:" ? "wss:" : "ws:";
 
       function setStatus(state, message) {
@@ -94,22 +107,55 @@ export function createWebClientHtml(websocketPath: string): string {
         statusNode.textContent = message;
       }
 
-      const term = new WTerm(terminalNode, {
-        onData(data) {
-          if (socket && socket.readyState === WebSocket.OPEN) socket.send(data);
+      const term = new Terminal({
+        fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        fontSize: 14,
+        fontWeight: 400,
+        theme: {
+          background: '#11111b',
+          foreground: '#cdd6f4',
+          cursor: '#cdd6f4',
+          selectionBackground: '#45475a',
+          black: '#45475a',
+          red: '#f38ba8',
+          green: '#a6e3a1',
+          yellow: '#f9e2af',
+          blue: '#89b4fa',
+          magenta: '#cba6f7',
+          cyan: '#94e2d4',
+          white: '#bac2de',
+          brightBlack: '#585b70',
+          brightRed: '#f38ba8',
+          brightGreen: '#a6e3a1',
+          brightYellow: '#f9e2af',
+          brightBlue: '#89b4fa',
+          brightMagenta: '#cba6f7',
+          brightCyan: '#94e2d2',
+          brightWhite: '#a6adc8',
         },
-        onResize(cols, rows) {
-          if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(\`\\x1b[RESIZE:\${cols};\${rows}]\`);
-          }
-        },
+        cursorBlink: true,
+        cursorStyle: 'block',
+        allowProposedApi: true,
       });
 
-      await term.init();
+      const fitAddon = new FitAddon();
+      term.loadAddon(fitAddon);
+
+      term.open(terminalNode);
+      fitAddon.fit();
+
+      window.term = term;
 
       let socket = null;
       let attempt = 0;
       let manualClose = false;
+
+      function sendResize() {
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        const cols = term.cols;
+        const rows = term.rows;
+        socket.send(\`\\x1b[RESIZE:\${cols};\${rows}]\`);
+      }
 
       function connect() {
         attempt += 1;
@@ -121,8 +167,17 @@ export function createWebClientHtml(websocketPath: string): string {
         socket.addEventListener("open", () => {
           attempt = 0;
           setStatus(null);
-          socket.send(\`\\x1b[RESIZE:\${term.cols};\${term.rows}]\`);
+          sendResize();
           term.focus();
+        });
+
+        let resizeTimeout;
+        window.addEventListener("resize", () => {
+          clearTimeout(resizeTimeout);
+          resizeTimeout = setTimeout(() => {
+            fitAddon.fit();
+            sendResize();
+          }, 100);
         });
 
         socket.addEventListener("message", (event) => {
@@ -168,16 +223,31 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
   app.get("/health", async () => ({ ok: true }));
 
   app.get(websocketPath, { websocket: true }, (socket: any) => {
-    const term = pty.spawn(process.execPath, buildTuiArgs(config), {
-      name: "xterm-256color",
-      cols: 120,
-      rows: 36,
+    console.log("WebSocket connected:", socket?.readyState);
+    
+    const proc = Bun.spawn([process.execPath, ...buildTuiArgs(config)], {
       cwd: process.cwd(),
       env: {
         ...process.env,
         TERM: "xterm-256color",
       },
+      terminal: {
+        cols: 120,
+        rows: 36,
+        data(_terminal, chunk) {
+          if (socket.readyState === socket.OPEN) {
+            const text = typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+            socket.send(text);
+          }
+        },
+      },
     });
+
+    const terminal = proc.terminal!;
+    if (!terminal) {
+      socket.close();
+      return;
+    }
 
     let alive = true;
 
@@ -185,19 +255,18 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
       if (!alive) return;
       alive = false;
       try {
-        term.kill();
+        terminal.close();
       } catch {
-        // pty already gone
+        // terminal already gone
+      }
+      try {
+        proc.kill();
+      } catch {
+        // process already dead
       }
     }
 
-    term.onData((chunk: string) => {
-      if (socket.readyState === socket.OPEN) {
-        socket.send(chunk);
-      }
-    });
-
-    term.onExit(() => {
+    proc.exited.then(() => {
       alive = false;
       if (socket.readyState === socket.OPEN) {
         socket.close();
@@ -207,14 +276,16 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
     socket.on("message", (raw: ArrayBuffer | Buffer | string) => {
       if (!alive) return;
       const data = String(raw);
-      const resizeMatch = data.match(/^\x1b\[RESIZE:(\d+);(\d+)\]$/);
+      const resizeMatch = data.match(
+        new RegExp(`^${String.fromCharCode(27)}\\[RESIZE:(\\d+);(\\d+)\\]$`),
+      );
 
       if (resizeMatch) {
         const cols = Number(resizeMatch[1]);
         const rows = Number(resizeMatch[2]);
         if (Number.isFinite(cols) && Number.isFinite(rows)) {
           try {
-            term.resize(cols, rows);
+            terminal.resize(cols, rows);
           } catch (err) {
             app.log.warn({ err }, "pty resize failed, killing terminal");
             killTerm();
@@ -225,7 +296,7 @@ export async function startWebServer(config: Config, cliArgs: CliArgs): Promise<
       }
 
       try {
-        term.write(data);
+        terminal.write(data);
       } catch (err) {
         app.log.warn({ err }, "pty write failed, killing terminal");
         killTerm();
