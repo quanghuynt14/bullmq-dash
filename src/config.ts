@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { parseArgs } from "util";
 import { writeError } from "./errors.js";
-import { parseDuration, MAX_RETRY_PAGE_SIZE } from "./data/jobs.js";
+import { parseDuration, MAX_RETRY_PAGE_SIZE } from "./data/duration.js";
 
 const configSchema = z.object({
   redis: z.object({
@@ -215,7 +215,7 @@ Required:
 Filters:
   --since <duration>       Only jobs that failed within this window.
                            Formats: 30s | 5m | 1h | 24h | 7d
-  --name <exact>          Only jobs whose name exactly matches this string
+  --name <exact>           Only jobs whose name exactly matches this string
   --page-size <n>          Max jobs to consider (default: 1000, max: 10000)
 
 Safety:
@@ -330,7 +330,7 @@ function parseSubcommand(
   help: boolean,
   jobState: string | undefined,
   pageSize: number | undefined,
-since: string | undefined,
+  since: string | undefined,
   name: string | undefined,
   dryRun: boolean,
   yes: boolean = false,
@@ -619,7 +619,7 @@ export function parseCliArgs(): CliArgs {
         // Command-specific flags
         "job-state": { type: "string" },
         "page-size": { type: "string" },
-"human-friendly": { type: "boolean" },
+        "human-friendly": { type: "boolean" },
         // jobs retry flags
         since: { type: "string" },
         name: { type: "string" },
@@ -665,11 +665,13 @@ export function parseCliArgs(): CliArgs {
       yes ?? false,
     );
 
-    // Safety rail against accidental multi-million-job retries (jobs-retry and queues-delete only).
-    // Validation happens AFTER subcommand is known.
-    const isRetryCommand =
-      subcommand && (subcommand.kind === "jobs-retry" || subcommand.kind === "queues-delete");
-    if (isRetryCommand && pageSize !== undefined && pageSize > MAX_RETRY_PAGE_SIZE) {
+    // Safety rail against accidental multi-million-job retries. Only applies to
+    // jobs-retry — queues-delete doesn't accept --page-size (gated below).
+    if (
+      subcommand?.kind === "jobs-retry" &&
+      pageSize !== undefined &&
+      pageSize > MAX_RETRY_PAGE_SIZE
+    ) {
       writeError(
         `--page-size exceeds ${MAX_RETRY_PAGE_SIZE}`,
         "CONFIG_ERROR",
@@ -724,15 +726,6 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    if (values["dry-run"] && (!subcommand || subcommand.kind !== "jobs-retry")) {
-      writeError(
-        "--dry-run can only be used with 'jobs retry'",
-        "CONFIG_ERROR",
-        "Usage: jobs retry <queue> --job-state failed --dry-run",
-      );
-      process.exit(2);
-    }
-
     if (humanFriendly && !subcommand) {
       writeError(
         "--human-friendly can only be used with subcommands",
@@ -751,11 +744,23 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    if ((dryRun || yes) && (!subcommand || subcommand.kind !== "queues-delete")) {
+    if (
+      dryRun &&
+      (!subcommand || (subcommand.kind !== "jobs-retry" && subcommand.kind !== "queues-delete"))
+    ) {
       writeError(
-        "--dry-run and --yes can only be used with 'queues delete'",
+        "--dry-run can only be used with 'jobs retry' or 'queues delete'",
         "CONFIG_ERROR",
-        "Usage: queues delete <queue> [--dry-run] [--yes]",
+        "Usage: jobs retry <queue> --job-state failed --dry-run  or  queues delete <queue> --dry-run",
+      );
+      process.exit(2);
+    }
+
+    if (yes && (!subcommand || subcommand.kind !== "queues-delete")) {
+      writeError(
+        "--yes can only be used with 'queues delete'",
+        "CONFIG_ERROR",
+        "Usage: queues delete <queue> --yes",
       );
       process.exit(2);
     }

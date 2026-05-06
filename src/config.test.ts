@@ -237,13 +237,24 @@ describe("parseCliArgs", () => {
 
 describe("parseCliArgs — jobs retry", () => {
   let originalArgv: string[];
+  // Safety net: any unintended `process.exit` inside parseCliArgs throws so the
+  // test fails loudly. Without this, bun:test silently terminates on exit() and
+  // reports nothing — which is how the broken --dry-run gates shipped originally.
+  let exitSafetySpy: ReturnType<typeof spyOn>;
+  let stderrSafetySpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     originalArgv = process.argv;
+    exitSafetySpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`unexpected process.exit(${code})`);
+    });
+    stderrSafetySpy = spyOn(process.stderr, "write").mockImplementation(() => true);
   });
 
   afterEach(() => {
     process.argv = originalArgv;
+    exitSafetySpy.mockRestore();
+    stderrSafetySpy.mockRestore();
   });
 
   it("parses a basic dry-run retry", () => {

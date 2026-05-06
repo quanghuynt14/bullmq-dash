@@ -1,5 +1,6 @@
 import type { Job, JobType } from "bullmq";
 import { getQueue } from "./queues.js";
+import { DEFAULT_RETRY_PAGE_SIZE, MAX_RETRY_PAGE_SIZE, parseDuration } from "./duration.js";
 
 export type JobListView =
   | "latest"
@@ -385,33 +386,7 @@ export async function deleteJob(queueName: string, jobId: string): Promise<boole
 
 // ── jobs retry ──────────────────────────────────────────────────────────
 
-const DURATION_PATTERN = /^(\d+)([smhd])$/;
-const MS_PER_UNIT: Record<string, number> = {
-  s: 1000,
-  m: 60 * 1000,
-  h: 60 * 60 * 1000,
-  d: 24 * 60 * 60 * 1000,
-};
-
-export const DEFAULT_RETRY_PAGE_SIZE = 1000;
-export const MAX_RETRY_PAGE_SIZE = 10000;
 const SAMPLE_ID_COUNT = 5;
-
-/**
- * Parse a duration string like "30s", "5m", "1h", "24h", "7d" into milliseconds.
- * Returns null if the string is invalid. Callers should translate null into a
- * structured CLI error.
- */
-export function parseDuration(raw: string): number | null {
-  const match = DURATION_PATTERN.exec(raw);
-  if (!match) return null;
-  const n = parseInt(match[1]!, 10);
-  const unit = match[2]!;
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const unitMs = MS_PER_UNIT[unit];
-  if (!unitMs) return null;
-  return n * unitMs;
-}
 
 export interface RetryResult {
   matched: number;

@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { formatRelativeTime, formatTimestamp, parseDuration } from "./jobs.js";
+import { formatRelativeTime, formatTimestamp } from "./jobs.js";
+import { parseDuration } from "./duration.js";
 
 describe("formatRelativeTime", () => {
   let originalDateNow: typeof Date.now;
