@@ -5,6 +5,15 @@ All notable changes to bullmq-dash are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`jobs retry <queue>` subcommand.** Bulk-retry failed BullMQ jobs from the CLI. `--dry-run` (the hero flag) prints matched count and sample job IDs without touching Redis. Filters: `--job-state failed` (required), `--since 30s|5m|1h|24h|7d` (filter by time-of-failure, falls back to creation timestamp when `finishedOn` is missing), `--name <exact>` (exact job-name match), `--page-size <=10000>` (safety rail). Live retries are best-effort: per-job errors collect into `errors[]` and the loop never stops mid-batch. JSON envelope: `{matched, retried, errors, sampleJobIds, totalFailed, truncated}`.
+
+### Changed
+- **Redis connection failure exit code: `3` → `1`** (affects all subcommands: `queues list`, `queues delete`, `jobs list`, `jobs get`, `jobs retry`, `schedulers list`, `schedulers get`). Aligns with the documented exit-code taxonomy (`1` = runtime/fetch error, `3` = `jobs retry` per-job partial failure). Scripts that branched on exit `3` for Redis-down need to switch to `1`.
+- **`--page-size` cap** is now enforced at 10000 for `jobs retry` (CONFIG_ERROR / exit 2 above the cap). `jobs list` and `schedulers list` are unaffected.
+
 ## [0.2.1] - 2026-04-26
 
 ### Fixed

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { parseArgs } from "util";
 import { writeError } from "./errors.js";
+import { parseDuration, MAX_RETRY_PAGE_SIZE } from "./data/duration.js";
 
 const configSchema = z.object({
   redis: z.object({
@@ -24,6 +25,15 @@ export type Subcommand =
   | { kind: "queues-delete"; queue: string; dryRun?: boolean; yes?: boolean }
   | { kind: "jobs-list"; queue: string; jobState?: string; pageSize?: number }
   | { kind: "jobs-get"; queue: string; jobId: string }
+  | {
+      kind: "jobs-retry";
+      queue: string;
+      jobState: string;
+      since?: string;
+      name?: string;
+      pageSize?: number;
+      dryRun: boolean;
+    }
   | { kind: "schedulers-list"; queue: string; pageSize?: number }
   | { kind: "schedulers-get"; queue: string; schedulerId: string };
 
@@ -62,6 +72,7 @@ Commands:
   queues delete <queue>                  Delete a queue and all its jobs
   jobs list <queue>                      List jobs in a queue
   jobs get <queue> <job-id>              Get full detail for a single job
+  jobs retry <queue>                     Bulk-retry failed jobs (supports --dry-run)
   schedulers list <queue>                List schedulers in a queue
   schedulers get <queue> <scheduler-id>  Get detail for a single scheduler
 
@@ -98,6 +109,7 @@ Examples:
   bullmq-dash queues list --redis-host localhost --human-friendly
   bullmq-dash jobs list email --redis-host localhost --job-state failed
   bullmq-dash jobs get email 123 --redis-host localhost
+  bullmq-dash jobs retry email --redis-host localhost --job-state failed --since 1h --dry-run
 `;
 
 // ── Per-subcommand help text ────────────────────────────────────────────
@@ -157,6 +169,7 @@ Usage: bullmq-dash jobs <action> <queue> [options]
 Actions:
   list <queue>             List jobs in a queue
   get <queue> <job-id>     Get full detail for a single job
+  retry <queue>            Bulk-retry failed jobs (supports --dry-run)
 
 Run 'bullmq-dash jobs <action> --help' for action-specific help.
 `;
@@ -188,6 +201,47 @@ Examples:
   bullmq-dash jobs get email 123 --redis-host localhost
   bullmq-dash jobs get email 123 --redis-host localhost | jq '.job.stacktrace'
   bullmq-dash jobs get email 123 --redis-host localhost | jq '.job.data'
+`;
+
+const JOBS_RETRY_HELP = `
+Usage: bullmq-dash jobs retry <queue> --job-state failed [options]
+
+Bulk-retry failed jobs in a queue. Operates on failed jobs only in v1.
+Always use --dry-run first to see what would be retried.
+
+Required:
+  --job-state failed       Must be 'failed' (other states not supported in v1)
+
+Filters:
+  --since <duration>       Only jobs that failed within this window.
+                           Formats: 30s | 5m | 1h | 24h | 7d
+  --name <exact>           Only jobs whose name exactly matches this string
+  --page-size <n>          Max jobs to consider (default: 1000, max: 10000)
+
+Safety:
+  --dry-run                Show what WOULD be retried without enqueueing anything.
+                           Prints matched count and sample job IDs.
+
+Exit codes:
+  0  Success (dry-run complete, or all matched jobs retried). Includes empty-match.
+  1  Runtime / fetch error (e.g. Redis connection failed)
+  2  Config error (invalid flags, missing --job-state, --page-size > 10000)
+  3  Partial failure — some jobs retried, some errored (see errors[])
+
+${CONNECTION_OPTIONS_HELP}
+
+Examples:
+  # Always start with a dry-run
+  bullmq-dash jobs retry payments --redis-host localhost --job-state failed --since 1h --dry-run
+
+  # Then retry for real
+  bullmq-dash jobs retry payments --redis-host localhost --job-state failed --since 1h
+
+  # Filter by job name
+  bullmq-dash jobs retry email --redis-host localhost --job-state failed --name welcome-email --dry-run
+
+  # Pipe dry-run output through jq to extract sample IDs
+  bullmq-dash jobs retry payments --redis-host localhost --job-state failed --since 24h --dry-run | jq '.sampleJobIds'
 `;
 
 const SCHEDULERS_HELP = `
@@ -229,7 +283,7 @@ Examples:
 // ── Known subcommands ───────────────────────────────────────────────────
 
 const RESOURCE_COMMANDS = new Set(["queues", "jobs", "schedulers"]);
-const ACTIONS = new Set(["list", "get", "delete"]);
+const ACTIONS = new Set(["list", "get", "retry", "delete"]);
 
 /**
  * Separate subcommand tokens (positional args) from flag tokens.
@@ -276,7 +330,9 @@ function parseSubcommand(
   help: boolean,
   jobState: string | undefined,
   pageSize: number | undefined,
-  dryRun: boolean = false,
+  since: string | undefined,
+  name: string | undefined,
+  dryRun: boolean,
   yes: boolean = false,
 ): Subcommand | undefined {
   if (positionals.length === 0) return undefined;
@@ -406,10 +462,49 @@ function parseSubcommand(
         }
         return { kind: "jobs-get", queue, jobId };
       }
+      if (action === "retry") {
+        // Action-level help: `bullmq-dash jobs retry --help`
+        if (help) showSubcommandHelp(JOBS_RETRY_HELP);
+        const queue = positionals[2];
+        if (!queue) {
+          writeError(
+            "Missing required argument: <queue>",
+            "CONFIG_ERROR",
+            "Usage: jobs retry <queue> --job-state failed [--since <duration>] [--name <pattern>] [--dry-run]",
+          );
+          process.exit(2);
+        }
+        if (positionals.length > 3) {
+          writeError(
+            `Unexpected arguments: ${positionals.slice(3).join(" ")}`,
+            "CONFIG_ERROR",
+            "Usage: jobs retry <queue> --job-state failed [options]",
+          );
+          process.exit(2);
+        }
+        // Retry only operates on failed jobs. Guard against footguns.
+        if (!jobState) {
+          writeError(
+            "--job-state is required for 'jobs retry'",
+            "CONFIG_ERROR",
+            "Use --job-state failed. Other states are not currently supported.",
+          );
+          process.exit(2);
+        }
+        if (jobState !== "failed") {
+          writeError(
+            `Unsupported --job-state '${jobState}' for 'jobs retry'`,
+            "CONFIG_ERROR",
+            "Only --job-state failed is currently supported.",
+          );
+          process.exit(2);
+        }
+        return { kind: "jobs-retry", queue, jobState, since, name, pageSize, dryRun };
+      }
       writeError(
         `Invalid action '${action}' for jobs`,
         "CONFIG_ERROR",
-        "Available actions: list, get. Use --help for usage.",
+        "Available actions: list, get, retry. Use --help for usage.",
       );
       process.exit(2);
     }
@@ -525,6 +620,9 @@ export function parseCliArgs(): CliArgs {
         "job-state": { type: "string" },
         "page-size": { type: "string" },
         "human-friendly": { type: "boolean" },
+        // jobs retry flags
+        since: { type: "string" },
+        name: { type: "string" },
         "dry-run": { type: "boolean" },
         yes: { type: "boolean" },
       },
@@ -539,36 +637,91 @@ export function parseCliArgs(): CliArgs {
     const webPort = parseNumericFlag("web-port", values["web-port"], { min: 1 });
 
     const humanFriendly = values["human-friendly"] ?? false;
+    const since = values.since;
+    const nameFilter = values.name;
     const dryRun = values["dry-run"] ?? false;
     const yes = values.yes ?? false;
 
+    // Validate --since format at parse time so bad input fails fast with exit 2
+    // (CONFIG_ERROR) instead of exit 1 (runtime error) deeper in the fetch path.
+    if (since !== undefined && parseDuration(since) === null) {
+      writeError(
+        `Invalid --since value '${since}'`,
+        "CONFIG_ERROR",
+        "Expected format: 30s, 5m, 1h, 24h, 7d. Must be a positive integer followed by s/m/h/d.",
+      );
+      process.exit(2);
+    }
+
+    // Parse subcommand from positionals FIRST, then validate pageSize cap
     const subcommand = parseSubcommand(
       positionals,
       !!values.help,
       values["job-state"],
       pageSize,
+      since,
+      nameFilter,
       dryRun,
-      yes,
+      yes ?? false,
     );
 
-    // Validate that command-specific flags are only used with the right commands
-    if (values["job-state"] && (!subcommand || subcommand.kind !== "jobs-list")) {
+    // Safety rail against accidental multi-million-job retries. Only applies to
+    // jobs-retry — queues-delete doesn't accept --page-size (gated below).
+    if (
+      subcommand?.kind === "jobs-retry" &&
+      pageSize !== undefined &&
+      pageSize > MAX_RETRY_PAGE_SIZE
+    ) {
       writeError(
-        "--job-state can only be used with 'jobs list'",
+        `--page-size exceeds ${MAX_RETRY_PAGE_SIZE}`,
         "CONFIG_ERROR",
-        "Usage: jobs list <queue> --job-state <state>",
+        `--page-size is capped at ${MAX_RETRY_PAGE_SIZE}. For larger batches, run multiple passes with narrower filters (--since, --name).`,
+      );
+      process.exit(2);
+    }
+
+    // Validate that command-specific flags are only used with the right commands
+    if (
+      values["job-state"] &&
+      (!subcommand || (subcommand.kind !== "jobs-list" && subcommand.kind !== "jobs-retry"))
+    ) {
+      writeError(
+        "--job-state can only be used with 'jobs list' or 'jobs retry'",
+        "CONFIG_ERROR",
+        "Usage: jobs list <queue> --job-state <state>  or  jobs retry <queue> --job-state failed",
       );
       process.exit(2);
     }
 
     if (
       values["page-size"] &&
-      (!subcommand || (subcommand.kind !== "jobs-list" && subcommand.kind !== "schedulers-list"))
+      (!subcommand ||
+        (subcommand.kind !== "jobs-list" &&
+          subcommand.kind !== "jobs-retry" &&
+          subcommand.kind !== "schedulers-list"))
     ) {
       writeError(
-        "--page-size can only be used with 'jobs list' or 'schedulers list'",
+        "--page-size can only be used with 'jobs list', 'jobs retry', or 'schedulers list'",
         "CONFIG_ERROR",
         "Usage: jobs list <queue> --page-size <n>",
+      );
+      process.exit(2);
+    }
+
+    if (values.since && (!subcommand || subcommand.kind !== "jobs-retry")) {
+      writeError(
+        "--since can only be used with 'jobs retry'",
+        "CONFIG_ERROR",
+        "Usage: jobs retry <queue> --job-state failed --since 1h",
+      );
+      process.exit(2);
+    }
+
+    if (values.name && (!subcommand || subcommand.kind !== "jobs-retry")) {
+      writeError(
+        "--name can only be used with 'jobs retry'",
+        "CONFIG_ERROR",
+        "Usage: jobs retry <queue> --job-state failed --name <pattern>",
       );
       process.exit(2);
     }
@@ -591,11 +744,23 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    if ((dryRun || yes) && (!subcommand || subcommand.kind !== "queues-delete")) {
+    if (
+      dryRun &&
+      (!subcommand || (subcommand.kind !== "jobs-retry" && subcommand.kind !== "queues-delete"))
+    ) {
       writeError(
-        "--dry-run and --yes can only be used with 'queues delete'",
+        "--dry-run can only be used with 'jobs retry' or 'queues delete'",
         "CONFIG_ERROR",
-        "Usage: queues delete <queue> [--dry-run] [--yes]",
+        "Usage: jobs retry <queue> --job-state failed --dry-run  or  queues delete <queue> --dry-run",
+      );
+      process.exit(2);
+    }
+
+    if (yes && (!subcommand || subcommand.kind !== "queues-delete")) {
+      writeError(
+        "--yes can only be used with 'queues delete'",
+        "CONFIG_ERROR",
+        "Usage: queues delete <queue> --yes",
       );
       process.exit(2);
     }

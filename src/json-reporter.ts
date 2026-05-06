@@ -1,7 +1,7 @@
 import { connectRedis, disconnectRedis } from "./data/redis.js";
 import { discoverQueueNames, getQueueStats, closeAllQueues, deleteQueue } from "./data/queues.js";
-import { getAllJobs, getJobDetail, VALID_JOB_STATUSES } from "./data/jobs.js";
-import type { JsonJobStatus } from "./data/jobs.js";
+import { getAllJobs, getJobDetail, retryFailedJobs, VALID_JOB_STATUSES } from "./data/jobs.js";
+import type { JsonJobStatus, RetryResult } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
 import { writeError } from "./errors.js";
 import { createSqliteDb, closeSqliteDb, upsertJobs } from "./data/sqlite.js";
@@ -12,6 +12,7 @@ import {
   formatQueuesOverview,
   formatJobsList,
   formatJobDetail,
+  formatJobsRetry,
   formatSchedulersList,
   formatSchedulerDetail,
   formatQueuesDelete,
@@ -98,6 +99,60 @@ async function fetchJobsList(queueName: string, jobState?: JsonJobStatus, maxRes
     jobState: jobState ?? "all",
     jobs,
     total,
+  };
+}
+
+// ── Jobs retry ──────────────────────────────────────────────────────────
+
+export interface JobsRetryOutput {
+  timestamp: string;
+  command: "jobs-retry";
+  dryRun: boolean;
+  queue: string;
+  filter: { jobState: string; since?: string; name?: string };
+  matched: number;
+  retried: number;
+  errors: RetryResult["errors"];
+  sampleJobIds: string[];
+  totalFailed: number;
+  truncated: boolean;
+}
+
+/**
+ * Exit-code contract for `jobs retry`: 3 on real partial failure, 0 otherwise.
+ * Dry-run always exits 0 — it's informational by definition.
+ */
+export function computeRetryExitCode(result: JobsRetryOutput): number {
+  if (!result.dryRun && result.errors.length > 0) return 3;
+  return 0;
+}
+
+async function fetchJobsRetry(
+  queueName: string,
+  jobState: string,
+  since: string | undefined,
+  name: string | undefined,
+  pageSize: number | undefined,
+  dryRun: boolean,
+): Promise<JobsRetryOutput> {
+  const result = await retryFailedJobs(queueName, { since, name, pageSize, dryRun });
+
+  const filter: JobsRetryOutput["filter"] = { jobState };
+  if (since !== undefined) filter.since = since;
+  if (name !== undefined) filter.name = name;
+
+  return {
+    timestamp: new Date().toISOString(),
+    command: "jobs-retry",
+    dryRun,
+    queue: queueName,
+    filter,
+    matched: result.matched,
+    retried: result.retried,
+    errors: result.errors,
+    sampleJobIds: result.sampleJobIds,
+    totalFailed: result.totalFailed,
+    truncated: result.truncated,
   };
 }
 
@@ -214,6 +269,19 @@ async function routeAndFetch(subcommand: Subcommand): Promise<unknown> {
     case "jobs-get":
       return fetchJobDetail(subcommand.queue, subcommand.jobId);
 
+    case "jobs-retry": {
+      const validState = validateJobState(subcommand.jobState);
+      if (!validState) throw new Error("jobs retry requires --job-state");
+      return fetchJobsRetry(
+        subcommand.queue,
+        validState,
+        subcommand.since,
+        subcommand.name,
+        subcommand.pageSize,
+        subcommand.dryRun,
+      );
+    }
+
     case "schedulers-list":
       return fetchSchedulersList(subcommand.queue, subcommand.pageSize);
 
@@ -243,6 +311,8 @@ function formatOutput(result: unknown, subcommand: Subcommand, humanFriendly: bo
       return formatJobsList(result as Parameters<typeof formatJobsList>[0]);
     case "jobs-get":
       return formatJobDetail(result as Parameters<typeof formatJobDetail>[0]);
+    case "jobs-retry":
+      return formatJobsRetry(result as Parameters<typeof formatJobsRetry>[0]);
     case "schedulers-list":
       return formatSchedulersList(result as Parameters<typeof formatSchedulersList>[0]);
     case "schedulers-get":
@@ -294,16 +364,24 @@ export async function runJsonMode(
       "REDIS_ERROR",
       error instanceof Error ? error.message : String(error),
     );
-    process.exit(3);
+    process.exit(1);
   }
 
   // Initialize SQLite (always on — core infrastructure)
   createSqliteDb();
 
+  let exitCode = 0;
   try {
     const result = await routeAndFetch(subcommand);
     const output = formatOutput(result, subcommand, humanFriendly);
     process.stdout.write(output + "\n");
+
+    // jobs-retry has a richer exit-code contract: non-zero when the caller
+    // needs to know a real live retry ran into per-job errors. Dry-run always
+    // returns 0 — it's informational by definition.
+    if (subcommand.kind === "jobs-retry") {
+      exitCode = computeRetryExitCode(result as JobsRetryOutput);
+    }
   } catch (error) {
     writeError(
       "Failed to fetch data",
@@ -319,5 +397,5 @@ export async function runJsonMode(
   }
 
   await cleanup();
-  process.exit(0);
+  process.exit(exitCode);
 }

@@ -234,3 +234,208 @@ describe("parseCliArgs", () => {
     stderrSpy.mockRestore();
   });
 });
+
+describe("parseCliArgs — jobs retry", () => {
+  let originalArgv: string[];
+  // Safety net: any unintended `process.exit` inside parseCliArgs throws so the
+  // test fails loudly. Without this, bun:test silently terminates on exit() and
+  // reports nothing — which is how the broken --dry-run gates shipped originally.
+  let exitSafetySpy: ReturnType<typeof spyOn>;
+  let stderrSafetySpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    originalArgv = process.argv;
+    exitSafetySpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`unexpected process.exit(${code})`);
+    });
+    stderrSafetySpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    exitSafetySpy.mockRestore();
+    stderrSafetySpy.mockRestore();
+  });
+
+  it("parses a basic dry-run retry", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "retry",
+      "payments",
+      "--redis-host",
+      "localhost",
+      "--job-state",
+      "failed",
+      "--dry-run",
+    ];
+    const args = parseCliArgs();
+    expect(args.subcommand).toEqual({
+      kind: "jobs-retry",
+      queue: "payments",
+      jobState: "failed",
+      since: undefined,
+      name: undefined,
+      pageSize: undefined,
+      dryRun: true,
+    });
+  });
+
+  it("parses --since and --name filters", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "retry",
+      "payments",
+      "--redis-host",
+      "localhost",
+      "--job-state",
+      "failed",
+      "--since",
+      "1h",
+      "--name",
+      "welcome-email",
+    ];
+    const args = parseCliArgs();
+    expect(args.subcommand).toEqual({
+      kind: "jobs-retry",
+      queue: "payments",
+      jobState: "failed",
+      since: "1h",
+      name: "welcome-email",
+      pageSize: undefined,
+      dryRun: false,
+    });
+  });
+
+  it("exits with code 2 when --job-state is missing", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "retry",
+      "payments",
+      "--redis-host",
+      "localhost",
+    ];
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 when --job-state is not 'failed'", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "retry",
+      "payments",
+      "--redis-host",
+      "localhost",
+      "--job-state",
+      "completed",
+    ];
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 when queue positional is missing", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "retry",
+      "--redis-host",
+      "localhost",
+      "--job-state",
+      "failed",
+    ];
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 when --dry-run is used outside 'jobs retry'", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "queues",
+      "list",
+      "--redis-host",
+      "localhost",
+      "--dry-run",
+    ];
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 when --since is used outside 'jobs retry'", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "list",
+      "email",
+      "--redis-host",
+      "localhost",
+      "--since",
+      "1h",
+    ];
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 when --page-size exceeds 10000", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "retry",
+      "payments",
+      "--redis-host",
+      "localhost",
+      "--job-state",
+      "failed",
+      "--page-size",
+      "100000",
+    ];
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+});
