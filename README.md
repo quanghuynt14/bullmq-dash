@@ -34,11 +34,11 @@ npx bullmq-dash
 ### Quick Start
 
 ```bash
-# Interactive setup (prompts for Redis connection)
-bullmq-dash
+# Interactive setup (prompts for a Redis URL)
+bullmq-dash --tui
 
-# Connect with CLI options
-bullmq-dash --redis-host localhost --redis-port 6379
+# Connect with a URL
+bullmq-dash --tui --redis-url redis://localhost:6379
 ```
 
 ### CLI Options
@@ -47,41 +47,102 @@ bullmq-dash --redis-host localhost --redis-port 6379
 bullmq-dash [options]
 
 Options:
-  --redis-host <host>      Redis host (default: localhost)
-  --redis-port <port>      Redis port (default: 6379)
-  --redis-password <pass>  Redis password
-  --redis-db <db>          Redis database number (default: 0)
+  --profile <name>         Use a named profile from the config file
+  --config <path>          Path to config file
+                           (default: ~/.config/bullmq-dash/config.json)
+  --redis-url <url>        Full connection URL: redis://[user:pass@]host[:port][/db]
+                           (rediss:// for TLS)
   --poll-interval <ms>     Polling interval in milliseconds (default: 3000)
   --queues <names>         Comma-separated queue names to monitor
   -v, --version            Show version
   -h, --help               Show help
 ```
 
+Connections are always specified as a single Redis URL — the discrete
+`--redis-host` / `--redis-port` / `--redis-password` / `--redis-db` flags
+were retired so there is one obvious way to point bullmq-dash at a server.
+
 ### Examples
 
 ```bash
-# Interactive setup
-bullmq-dash
+# Interactive setup (prompts for a URL)
+bullmq-dash --tui
 
-# Connect to remote Redis
-bullmq-dash --redis-host 192.168.1.100 --redis-port 6380
+# Connect via a URL
+bullmq-dash --tui --redis-url redis://localhost:6379
+bullmq-dash --tui --redis-url redis://user:pass@redis.example.com:6379/0
 
-# Connect with password
-bullmq-dash --redis-host redis.example.com --redis-password secret
+# Use TLS (rediss://) and percent-encode special chars in passwords
+bullmq-dash --tui --redis-url rediss://default:p%40ss@redis.upstash.io:6379
+
+# Connect via a named profile from the config file
+bullmq-dash --tui --profile prod
 
 # Monitor specific queues only
-bullmq-dash --queues email,notifications,payments
+bullmq-dash --tui --redis-url redis://localhost --queues email,notifications,payments
 
 # Custom polling interval (5 seconds)
-bullmq-dash --poll-interval 5000
+bullmq-dash --tui --redis-url redis://localhost --poll-interval 5000
 ```
+
+## Connection Profiles
+
+Save Redis connections as named profiles so you don't have to remember (or paste)
+hosts and ports every time. Drop a JSON file at `~/.config/bullmq-dash/config.json`
+and reference it with `--profile`:
+
+```json
+{
+  "defaultProfile": "local",
+  "profiles": {
+    "local": { "redis": { "url": "redis://localhost:6379" } },
+    "prod": {
+      "redis": { "url": "${REDIS_PROD_URL}" },
+      "queues": ["payments", "notifications"]
+    },
+    "upstash": { "redis": { "url": "${REDIS_URL}" } }
+  }
+}
+```
+
+Each profile carries a single `redis.url`. The `${VAR}` form interpolates an environment variable as the **whole value** (partial substitution is intentionally not supported), which pairs nicely with managed providers (Upstash, Heroku Redis, Render, Railway, Fly) that hand you a single `REDIS_URL` env var. For inline auth, percent-encode any special characters in the password.
+
+```bash
+# Connect using the default profile (defaultProfile field above)
+bullmq-dash --tui
+
+# Pick a specific profile
+bullmq-dash --tui --profile prod
+bullmq-dash queues list --profile prod
+
+# A direct --redis-url overrides whatever the profile would have selected
+bullmq-dash queues list --profile prod --redis-url redis://localhost:6380
+```
+
+**Resolution order** (highest precedence first):
+
+1. `--redis-url <url>`
+2. `redis.url` from `--profile <name>` or the file's `defaultProfile`
+3. Otherwise: the interactive prompt (TUI mode) or `CONFIG_ERROR` (subcommands / `--web`)
+
+**File location** — the first match wins:
+
+1. `--config <path>`
+2. `$BULLMQ_DASH_CONFIG`
+3. `$XDG_CONFIG_HOME/bullmq-dash/config.json`
+4. `~/.config/bullmq-dash/config.json`
+
+**Secrets via environment variables.** Any string value of the exact form
+`${VAR_NAME}` is substituted from the environment at load time. If the variable
+is unset, the command fails fast with `CONFIG_ERROR` rather than connecting
+without auth — keep passwords out of the file itself.
 
 ## Browser Terminal Mode
 
 `bullmq-dash` includes a built-in web terminal mode powered by a Fastify + PTY bridge.
 
 ```bash
-bullmq-dash --web --redis-host localhost --redis-port 6379
+bullmq-dash --web --redis-url redis://localhost:6379
 ```
 
 Then open:

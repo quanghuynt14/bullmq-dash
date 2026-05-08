@@ -6,6 +6,7 @@ import {
   parseCliArgs,
   parseNumericFlag,
   parseQueueNames,
+  shouldLoadProfile,
 } from "./config.js";
 
 const packageJson = JSON.parse(
@@ -58,6 +59,23 @@ describe("parseQueueNames", () => {
   });
 });
 
+describe("shouldLoadProfile", () => {
+  it("skips ambient profile loading when --redis-url is present", () => {
+    expect(shouldLoadProfile({ redisUrl: "redis://localhost" })).toBe(false);
+  });
+
+  it("loads profiles when --redis-url is absent", () => {
+    expect(shouldLoadProfile({})).toBe(true);
+  });
+
+  it("loads profiles when explicit profile/config behavior is requested", () => {
+    expect(shouldLoadProfile({ redisUrl: "redis://localhost", profile: "prod" })).toBe(true);
+    expect(
+      shouldLoadProfile({ redisUrl: "redis://localhost", configPath: "/tmp/config.json" }),
+    ).toBe(true);
+  });
+});
+
 describe("getVersionText", () => {
   it("uses the version from package.json", () => {
     expect(getVersionText()).toBe(`bullmq-dash v${packageJson.version}`);
@@ -70,9 +88,9 @@ describe("extractSubcommand", () => {
   });
 
   it("separates positional args from flags", () => {
-    expect(extractSubcommand(["jobs", "list", "--redis-host", "localhost"])).toEqual({
+    expect(extractSubcommand(["jobs", "list", "--redis-url", "redis://localhost"])).toEqual({
       positionals: ["jobs", "list"],
-      flagArgv: ["--redis-host", "localhost"],
+      flagArgv: ["--redis-url", "redis://localhost"],
     });
   });
 
@@ -193,21 +211,17 @@ describe("parseCliArgs", () => {
     // when a negative number is passed space-separated, which was previously
     // uncaught and caused a raw TypeError stack trace (exit 1) instead of a
     // structured JSON error (exit 2).
-    process.argv = ["bun", "index.ts", "jobs", "list", "email", "--redis-host", "localhost", "--page-size", "-1"];
-
-    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
-      throw new Error(`process.exit(${code})`);
-    });
-    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
-
-    expect(() => parseCliArgs()).toThrow("process.exit(2)");
-    expect(exitSpy).toHaveBeenCalledWith(2);
-    exitSpy.mockRestore();
-    stderrSpy.mockRestore();
-  });
-
-  it("exits with code 2 for --redis-port -1 (space-separated negative value)", () => {
-    process.argv = ["bun", "index.ts", "--tui", "--redis-host", "localhost", "--redis-port", "-1"];
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "list",
+      "email",
+      "--redis-url",
+      "redis://localhost",
+      "--page-size",
+      "-1",
+    ];
 
     const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
       throw new Error(`process.exit(${code})`);
@@ -221,7 +235,15 @@ describe("parseCliArgs", () => {
   });
 
   it("exits with code 2 for unknown options", () => {
-    process.argv = ["bun", "index.ts", "queues", "list", "--redis-host", "localhost", "--bogus"];
+    process.argv = [
+      "bun",
+      "index.ts",
+      "queues",
+      "list",
+      "--redis-url",
+      "redis://localhost",
+      "--bogus",
+    ];
 
     const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
       throw new Error(`process.exit(${code})`);
@@ -264,8 +286,8 @@ describe("parseCliArgs — jobs retry", () => {
       "jobs",
       "retry",
       "payments",
-      "--redis-host",
-      "localhost",
+      "--redis-url",
+      "redis://localhost",
       "--job-state",
       "failed",
       "--dry-run",
@@ -289,8 +311,8 @@ describe("parseCliArgs — jobs retry", () => {
       "jobs",
       "retry",
       "payments",
-      "--redis-host",
-      "localhost",
+      "--redis-url",
+      "redis://localhost",
       "--job-state",
       "failed",
       "--since",
@@ -317,8 +339,8 @@ describe("parseCliArgs — jobs retry", () => {
       "jobs",
       "retry",
       "payments",
-      "--redis-host",
-      "localhost",
+      "--redis-url",
+      "redis://localhost",
     ];
     const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
       throw new Error(`process.exit(${code})`);
@@ -337,8 +359,8 @@ describe("parseCliArgs — jobs retry", () => {
       "jobs",
       "retry",
       "payments",
-      "--redis-host",
-      "localhost",
+      "--redis-url",
+      "redis://localhost",
       "--job-state",
       "completed",
     ];
@@ -358,8 +380,8 @@ describe("parseCliArgs — jobs retry", () => {
       "index.ts",
       "jobs",
       "retry",
-      "--redis-host",
-      "localhost",
+      "--redis-url",
+      "redis://localhost",
       "--job-state",
       "failed",
     ];
@@ -379,8 +401,8 @@ describe("parseCliArgs — jobs retry", () => {
       "index.ts",
       "queues",
       "list",
-      "--redis-host",
-      "localhost",
+      "--redis-url",
+      "redis://localhost",
       "--dry-run",
     ];
     const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
@@ -400,8 +422,8 @@ describe("parseCliArgs — jobs retry", () => {
       "jobs",
       "list",
       "email",
-      "--redis-host",
-      "localhost",
+      "--redis-url",
+      "redis://localhost",
       "--since",
       "1h",
     ];
@@ -422,8 +444,8 @@ describe("parseCliArgs — jobs retry", () => {
       "jobs",
       "retry",
       "payments",
-      "--redis-host",
-      "localhost",
+      "--redis-url",
+      "redis://localhost",
       "--job-state",
       "failed",
       "--page-size",

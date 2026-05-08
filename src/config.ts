@@ -3,13 +3,16 @@ import { z } from "zod";
 import { parseArgs } from "util";
 import { writeError } from "./errors.js";
 import { parseDuration, MAX_RETRY_PAGE_SIZE } from "./data/duration.js";
+import { parseRedisUrl, type ParsedRedisUrl, type ResolvedProfile } from "./profiles.js";
 
 const configSchema = z.object({
   redis: z.object({
     host: z.string().default("localhost"),
     port: z.coerce.number().int().positive().default(6379),
+    username: z.string().optional(),
     password: z.string().optional(),
     db: z.coerce.number().int().min(0).default(0),
+    tls: z.boolean().optional(),
   }),
   pollInterval: z.coerce.number().int().positive().default(3000),
   prefix: z.string().default("bull"),
@@ -38,10 +41,7 @@ export type Subcommand =
   | { kind: "schedulers-get"; queue: string; schedulerId: string };
 
 export interface CliArgs {
-  redisHost?: string;
-  redisPort?: number;
-  redisPassword?: string;
-  redisDb?: number;
+  redisUrl?: string;
   pollInterval?: number;
   prefix?: string;
   queues?: string[];
@@ -55,6 +55,8 @@ export interface CliArgs {
   humanFriendly?: boolean;
   dryRun?: boolean;
   yes?: boolean;
+  profile?: string;
+  configPath?: string;
 }
 
 let packageVersion: string | null = null;
@@ -79,10 +81,11 @@ Commands:
 Run 'bullmq-dash <command> --help' for command-specific help.
 
 Connection Options (all commands):
-  --redis-host <host>      Redis host (default: localhost)
-  --redis-port <port>      Redis port (default: 6379)
-  --redis-password <pass>  Redis password
-  --redis-db <db>          Redis database number (default: 0)
+  --profile <name>         Use a named profile from the config file
+  --config <path>          Path to config file
+                           (default: ~/.config/bullmq-dash/config.json)
+  --redis-url <url>        Full connection URL: redis://[user:pass@]host[:port][/db]
+                           (rediss:// for TLS)
   --prefix <prefix>        BullMQ key prefix (default: bull)
 
 Output Options:
@@ -103,23 +106,28 @@ General:
   -h, --help               Show this help message
 
 Examples:
-  bullmq-dash --tui --redis-host 192.168.1.100 --redis-port 6380
-  bullmq-dash --web --redis-host localhost --redis-port 6379
-  bullmq-dash queues list --redis-host localhost
-  bullmq-dash queues list --redis-host localhost --human-friendly
-  bullmq-dash jobs list email --redis-host localhost --job-state failed
-  bullmq-dash jobs get email 123 --redis-host localhost
-  bullmq-dash jobs retry email --redis-host localhost --job-state failed --since 1h --dry-run
+  bullmq-dash --tui --redis-url redis://localhost:6379
+  bullmq-dash --tui --redis-url redis://user:pass@redis.example.com:6379/0
+  bullmq-dash --tui --profile prod
+  bullmq-dash --web --redis-url redis://localhost:6379
+  bullmq-dash queues list --redis-url redis://localhost:6379
+  bullmq-dash queues list --profile prod
+  bullmq-dash queues list --redis-url redis://localhost --human-friendly
+  bullmq-dash jobs list email --redis-url redis://localhost --job-state failed
+  bullmq-dash jobs get email 123 --redis-url redis://localhost
+  bullmq-dash jobs retry email --redis-url redis://localhost --job-state failed --since 1h --dry-run
 `;
 
 // ── Per-subcommand help text ────────────────────────────────────────────
 
 const CONNECTION_OPTIONS_HELP = `
 Connection Options:
-  --redis-host <host>      Redis host (required)
-  --redis-port <port>      Redis port (default: 6379)
-  --redis-password <pass>  Redis password
-  --redis-db <db>          Redis database number (default: 0)
+  --profile <name>         Use a named profile from the config file
+  --config <path>          Path to config file
+                           (default: ~/.config/bullmq-dash/config.json)
+  --redis-url <url>        Full connection URL (required unless provided via profile)
+                           Format: redis://[user:pass@]host[:port][/db]
+                           Use rediss:// for TLS.
   --prefix <prefix>        BullMQ key prefix (default: bull)
 
 Output Options:
@@ -142,9 +150,9 @@ List all discovered queues with their job counts per state.
 ${CONNECTION_OPTIONS_HELP}
 
 Examples:
-  bullmq-dash queues list --redis-host localhost
-  bullmq-dash queues list --redis-host localhost --redis-port 6380
-  bullmq-dash queues list --redis-host localhost | jq '.queues[] | select(.counts.failed > 0)'
+  bullmq-dash queues list --redis-url redis://localhost
+  bullmq-dash queues list --redis-url redis://localhost:6380
+  bullmq-dash queues list --redis-url redis://localhost | jq '.queues[] | select(.counts.failed > 0)'
 `;
 
 const QUEUES_DELETE_HELP = `
@@ -158,9 +166,9 @@ Options:
 ${CONNECTION_OPTIONS_HELP}
 
 Examples:
-  bullmq-dash queues delete email --redis-host localhost
-  bullmq-dash queues delete email --redis-host localhost --dry-run
-  bullmq-dash queues delete email --redis-host localhost --yes
+  bullmq-dash queues delete email --redis-url redis://localhost
+  bullmq-dash queues delete email --redis-url redis://localhost --dry-run
+  bullmq-dash queues delete email --redis-url redis://localhost --yes
 `;
 
 const JOBS_HELP = `
@@ -185,10 +193,10 @@ Options:
 ${CONNECTION_OPTIONS_HELP}
 
 Examples:
-  bullmq-dash jobs list email --redis-host localhost
-  bullmq-dash jobs list email --redis-host localhost --job-state failed
-  bullmq-dash jobs list email --redis-host localhost --page-size 50
-  bullmq-dash jobs list email --redis-host localhost --job-state failed | jq '.jobs[] | {id, name}'
+  bullmq-dash jobs list email --redis-url redis://localhost
+  bullmq-dash jobs list email --redis-url redis://localhost --job-state failed
+  bullmq-dash jobs list email --redis-url redis://localhost --page-size 50
+  bullmq-dash jobs list email --redis-url redis://localhost --job-state failed | jq '.jobs[] | {id, name}'
 `;
 
 const JOBS_GET_HELP = `
@@ -198,9 +206,9 @@ Get full detail for a single job including data, options, stacktrace, and timing
 ${CONNECTION_OPTIONS_HELP}
 
 Examples:
-  bullmq-dash jobs get email 123 --redis-host localhost
-  bullmq-dash jobs get email 123 --redis-host localhost | jq '.job.stacktrace'
-  bullmq-dash jobs get email 123 --redis-host localhost | jq '.job.data'
+  bullmq-dash jobs get email 123 --redis-url redis://localhost
+  bullmq-dash jobs get email 123 --redis-url redis://localhost | jq '.job.stacktrace'
+  bullmq-dash jobs get email 123 --redis-url redis://localhost | jq '.job.data'
 `;
 
 const JOBS_RETRY_HELP = `
@@ -232,16 +240,16 @@ ${CONNECTION_OPTIONS_HELP}
 
 Examples:
   # Always start with a dry-run
-  bullmq-dash jobs retry payments --redis-host localhost --job-state failed --since 1h --dry-run
+  bullmq-dash jobs retry payments --redis-url redis://localhost --job-state failed --since 1h --dry-run
 
   # Then retry for real
-  bullmq-dash jobs retry payments --redis-host localhost --job-state failed --since 1h
+  bullmq-dash jobs retry payments --redis-url redis://localhost --job-state failed --since 1h
 
   # Filter by job name
-  bullmq-dash jobs retry email --redis-host localhost --job-state failed --name welcome-email --dry-run
+  bullmq-dash jobs retry email --redis-url redis://localhost --job-state failed --name welcome-email --dry-run
 
   # Pipe dry-run output through jq to extract sample IDs
-  bullmq-dash jobs retry payments --redis-host localhost --job-state failed --since 24h --dry-run | jq '.sampleJobIds'
+  bullmq-dash jobs retry payments --redis-url redis://localhost --job-state failed --since 24h --dry-run | jq '.sampleJobIds'
 `;
 
 const SCHEDULERS_HELP = `
@@ -264,9 +272,9 @@ Options:
 ${CONNECTION_OPTIONS_HELP}
 
 Examples:
-  bullmq-dash schedulers list email --redis-host localhost
-  bullmq-dash schedulers list email --redis-host localhost --page-size 50
-  bullmq-dash schedulers list email --redis-host localhost | jq '.schedulers[] | {key, pattern, next}'
+  bullmq-dash schedulers list email --redis-url redis://localhost
+  bullmq-dash schedulers list email --redis-url redis://localhost --page-size 50
+  bullmq-dash schedulers list email --redis-url redis://localhost | jq '.schedulers[] | {key, pattern, next}'
 `;
 
 const SCHEDULERS_GET_HELP = `
@@ -276,8 +284,8 @@ Get full detail for a single scheduler including next job, recent history, and t
 ${CONNECTION_OPTIONS_HELP}
 
 Examples:
-  bullmq-dash schedulers get email my-cron --redis-host localhost
-  bullmq-dash schedulers get email my-cron --redis-host localhost | jq '.scheduler.recentJobs'
+  bullmq-dash schedulers get email my-cron --redis-url redis://localhost
+  bullmq-dash schedulers get email my-cron --redis-url redis://localhost | jq '.scheduler.recentJobs'
 `;
 
 // ── Known subcommands ───────────────────────────────────────────────────
@@ -603,10 +611,7 @@ export function parseCliArgs(): CliArgs {
     const { values } = parseArgs({
       args: flagArgv,
       options: {
-        "redis-host": { type: "string" },
-        "redis-port": { type: "string" },
-        "redis-password": { type: "string" },
-        "redis-db": { type: "string" },
+        "redis-url": { type: "string" },
         "poll-interval": { type: "string" },
         prefix: { type: "string" },
         queues: { type: "string" },
@@ -625,13 +630,14 @@ export function parseCliArgs(): CliArgs {
         name: { type: "string" },
         "dry-run": { type: "boolean" },
         yes: { type: "boolean" },
+        // Profiles / config file
+        profile: { type: "string" },
+        config: { type: "string" },
       },
       strict: true,
     });
 
     // Parse numeric flags with validation
-    const redisPort = parseNumericFlag("redis-port", values["redis-port"]);
-    const redisDb = parseNumericFlag("redis-db", values["redis-db"]);
     const pollInterval = parseNumericFlag("poll-interval", values["poll-interval"]);
     const pageSize = parseNumericFlag("page-size", values["page-size"], { min: 1 });
     const webPort = parseNumericFlag("web-port", values["web-port"], { min: 1 });
@@ -641,6 +647,21 @@ export function parseCliArgs(): CliArgs {
     const nameFilter = values.name;
     const dryRun = values["dry-run"] ?? false;
     const yes = values.yes ?? false;
+
+    // Validate the URL itself eagerly so bad input fails fast with CONFIG_ERROR
+    // instead of an opaque ioredis error during connect.
+    if (values["redis-url"] !== undefined) {
+      try {
+        parseRedisUrl(values["redis-url"]);
+      } catch (error) {
+        writeError(
+          "Invalid --redis-url",
+          "CONFIG_ERROR",
+          error instanceof Error ? error.message : String(error),
+        );
+        process.exit(2);
+      }
+    }
 
     // Validate --since format at parse time so bad input fails fast with exit 2
     // (CONFIG_ERROR) instead of exit 1 (runtime error) deeper in the fetch path.
@@ -811,10 +832,7 @@ export function parseCliArgs(): CliArgs {
     }
 
     return {
-      redisHost: values["redis-host"],
-      redisPort,
-      redisPassword: values["redis-password"],
-      redisDb,
+      redisUrl: values["redis-url"],
       pollInterval,
       prefix: values.prefix,
       queues: values.queues ? parseQueueNames(values.queues) : undefined,
@@ -828,6 +846,8 @@ export function parseCliArgs(): CliArgs {
       humanFriendly,
       dryRun,
       yes,
+      profile: values.profile,
+      configPath: values.config,
     };
   } catch (error) {
     if (error instanceof Error) {
@@ -886,26 +906,61 @@ export function parseQueueNames(value: string | undefined): string[] | undefined
 }
 
 /**
- * Check if Redis host is configured via CLI args
+ * True if a Redis URL is reachable from either the CLI or the resolved profile.
+ * Used by index.ts to decide between launching the interactive prompt (TUI)
+ * and failing fast (subcommand / web modes that can't prompt).
  */
-export function hasRedisHostConfig(cliArgs: CliArgs): boolean {
-  return !!cliArgs.redisHost;
+export function hasRedisHostConfig(cliArgs: CliArgs, profile?: ResolvedProfile | null): boolean {
+  return !!cliArgs.redisUrl || !!profile?.profile.redis?.url;
 }
 
 /**
- * Load config with priority: CLI args > defaults
+ * Load profiles only when the connection may come from config, or when the
+ * user explicitly asked for profile/config behavior. A direct --redis-url is a
+ * complete connection source and should not be blocked by stale ambient config.
  */
-export function loadConfig(cliArgs: CliArgs): Config {
+export function shouldLoadProfile(cliArgs: CliArgs): boolean {
+  return !cliArgs.redisUrl || !!cliArgs.profile || !!cliArgs.configPath;
+}
+
+/**
+ * Build a runtime Config from a single source URL (CLI wins over profile),
+ * parsed into the discrete shape that ioredis / BullMQ consume internally.
+ * The user-facing surface only knows about URLs; everything below this line
+ * works in terms of host/port/etc. so the connection helpers don't change.
+ */
+export function loadConfig(cliArgs: CliArgs, profile?: ResolvedProfile | null): Config {
+  const p = profile?.profile;
+  const url = cliArgs.redisUrl ?? p?.redis?.url;
+
+  let parts: ParsedRedisUrl | undefined;
+  if (url) {
+    try {
+      parts = parseRedisUrl(url);
+    } catch (error) {
+      writeError(
+        cliArgs.redisUrl
+          ? "Invalid --redis-url"
+          : `Invalid redis.url in profile '${profile?.name}'`,
+        "CONFIG_ERROR",
+        error instanceof Error ? error.message : String(error),
+      );
+      process.exit(2);
+    }
+  }
+
   const raw = {
     redis: {
-      host: cliArgs.redisHost,
-      port: cliArgs.redisPort,
-      password: cliArgs.redisPassword,
-      db: cliArgs.redisDb,
+      host: parts?.host,
+      port: parts?.port,
+      username: parts?.username,
+      password: parts?.password,
+      db: parts?.db,
+      tls: parts?.tls,
     },
-    pollInterval: cliArgs.pollInterval,
-    prefix: cliArgs.prefix,
-    queueNames: cliArgs.queues,
+    pollInterval: cliArgs.pollInterval ?? p?.pollInterval,
+    prefix: cliArgs.prefix ?? p?.prefix,
+    queueNames: cliArgs.queues ?? p?.queues,
   };
 
   const result = configSchema.safeParse(raw);
@@ -920,33 +975,13 @@ export function loadConfig(cliArgs: CliArgs): Config {
 }
 
 /**
- * Create config from interactive prompt answers
+ * Build a runtime Config from a URL that the interactive prompt collected.
+ * Same shape as loadConfig but takes a pre-validated URL string directly so
+ * the prompt can show a friendlier "ok / try again" loop without coupling
+ * itself to parseCliArgs.
  */
-export function createConfigFromPrompt(
-  promptAnswers: { host: string; port: number; password?: string },
-  cliArgs: CliArgs,
-): Config {
-  const raw = {
-    redis: {
-      host: promptAnswers.host,
-      port: promptAnswers.port,
-      password: promptAnswers.password,
-      db: cliArgs.redisDb,
-    },
-    pollInterval: cliArgs.pollInterval,
-    prefix: cliArgs.prefix,
-    queueNames: cliArgs.queues,
-  };
-
-  const result = configSchema.safeParse(raw);
-
-  if (!result.success) {
-    const errors = result.error.flatten();
-    writeError("Configuration error", "CONFIG_ERROR", JSON.stringify(errors));
-    process.exit(2);
-  }
-
-  return result.data;
+export function createConfigFromPrompt(redisUrl: string, cliArgs: CliArgs): Config {
+  return loadConfig({ ...cliArgs, redisUrl });
 }
 
 // Singleton config instance

@@ -9,8 +9,10 @@ export function getRedisClient(): Redis {
     redisClient = new Redis({
       host: config.redis.host,
       port: config.redis.port,
+      username: config.redis.username,
       password: config.redis.password,
       db: config.redis.db,
+      ...(config.redis.tls ? { tls: {} } : {}),
       lazyConnect: true,
       retryStrategy: (times) => {
         if (times > 3) {

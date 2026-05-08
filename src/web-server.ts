@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import type { Config, CliArgs } from "./config.js";
+import { formatRedisUrl } from "./profiles.js";
 
 function buildTuiArgs(config: Config): string[] {
   const scriptPath = process.argv[1];
@@ -9,24 +10,28 @@ function buildTuiArgs(config: Config): string[] {
     throw new Error("Unable to resolve current script path for PTY child process.");
   }
 
+  // Reconstruct a URL so the child process sees the same single-source shape
+  // as everywhere else. Round-tripping through formatRedisUrl + parseRedisUrl
+  // preserves credentials and TLS choice.
+  const url = formatRedisUrl({
+    host: config.redis.host,
+    port: config.redis.port,
+    username: config.redis.username,
+    password: config.redis.password,
+    db: config.redis.db,
+    tls: config.redis.tls,
+  });
+
   const args = [
     scriptPath,
     "--tui",
-    "--redis-host",
-    config.redis.host,
-    "--redis-port",
-    String(config.redis.port),
-    "--redis-db",
-    String(config.redis.db),
+    "--redis-url",
+    url,
     "--poll-interval",
     String(config.pollInterval),
     "--prefix",
     config.prefix,
   ];
-
-  if (config.redis.password) {
-    args.push("--redis-password", config.redis.password);
-  }
 
   if (config.queueNames && config.queueNames.length > 0) {
     args.push("--queues", config.queueNames.join(","));

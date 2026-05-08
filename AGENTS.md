@@ -32,16 +32,16 @@ bun run format:check     # Check formatting
 bun run start            # bun dist/index.js
 
 # Headless / AI agent mode (subcommands output JSON to stdout)
-bullmq-dash queues list --redis-host localhost
-bullmq-dash jobs list email --redis-host localhost
-bullmq-dash jobs get email 42 --redis-host localhost
+bullmq-dash queues list --redis-url redis://localhost
+bullmq-dash jobs list email --redis-url redis://localhost
+bullmq-dash jobs get email 42 --redis-url redis://localhost
 
 # Interactive TUI mode (requires --tui flag)
-bullmq-dash --tui --redis-host localhost
+bullmq-dash --tui --redis-url redis://localhost
 
 # Web server mode (browser-based terminal, requires --web flag)
-bullmq-dash --web --redis-host localhost
-bullmq-dash --web --redis-host localhost --web-port 3000
+bullmq-dash --web --redis-url redis://localhost
+bullmq-dash --web --redis-url redis://localhost --web-port 3000
 ```
 
 **Tests:** Uses Bun's built-in test runner (`bun test`).
@@ -52,31 +52,31 @@ Use subcommands to get machine-readable JSON output without launching the TUI:
 
 ```bash
 # Queues overview - all queue stats
-bullmq-dash queues list --redis-host localhost --redis-port 6379
+bullmq-dash queues list --redis-url redis://localhost:6379
 
 # List jobs in a queue (all statuses, up to 1000)
-bullmq-dash jobs list email --redis-host localhost
+bullmq-dash jobs list email --redis-url redis://localhost
 
 # List jobs filtered by state
-bullmq-dash jobs list email --redis-host localhost --job-state failed
+bullmq-dash jobs list email --redis-url redis://localhost --job-state failed
 
 # Get a single job's full detail
-bullmq-dash jobs get email 123 --redis-host localhost
+bullmq-dash jobs get email 123 --redis-url redis://localhost
 
 # List schedulers in a queue
-bullmq-dash schedulers list email --redis-host localhost
+bullmq-dash schedulers list email --redis-url redis://localhost
 
 # Get a single scheduler's detail (includes next job + recent history)
-bullmq-dash schedulers get email my-cron --redis-host localhost
+bullmq-dash schedulers get email my-cron --redis-url redis://localhost
 
 # Delete a queue (destructive - with --dry-run preview)
-bullmq-dash queues delete email --redis-host localhost --dry-run
+bullmq-dash queues delete email --redis-url redis://localhost --dry-run
 
 # Delete a queue (destructive - skip confirmation)
-bullmq-dash queues delete email --redis-host localhost --yes
+bullmq-dash queues delete email --redis-url redis://localhost --yes
 
 # Limit results (default: 1000)
-bullmq-dash jobs list email --redis-host localhost --page-size 50
+bullmq-dash jobs list email --redis-url redis://localhost --page-size 50
 ```
 
 ### Commands
@@ -96,6 +96,36 @@ bullmq-dash jobs list email --redis-host localhost --page-size 50
 | `--job-state <state>` | string  | `jobs list`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed` |
 | `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000, must be >= 1)             |
 | `--human-friendly`    | boolean | all subcommands                | Human-readable table output (default: JSON)                     |
+| `--profile <name>`    | string  | all commands                   | Use a named profile from the config file                        |
+| `--config <path>`     | string  | all commands                   | Path to config file (default: `~/.config/bullmq-dash/config.json`) |
+| `--redis-url <url>`   | string  | all commands                   | Full Redis URL (`redis://[user:pass@]host[:port][/db]`, or `rediss://` for TLS). The single way to specify a Redis connection — discrete `--redis-host` / `--redis-port` / `--redis-password` / `--redis-db` flags were removed in the URL-only redesign. |
+
+### Connection Profiles
+
+Saved Redis connections live in a JSON config file (default
+`~/.config/bullmq-dash/config.json`, or override via `--config <path>` /
+`$BULLMQ_DASH_CONFIG`). Resolution: CLI flag > profile > error.
+
+```json
+{
+  "defaultProfile": "local",
+  "profiles": {
+    "local": { "redis": { "url": "redis://localhost:6379" } },
+    "prod": {
+      "redis": { "url": "${REDIS_PROD_URL}" },
+      "queues": ["payments", "notifications"]
+    },
+    "upstash": { "redis": { "url": "${REDIS_URL}" } }
+  }
+}
+```
+
+Each profile carries a single `redis.url`; the schema is strict so unknown
+fields (e.g. legacy `host`/`port`) are rejected as `CONFIG_ERROR`. Strings of
+the form `${VAR_NAME}` interpolate an environment variable as the **whole
+value** (partial substitution is intentionally not supported). Unset
+references are a hard `CONFIG_ERROR` (exit 2) — secrets never silently
+resolve to empty.
 
 ### Progressive Help
 
@@ -284,22 +314,22 @@ Error codes: `CONFIG_ERROR`, `REDIS_ERROR`, `RUNTIME_ERROR`
 
 ```bash
 # Check if any queue has failed jobs
-bullmq-dash queues list --redis-host localhost | jq '.queues[] | select(.counts.failed > 0)'
+bullmq-dash queues list --redis-url redis://localhost | jq '.queues[] | select(.counts.failed > 0)'
 
 # Get total waiting jobs across all queues
-bullmq-dash queues list --redis-host localhost | jq '[.queues[].counts.wait] | add'
+bullmq-dash queues list --redis-url redis://localhost | jq '[.queues[].counts.wait] | add'
 
 # Check if a specific queue exists and get its stats
-bullmq-dash queues list --redis-host localhost | jq '.queues[] | select(.name == "email")'
+bullmq-dash queues list --redis-url redis://localhost | jq '.queues[] | select(.name == "email")'
 
 # Get all failed jobs in a queue with their IDs
-bullmq-dash jobs list email --redis-host localhost --job-state failed | jq '.jobs[] | {id, name, timestamp}'
+bullmq-dash jobs list email --redis-url redis://localhost --job-state failed | jq '.jobs[] | {id, name, timestamp}'
 
 # Get the stacktrace of a specific failed job
-bullmq-dash jobs get email 42 --redis-host localhost | jq '.job.stacktrace'
+bullmq-dash jobs get email 42 --redis-url redis://localhost | jq '.job.stacktrace'
 
 # List all cron schedulers and their next run times
-bullmq-dash schedulers list email --redis-host localhost | jq '.schedulers[] | {key, pattern, next}'
+bullmq-dash schedulers list email --redis-url redis://localhost | jq '.schedulers[] | {key, pattern, next}'
 ```
 
 ## Project Structure
