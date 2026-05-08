@@ -40,8 +40,10 @@ export function getQueue(queueName: string): Queue {
       connection: {
         host: config.redis.host,
         port: config.redis.port,
+        username: config.redis.username,
         password: config.redis.password,
         db: config.redis.db,
+        ...(config.redis.tls ? { tls: {} } : {}),
       },
     });
     queueCache.set(queueName, queue);

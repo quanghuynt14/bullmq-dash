@@ -4,10 +4,12 @@ import {
   showHelp,
   showVersion,
   hasRedisHostConfig,
+  shouldLoadProfile,
   loadConfig,
   createConfigFromPrompt,
   setConfig,
 } from "./config.js";
+import { loadProfile } from "./profiles.js";
 import { runConfigPrompt } from "./ui/config-prompt.js";
 import { runJsonMode } from "./json-reporter.js";
 import { writeError } from "./errors.js";
@@ -28,18 +30,28 @@ async function main() {
     return;
   }
 
+  // Resolve profile only when the connection may come from config, or when the
+  // user explicitly asked for config/profile behavior. A direct --redis-url is
+  // enough on its own and should not be blocked by stale ambient config env.
+  const profile = shouldLoadProfile(cliArgs)
+    ? loadProfile({
+        configPath: cliArgs.configPath,
+        profileName: cliArgs.profile,
+      })
+    : null;
+
   // Subcommand mode (headless JSON output)
   if (cliArgs.subcommand) {
-    if (!hasRedisHostConfig(cliArgs)) {
+    if (!hasRedisHostConfig(cliArgs, profile)) {
       writeError(
-        "Redis host is not configured",
+        "Redis URL is not configured",
         "CONFIG_ERROR",
-        "Use --redis-host <host> to specify the Redis server.",
+        "Use --redis-url <url> or --profile <name> to specify the Redis server.",
       );
       process.exit(2);
     }
 
-    const config = loadConfig(cliArgs);
+    const config = loadConfig(cliArgs, profile);
     await runJsonMode(
       config,
       cliArgs.subcommand,
@@ -54,13 +66,13 @@ async function main() {
   if (cliArgs.tui) {
     let config;
 
-    if (hasRedisHostConfig(cliArgs)) {
-      config = loadConfig(cliArgs);
+    if (hasRedisHostConfig(cliArgs, profile)) {
+      config = loadConfig(cliArgs, profile);
       console.log(`Connecting to Redis at ${config.redis.host}:${config.redis.port}...`);
       console.log("");
     } else {
-      const promptAnswers = await runConfigPrompt();
-      config = createConfigFromPrompt(promptAnswers, cliArgs);
+      const url = await runConfigPrompt();
+      config = createConfigFromPrompt(url, cliArgs);
     }
 
     setConfig(config);
@@ -81,16 +93,16 @@ async function main() {
 
   // Web mode (requires --web flag)
   if (cliArgs.web) {
-    if (!hasRedisHostConfig(cliArgs)) {
+    if (!hasRedisHostConfig(cliArgs, profile)) {
       writeError(
-        "Redis host is not configured",
+        "Redis URL is not configured",
         "CONFIG_ERROR",
-        "Use --redis-host <host> with --web mode.",
+        "Use --redis-url <url> or --profile <name> with --web mode.",
       );
       process.exit(2);
     }
 
-    const config = loadConfig(cliArgs);
+    const config = loadConfig(cliArgs, profile);
 
     try {
       await startWebServer(config, cliArgs);
