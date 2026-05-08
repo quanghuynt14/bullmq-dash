@@ -290,25 +290,3 @@ export function parseRedisUrl(input: string): ParsedRedisUrl {
     tls: parsed.protocol === "rediss:",
   };
 }
-
-/**
- * Inverse of parseRedisUrl: rebuild a `redis://` / `rediss://` URL from the
- * discrete fields the rest of the codebase carries internally. Used by the
- * web-server child-process bootstrap, where we need to pass a single
- * `--redis-url` to the spawned TUI.
- *
- * Passwords and usernames are percent-encoded so special characters survive
- * the round-trip through URL parsing.
- */
-export function formatRedisUrl(parts: ParsedRedisUrl): string {
-  const scheme = parts.tls ? "rediss" : "redis";
-  let auth = "";
-  if (parts.username || parts.password) {
-    const u = parts.username ? encodeURIComponent(parts.username) : "";
-    const p = parts.password ? `:${encodeURIComponent(parts.password)}` : "";
-    auth = `${u}${p}@`;
-  }
-  const port = parts.port && parts.port !== 6379 ? `:${parts.port}` : "";
-  const db = parts.db !== undefined && parts.db !== 0 ? `/${parts.db}` : "";
-  return `${scheme}://${auth}${parts.host}${port}${db}`;
-}

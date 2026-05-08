@@ -48,9 +48,6 @@ export interface CliArgs {
   help?: boolean;
   version?: boolean;
   tui?: boolean;
-  web?: boolean;
-  webHost?: string;
-  webPort?: number;
   subcommand?: Subcommand;
   humanFriendly?: boolean;
   dryRun?: boolean;
@@ -66,7 +63,6 @@ bullmq-dash - Terminal UI dashboard for BullMQ queue monitoring
 
 Usage:
   bullmq-dash --tui [options]                            Launch interactive TUI
-  bullmq-dash --web [options]                            Launch browser terminal server
   bullmq-dash <command> [options]                        Headless JSON output
 
 Commands:
@@ -96,11 +92,6 @@ TUI Options:
   --poll-interval <ms>     Polling interval in ms (default: 3000)
   --queues <names>         Comma-separated queue names to monitor
 
-Web Options:
-  --web                    Launch built-in browser terminal server
-  --web-host <host>        Bind host for web server (default: 127.0.0.1)
-  --web-port <port>        Bind port for web server (default: 3001)
-
 General:
   -v, --version            Show version
   -h, --help               Show this help message
@@ -109,7 +100,6 @@ Examples:
   bullmq-dash --tui --redis-url redis://localhost:6379
   bullmq-dash --tui --redis-url redis://user:pass@redis.example.com:6379/0
   bullmq-dash --tui --profile prod
-  bullmq-dash --web --redis-url redis://localhost:6379
   bullmq-dash queues list --redis-url redis://localhost:6379
   bullmq-dash queues list --profile prod
   bullmq-dash queues list --redis-url redis://localhost --human-friendly
@@ -618,9 +608,6 @@ export function parseCliArgs(): CliArgs {
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
         tui: { type: "boolean" },
-        web: { type: "boolean" },
-        "web-host": { type: "string" },
-        "web-port": { type: "string" },
         // Command-specific flags
         "job-state": { type: "string" },
         "page-size": { type: "string" },
@@ -640,7 +627,6 @@ export function parseCliArgs(): CliArgs {
     // Parse numeric flags with validation
     const pollInterval = parseNumericFlag("poll-interval", values["poll-interval"]);
     const pageSize = parseNumericFlag("page-size", values["page-size"], { min: 1 });
-    const webPort = parseNumericFlag("web-port", values["web-port"], { min: 1 });
 
     const humanFriendly = values["human-friendly"] ?? false;
     const since = values.since;
@@ -795,38 +781,11 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    if (values.web && subcommand) {
-      writeError(
-        "--web cannot be used with subcommands",
-        "CONFIG_ERROR",
-        "Use --web for browser terminal mode, or subcommands for headless output.",
-      );
-      process.exit(2);
-    }
-
-    if (values.web && values.tui) {
-      writeError(
-        "--web cannot be used with --tui",
-        "CONFIG_ERROR",
-        "Use --tui for terminal mode or --web for browser mode.",
-      );
-      process.exit(2);
-    }
-
     if (humanFriendly && values.tui) {
       writeError(
         "--human-friendly cannot be used with --tui",
         "CONFIG_ERROR",
         "--human-friendly is for formatting subcommand output. Use --tui alone for the dashboard.",
-      );
-      process.exit(2);
-    }
-
-    if (humanFriendly && values.web) {
-      writeError(
-        "--human-friendly cannot be used with --web",
-        "CONFIG_ERROR",
-        "--human-friendly is only for headless subcommand output.",
       );
       process.exit(2);
     }
@@ -839,9 +798,6 @@ export function parseCliArgs(): CliArgs {
       help: values.help,
       version: values.version,
       tui: values.tui,
-      web: values.web,
-      webHost: values["web-host"],
-      webPort,
       subcommand,
       humanFriendly,
       dryRun,

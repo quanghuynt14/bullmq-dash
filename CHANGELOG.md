@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (BREAKING)
+- **`--web` browser terminal mode.** Removed `bullmq-dash --web`, `--web-host`, and `--web-port`, along with the Fastify + PTY + xterm.js bridge that ran the TUI inside a browser tab. The web mode duplicated TUI behavior over a WebSocket-piped child process and pulled in `fastify` / `@fastify/websocket` for a single endpoint. Use `--tui` directly (locally or over SSH) for the interactive dashboard, or the JSON subcommands for headless integrations. Internal: `src/web-server.ts` and `formatRedisUrl` (only consumed by the web-server child-process bootstrap) were deleted.
+
 ### Changed (BREAKING)
 - **Redis connections are URL-only.** `--redis-host` / `--redis-port` / `--redis-password` / `--redis-db` were removed; the single supported form is `--redis-url redis://[user:pass@]host[:port][/db]` (or `rediss://` for TLS). The profile schema dropped its discrete `host`/`port`/`password`/`db`/`username`/`tls` fields too — only `redis.url` is accepted, and unknown fields fail strict-schema validation as `CONFIG_ERROR` (exit 2). The interactive prompt now asks for a single URL with a re-prompt loop on bad input, instead of three sequential host/port/password questions. Internally the URL is parsed once into the discrete shape ioredis and BullMQ already consume, so there's no behavior change at the connection layer — only at the user-facing surface. Migration: if you had a profile with `{ "redis": { "host": "...", "port": 6379, "password": "..." } }`, replace it with `{ "redis": { "url": "redis://:password@host:6379" } }` (percent-encode special chars in the password). Scripts using `--redis-host localhost --redis-port 6380` should switch to `--redis-url redis://localhost:6380`.
 

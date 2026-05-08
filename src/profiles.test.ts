@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   expandEnvRefs,
-  formatRedisUrl,
   loadProfile,
   parseRedisUrl,
   resolveConfigPath,
@@ -108,8 +107,9 @@ describe("loadProfile", () => {
   });
 
   it("returns null when no config file exists and no profile requested", () => {
-    // Backward compat: missing config is silently ignored unless caller asked for it.
-    expect(loadProfile({ configPath: undefined, env: {} })).toBeNull();
+    // Pin XDG_CONFIG_HOME at tmpDir so resolveConfigPath doesn't fall through
+    // to a real ~/.config/bullmq-dash/config.json on the dev's machine.
+    expect(loadProfile({ env: { XDG_CONFIG_HOME: tmpDir } })).toBeNull();
   });
 
   it("exits with code 2 when --config points at a missing file", () => {
@@ -362,36 +362,3 @@ describe("parseRedisUrl", () => {
   });
 });
 
-describe("formatRedisUrl", () => {
-  it("formats a minimal redis URL", () => {
-    expect(formatRedisUrl({ host: "localhost", port: 6379 })).toBe("redis://localhost");
-  });
-
-  it("includes port when non-default", () => {
-    expect(formatRedisUrl({ host: "host", port: 6380 })).toBe("redis://host:6380");
-  });
-
-  it("includes db when non-zero", () => {
-    expect(formatRedisUrl({ host: "host", port: 6379, db: 3 })).toBe("redis://host/3");
-  });
-
-  it("uses rediss:// when tls=true", () => {
-    expect(formatRedisUrl({ host: "host", port: 6379, tls: true })).toBe("rediss://host");
-  });
-
-  it("encodes special characters in passwords", () => {
-    // round-trip safety: a password with @/: would break the URL otherwise
-    expect(formatRedisUrl({ host: "host", port: 6379, password: "p@ss/word" })).toBe(
-      "redis://:p%40ss%2Fword@host",
-    );
-  });
-
-  it("round-trips with parseRedisUrl", () => {
-    const original = "rediss://alice:p%40ss@redis.example.com:6380/2";
-    const parsed = parseRedisUrl(original);
-    const reformatted = formatRedisUrl(parsed);
-    // Re-parse to compare structurally (default-port elision means string
-    // identity isn't guaranteed, but the resolved fields must match).
-    expect(parseRedisUrl(reformatted)).toEqual(parsed);
-  });
-});

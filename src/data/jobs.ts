@@ -359,7 +359,7 @@ export async function getJobDetail(queueName: string, jobId: string): Promise<Jo
     opts: job.opts,
     attemptsMade: job.attemptsMade,
     failedReason: job.failedReason,
-    stacktrace: job.stacktrace,
+    stacktrace: job.stacktrace ?? undefined,
     returnvalue: job.returnvalue,
     processedOn: job.processedOn,
     finishedOn: job.finishedOn,

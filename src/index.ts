@@ -13,7 +13,6 @@ import { loadProfile } from "./profiles.js";
 import { runConfigPrompt } from "./ui/config-prompt.js";
 import { runJsonMode } from "./json-reporter.js";
 import { writeError } from "./errors.js";
-import { startWebServer } from "./web-server.js";
 
 async function main() {
   // Parse CLI arguments
@@ -83,32 +82,6 @@ async function main() {
     } catch (error) {
       writeError(
         "Failed to start application",
-        "RUNTIME_ERROR",
-        error instanceof Error ? error.message : String(error),
-      );
-      process.exit(1);
-    }
-    return;
-  }
-
-  // Web mode (requires --web flag)
-  if (cliArgs.web) {
-    if (!hasRedisHostConfig(cliArgs, profile)) {
-      writeError(
-        "Redis URL is not configured",
-        "CONFIG_ERROR",
-        "Use --redis-url <url> or --profile <name> with --web mode.",
-      );
-      process.exit(2);
-    }
-
-    const config = loadConfig(cliArgs, profile);
-
-    try {
-      await startWebServer(config, cliArgs);
-    } catch (error) {
-      writeError(
-        "Failed to start web server",
         "RUNTIME_ERROR",
         error instanceof Error ? error.message : String(error),
       );

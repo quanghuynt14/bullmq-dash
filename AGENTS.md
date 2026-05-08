@@ -38,10 +38,6 @@ bullmq-dash jobs get email 42 --redis-url redis://localhost
 
 # Interactive TUI mode (requires --tui flag)
 bullmq-dash --tui --redis-url redis://localhost
-
-# Web server mode (browser-based terminal, requires --web flag)
-bullmq-dash --web --redis-url redis://localhost
-bullmq-dash --web --redis-url redis://localhost --web-port 3000
 ```
 
 **Tests:** Uses Bun's built-in test runner (`bun test`).

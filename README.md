@@ -123,7 +123,7 @@ bullmq-dash queues list --profile prod --redis-url redis://localhost:6380
 
 1. `--redis-url <url>`
 2. `redis.url` from `--profile <name>` or the file's `defaultProfile`
-3. Otherwise: the interactive prompt (TUI mode) or `CONFIG_ERROR` (subcommands / `--web`)
+3. Otherwise: the interactive prompt (TUI mode) or `CONFIG_ERROR` (subcommands)
 
 **File location** — the first match wins:
 
@@ -136,25 +136,6 @@ bullmq-dash queues list --profile prod --redis-url redis://localhost:6380
 `${VAR_NAME}` is substituted from the environment at load time. If the variable
 is unset, the command fails fast with `CONFIG_ERROR` rather than connecting
 without auth — keep passwords out of the file itself.
-
-## Browser Terminal Mode
-
-`bullmq-dash` includes a built-in web terminal mode powered by a Fastify + PTY bridge.
-
-```bash
-bullmq-dash --web --redis-url redis://localhost:6379
-```
-
-Then open:
-
-```text
-http://127.0.0.1:3001
-```
-
-Optional web server flags:
-
-- `--web-host <host>` (default: `127.0.0.1`)
-- `--web-port <port>` (default: `3001`)
 
 ## Keyboard Shortcuts
 

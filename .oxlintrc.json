@@ -9,7 +9,18 @@
     "no-unused-vars": "warn",
     "no-console": "off",
     "typescript/no-explicit-any": "warn",
-    "typescript/no-non-null-assertion": "off"
+    "typescript/no-non-null-assertion": "off",
+    "no-underscore-dangle": [
+      "warn",
+      {
+        "allow": [
+          "_exhaustive",
+          "__resetSyncLockForTests",
+          "__forceSyncLockForTests",
+          "__resetRecentlyPolledForTests"
+        ]
+      }
+    ]
   },
   "ignorePatterns": ["dist/", "node_modules/"]
 }
