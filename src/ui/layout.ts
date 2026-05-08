@@ -85,12 +85,12 @@ export function createLayout(renderer: CliRenderer): LayoutElements {
   });
   root.add(mainContent);
 
-  // Left pane (queues list) - wider for queue names
+  // Left pane (queues list) - 50% width
   const leftPane = new BoxRenderable(renderer, {
     id: "left-pane",
     flexDirection: "column",
-    width: 80,
-    minWidth: 60,
+    flexGrow: 1,
+    flexBasis: 0,
     height: "100%",
     backgroundColor: colors.mantle,
     borderStyle: "single",
@@ -99,11 +99,12 @@ export function createLayout(renderer: CliRenderer): LayoutElements {
   });
   mainContent.add(leftPane);
 
-  // Right pane (jobs) - flexible width
+  // Right pane (jobs) - 50% width
   const rightPane = new BoxRenderable(renderer, {
     id: "right-pane",
     flexDirection: "column",
     flexGrow: 1,
+    flexBasis: 0,
     height: "100%",
     backgroundColor: colors.mantle,
     borderStyle: "single",
