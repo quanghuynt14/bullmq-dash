@@ -2,12 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  expandEnvRefs,
-  loadProfile,
-  parseRedisUrl,
-  resolveConfigPath,
-} from "./profiles.js";
+import { expandEnvRefs, loadProfile, parseRedisUrl, resolveConfigPath } from "./profiles.js";
 
 const mockExit = (code?: number) => {
   throw new Error(`process.exit(${code})`);
@@ -122,9 +117,9 @@ describe("loadProfile", () => {
     const safety = silenceErrors();
     // Use an unlikely-to-exist path under the tmp dir so HOME doesn't accidentally resolve.
     const missing = join(tmpDir, "nope.json");
-    expect(() =>
-      loadProfile({ configPath: missing, profileName: "prod" }),
-    ).toThrow("process.exit(2)");
+    expect(() => loadProfile({ configPath: missing, profileName: "prod" })).toThrow(
+      "process.exit(2)",
+    );
     safety.restore();
   });
 
@@ -138,10 +133,7 @@ describe("loadProfile", () => {
   it("exits with code 2 on schema-invalid contents", () => {
     // Strict schema rejects unknown redis fields — the URL-only redesign
     // means anything other than `url` (e.g. legacy `port`) trips this.
-    writeFileSync(
-      configPath,
-      JSON.stringify({ profiles: { local: { redis: { port: 6379 } } } }),
-    );
+    writeFileSync(configPath, JSON.stringify({ profiles: { local: { redis: { port: 6379 } } } }));
     const safety = silenceErrors();
     expect(() => loadProfile({ configPath, profileName: "local" })).toThrow("process.exit(2)");
     safety.restore();
@@ -213,9 +205,9 @@ describe("loadProfile", () => {
       }),
     );
     const safety = silenceErrors();
-    expect(() =>
-      loadProfile({ configPath, profileName: "prod", env: {} }),
-    ).toThrow("process.exit(2)");
+    expect(() => loadProfile({ configPath, profileName: "prod", env: {} })).toThrow(
+      "process.exit(2)",
+    );
     safety.restore();
   });
 
@@ -361,4 +353,3 @@ describe("parseRedisUrl", () => {
     expect(() => parseRedisUrl("redis:///0")).toThrow(/Missing host/);
   });
 });
-

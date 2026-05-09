@@ -5,6 +5,14 @@ import { writeError } from "./errors.js";
 import { parseDuration, MAX_RETRY_PAGE_SIZE } from "./data/duration.js";
 import { parseRedisUrl, type ParsedRedisUrl, type ResolvedProfile } from "./profiles.js";
 
+/**
+ * Default soft-delete retention window: 7 days. Soft-deleted jobs remain in
+ * the SQLite cache for this long before compaction physically removes them.
+ * The window bounds storage growth while leaving room for the historical-view
+ * feature to surface jobs past Redis retention. (See ADR-0001.)
+ */
+const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
 const configSchema = z.object({
   redis: z.object({
     host: z.string().default("localhost"),
@@ -17,6 +25,7 @@ const configSchema = z.object({
   pollInterval: z.coerce.number().int().positive().default(3000),
   prefix: z.string().default("bull"),
   queueNames: z.array(z.string()).optional(),
+  retentionMs: z.coerce.number().int().positive().default(DEFAULT_RETENTION_MS),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -288,29 +297,14 @@ const ACTIONS = new Set(["list", "get", "retry", "delete"]);
  * Returns the subcommand positionals and the remaining argv for parseArgs.
  */
 export function extractSubcommand(argv: string[]): { positionals: string[]; flagArgv: string[] } {
-  const positionals: string[] = [];
-  const flagArgv: string[] = [];
-  let donePositionals = false;
-
-  for (let i = 0; i < argv.length; i++) {
-    if (donePositionals) {
-      flagArgv.push(argv[i]!);
-      continue;
-    }
-
-    const arg = argv[i]!;
-
-    // If it starts with '-', it's a flag — everything from here is flags
-    if (arg.startsWith("-")) {
-      donePositionals = true;
-      flagArgv.push(arg);
-      continue;
-    }
-
-    positionals.push(arg);
+  const firstFlagIndex = argv.findIndex((arg) => arg.startsWith("-"));
+  if (firstFlagIndex === -1) {
+    return { positionals: argv, flagArgv: [] };
   }
-
-  return { positionals, flagArgv };
+  return {
+    positionals: argv.slice(0, firstFlagIndex),
+    flagArgv: argv.slice(firstFlagIndex),
+  };
 }
 
 // ── Parse subcommand from positionals ───────────────────────────────────
@@ -321,6 +315,26 @@ export function extractSubcommand(argv: string[]): { positionals: string[]; flag
 function showSubcommandHelp(text: string): never {
   console.log(text);
   process.exit(0);
+}
+
+function assertArgCount(positionals: string[], count: number, usage: string): void {
+  if (positionals.length > count) {
+    writeError(
+      `Unexpected arguments: ${positionals.slice(count).join(" ")}`,
+      "CONFIG_ERROR",
+      `Usage: ${usage}`,
+    );
+    process.exit(2);
+  }
+}
+
+function getRequiredArg(positionals: string[], index: number, name: string, usage: string): string {
+  const arg = positionals[index];
+  if (!arg) {
+    writeError(`Missing required argument: <${name}>`, "CONFIG_ERROR", `Usage: ${usage}`);
+    process.exit(2);
+  }
+  return arg;
 }
 
 function parseSubcommand(
@@ -375,35 +389,14 @@ function parseSubcommand(
     case "queues": {
       if (action === "list") {
         if (help) showSubcommandHelp(QUEUES_LIST_HELP);
-        if (positionals.length > 2) {
-          writeError(
-            `Unexpected arguments: ${positionals.slice(2).join(" ")}`,
-            "CONFIG_ERROR",
-            "Usage: queues list [options]",
-          );
-          process.exit(2);
-        }
+        assertArgCount(positionals, 2, "queues list [options]");
         return { kind: "queues-list" };
       }
       if (action === "delete") {
         if (help) showSubcommandHelp(QUEUES_DELETE_HELP);
-        const queue = positionals[2];
-        if (!queue) {
-          writeError(
-            "Missing required argument: <queue>",
-            "CONFIG_ERROR",
-            "Usage: queues delete <queue> [--dry-run] [--yes]",
-          );
-          process.exit(2);
-        }
-        if (positionals.length > 3) {
-          writeError(
-            `Unexpected arguments: ${positionals.slice(3).join(" ")}`,
-            "CONFIG_ERROR",
-            "Usage: queues delete <queue> [--dry-run] [--yes]",
-          );
-          process.exit(2);
-        }
+        const usage = "queues delete <queue> [--dry-run] [--yes]";
+        const queue = getRequiredArg(positionals, 2, "queue", usage);
+        assertArgCount(positionals, 3, usage);
         return { kind: "queues-delete", queue, dryRun, yes };
       }
       writeError(
@@ -416,70 +409,27 @@ function parseSubcommand(
 
     case "jobs": {
       if (action === "list") {
-        // Action-level help: `bullmq-dash jobs list --help`
         if (help) showSubcommandHelp(JOBS_LIST_HELP);
-        const queue = positionals[2];
-        if (!queue) {
-          writeError(
-            "Missing required argument: <queue>",
-            "CONFIG_ERROR",
-            "Usage: jobs list <queue> [--job-state <state>] [--page-size <n>]",
-          );
-          process.exit(2);
-        }
-        if (positionals.length > 3) {
-          writeError(
-            `Unexpected arguments: ${positionals.slice(3).join(" ")}`,
-            "CONFIG_ERROR",
-            "Usage: jobs list <queue> [--job-state <state>] [--page-size <n>]",
-          );
-          process.exit(2);
-        }
+        const usage = "jobs list <queue> [--job-state <state>] [--page-size <n>]";
+        const queue = getRequiredArg(positionals, 2, "queue", usage);
+        assertArgCount(positionals, 3, usage);
         return { kind: "jobs-list", queue, jobState, pageSize };
       }
       if (action === "get") {
-        // Action-level help: `bullmq-dash jobs get --help`
         if (help) showSubcommandHelp(JOBS_GET_HELP);
-        const queue = positionals[2];
-        const jobId = positionals[3];
-        if (!queue || !jobId) {
-          writeError(
-            "Missing required arguments: <queue> <job-id>",
-            "CONFIG_ERROR",
-            "Usage: jobs get <queue> <job-id>",
-          );
-          process.exit(2);
-        }
-        if (positionals.length > 4) {
-          writeError(
-            `Unexpected arguments: ${positionals.slice(4).join(" ")}`,
-            "CONFIG_ERROR",
-            "Usage: jobs get <queue> <job-id>",
-          );
-          process.exit(2);
-        }
+        const usage = "jobs get <queue> <job-id>";
+        const queue = getRequiredArg(positionals, 2, "queue", usage);
+        const jobId = getRequiredArg(positionals, 3, "job-id", usage);
+        assertArgCount(positionals, 4, usage);
         return { kind: "jobs-get", queue, jobId };
       }
       if (action === "retry") {
-        // Action-level help: `bullmq-dash jobs retry --help`
         if (help) showSubcommandHelp(JOBS_RETRY_HELP);
-        const queue = positionals[2];
-        if (!queue) {
-          writeError(
-            "Missing required argument: <queue>",
-            "CONFIG_ERROR",
-            "Usage: jobs retry <queue> --job-state failed [--since <duration>] [--name <pattern>] [--dry-run]",
-          );
-          process.exit(2);
-        }
-        if (positionals.length > 3) {
-          writeError(
-            `Unexpected arguments: ${positionals.slice(3).join(" ")}`,
-            "CONFIG_ERROR",
-            "Usage: jobs retry <queue> --job-state failed [options]",
-          );
-          process.exit(2);
-        }
+        const usage =
+          "jobs retry <queue> --job-state failed [--since <duration>] [--name <pattern>] [--dry-run]";
+        const queue = getRequiredArg(positionals, 2, "queue", usage);
+        assertArgCount(positionals, 3, usage);
+
         // Retry only operates on failed jobs. Guard against footguns.
         if (!jobState) {
           writeError(
@@ -509,48 +459,18 @@ function parseSubcommand(
 
     case "schedulers": {
       if (action === "list") {
-        // Action-level help: `bullmq-dash schedulers list --help`
         if (help) showSubcommandHelp(SCHEDULERS_LIST_HELP);
-        const queue = positionals[2];
-        if (!queue) {
-          writeError(
-            "Missing required argument: <queue>",
-            "CONFIG_ERROR",
-            "Usage: schedulers list <queue> [--page-size <n>]",
-          );
-          process.exit(2);
-        }
-        if (positionals.length > 3) {
-          writeError(
-            `Unexpected arguments: ${positionals.slice(3).join(" ")}`,
-            "CONFIG_ERROR",
-            "Usage: schedulers list <queue> [--page-size <n>]",
-          );
-          process.exit(2);
-        }
+        const usage = "schedulers list <queue> [--page-size <n>]";
+        const queue = getRequiredArg(positionals, 2, "queue", usage);
+        assertArgCount(positionals, 3, usage);
         return { kind: "schedulers-list", queue, pageSize };
       }
       if (action === "get") {
-        // Action-level help: `bullmq-dash schedulers get --help`
         if (help) showSubcommandHelp(SCHEDULERS_GET_HELP);
-        const queue = positionals[2];
-        const schedulerId = positionals[3];
-        if (!queue || !schedulerId) {
-          writeError(
-            "Missing required arguments: <queue> <scheduler-id>",
-            "CONFIG_ERROR",
-            "Usage: schedulers get <queue> <scheduler-id>",
-          );
-          process.exit(2);
-        }
-        if (positionals.length > 4) {
-          writeError(
-            `Unexpected arguments: ${positionals.slice(4).join(" ")}`,
-            "CONFIG_ERROR",
-            "Usage: schedulers get <queue> <scheduler-id>",
-          );
-          process.exit(2);
-        }
+        const usage = "schedulers get <queue> <scheduler-id>";
+        const queue = getRequiredArg(positionals, 2, "queue", usage);
+        const schedulerId = getRequiredArg(positionals, 3, "scheduler-id", usage);
+        assertArgCount(positionals, 4, usage);
         return { kind: "schedulers-get", queue, schedulerId };
       }
       writeError(
@@ -917,6 +837,7 @@ export function loadConfig(cliArgs: CliArgs, profile?: ResolvedProfile | null): 
     pollInterval: cliArgs.pollInterval ?? p?.pollInterval,
     prefix: cliArgs.prefix ?? p?.prefix,
     queueNames: cliArgs.queues ?? p?.queues,
+    retentionMs: p?.retentionMs,
   };
 
   const result = configSchema.safeParse(raw);

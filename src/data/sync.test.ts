@@ -49,7 +49,9 @@ import {
 import {
   closeSqliteDb,
   createSqliteDb,
+  getJobFromDb,
   getSqliteDb,
+  softDeleteJobsByIds,
   upsertJobs,
   type JobRow,
 } from "./sqlite.js";
@@ -65,6 +67,7 @@ beforeEach(() => {
     redis: { host: "localhost", port: 6379, db: 0 },
     pollInterval: 3000,
     prefix: "bull",
+    retentionMs: 7 * 24 * 60 * 60 * 1000,
   });
   createSqliteDb(TEST_DB_PATH);
   mockState.batches = [];
@@ -170,9 +173,7 @@ describe("syncQueue", () => {
 
   it("preserves state for jobs polling just refreshed", async () => {
     // Simulate: polling just wrote state=completed with fresh data.
-    upsertJobs("q", [
-      { id: "1", name: "job-a", state: "completed", timestamp: 5000 },
-    ]);
+    upsertJobs("q", [{ id: "1", name: "job-a", state: "completed", timestamp: 5000 }]);
     markPolledWrites("q", ["1"]);
 
     // Sync's staging snapshot has the older state=active.
@@ -190,11 +191,9 @@ describe("syncQueue", () => {
     expect(row.name).toBe("job-a");
   });
 
-  it("does not delete jobs polling just inserted that staging missed", async () => {
+  it("does not soft-delete jobs polling just inserted that staging missed", async () => {
     // Polling inserts a fresh job — sync's staging snapshot won't include it.
-    upsertJobs("q", [
-      { id: "99", name: "fresh", state: "active", timestamp: 9000 },
-    ]);
+    upsertJobs("q", [{ id: "99", name: "fresh", state: "active", timestamp: 9000 }]);
     markPolledWrites("q", ["99"]);
 
     // Staging has a totally different set — under naive rules, "99" is stale.
@@ -202,12 +201,88 @@ describe("syncQueue", () => {
 
     const result = await syncQueue("q");
     expect(result.error).toBeUndefined();
-    expect(result.deleted).toBe(0);
+    expect(result.softDeleted).toBe(0);
 
-    const row = getSqliteDb()
-      .prepare("SELECT * FROM jobs WHERE queue = ? AND id = ?")
-      .get("q", "99");
+    const row = getJobFromDb("q", "99");
     expect(row).not.toBeNull();
+    expect(row!.removed_at).toBeNull();
+  });
+
+  it("soft-deletes jobs missing from Redis instead of hard-deleting", async () => {
+    // Pre-existing rows in SQLite — reconciliation will see only id=1 in Redis.
+    upsertJobs("q", [
+      { id: "1", name: "still-here", state: "active", timestamp: 1000 },
+      { id: "2", name: "gone-from-redis", state: "completed", timestamp: 2000 },
+    ]);
+    mockState.batches = [[{ id: "1", state: "active" }]];
+
+    const before = Date.now();
+    const result = await syncQueue("q");
+    const after = Date.now();
+
+    expect(result.error).toBeUndefined();
+    expect(result.softDeleted).toBe(1);
+
+    // Row physically present, with removed_at stamped at sync time.
+    const gone = getJobFromDb("q", "2", { view: "all" });
+    expect(gone).not.toBeNull();
+    expect(gone!.removed_at).not.toBeNull();
+    expect(gone!.removed_at!).toBeGreaterThanOrEqual(before);
+    expect(gone!.removed_at!).toBeLessThanOrEqual(after);
+
+    // Default-view reads must not surface the soft-deleted row.
+    expect(getJobFromDb("q", "2")).toBeNull();
+  });
+
+  it("throws when a soft-deleted id reappears in Redis", async () => {
+    upsertJobs("q", [
+      { id: "1", name: "active", state: "active", timestamp: 1000 },
+      { id: "2", name: "ghost", state: "completed", timestamp: 2000 },
+    ]);
+    softDeleteJobsByIds("q", ["2"], 100);
+
+    // Resurrection: id=2 is soft-deleted in cache but reappears in Redis.
+    mockState.batches = [
+      [
+        { id: "1", state: "active" },
+        { id: "2", state: "completed" },
+      ],
+    ];
+
+    const result = await syncQueue("q");
+    expect(result.error).toBeDefined();
+    expect(result.error!.toLowerCase()).toContain("resurrect");
+    // The error message must name the queue and the offending id so operators
+    // can grep logs after the throw.
+    expect(result.error).toContain('"q"');
+    expect(result.error).toContain("2");
+
+    // Soft-delete must NOT be cleared — the row stays soft-deleted.
+    const row = getJobFromDb("q", "2", { view: "all" });
+    expect(row!.removed_at).toBe(100);
+  });
+
+  it("lists every offending id in the resurrection error message", async () => {
+    upsertJobs("q", [
+      { id: "1", name: "active", state: "active", timestamp: 1 },
+      { id: "2", name: "ghost-a", state: "completed", timestamp: 2 },
+      { id: "3", name: "ghost-b", state: "completed", timestamp: 3 },
+    ]);
+    softDeleteJobsByIds("q", ["2", "3"], 100);
+
+    mockState.batches = [
+      [
+        { id: "1", state: "active" },
+        { id: "2", state: "completed" },
+        { id: "3", state: "completed" },
+      ],
+    ];
+
+    const result = await syncQueue("q");
+    expect(result.error).toBeDefined();
+    // Both offending ids must appear so operators can grep for the violation.
+    expect(result.error).toContain("2");
+    expect(result.error).toContain("3");
   });
 
   it("aborts with a clear error when closeSqliteDb fires mid-sync", async () => {
@@ -239,9 +314,7 @@ describe("syncQueue", () => {
 
   it("still applies state change for jobs polling touched BEFORE sync started", async () => {
     // Polling wrote this job well before sync starts.
-    upsertJobs("q", [
-      { id: "1", name: "job-a", state: "active", timestamp: 1000 },
-    ]);
+    upsertJobs("q", [{ id: "1", name: "job-a", state: "active", timestamp: 1000 }]);
     markPolledWrites("q", ["1"]);
 
     // Wait so the polled-timestamp falls before syncStart.
@@ -308,5 +381,42 @@ describe("fullSync", () => {
     const result = await fullSync();
     expect(result.queues).toBe(2);
     expect(result.errors).toEqual([]);
+  });
+
+  it("compacts rows past retentionMs once after all queues reconcile", async () => {
+    // Pre-stamp soft-deleted rows on two queues, both well past retention.
+    upsertJobs("q1", [
+      { id: "expired", name: "a", state: "completed", timestamp: 1 },
+      { id: "live", name: "b", state: "active", timestamp: 2 },
+    ]);
+    upsertJobs("q2", [
+      { id: "expired", name: "c", state: "completed", timestamp: 1 },
+      { id: "live", name: "d", state: "active", timestamp: 2 },
+    ]);
+    softDeleteJobsByIds("q1", ["expired"], 1);
+    softDeleteJobsByIds("q2", ["expired"], 1);
+
+    setConfig({
+      redis: { host: "localhost", port: 6379, db: 0 },
+      pollInterval: 3000,
+      prefix: "bull",
+      retentionMs: 10, // anything stamped > 10ms ago is purged
+    });
+
+    mockState.queues = ["q1", "q2"];
+    mock.module("./jobs.js", () => ({
+      getAllJobIds: async function* (_q: string) {
+        yield [{ id: "live", state: "active" }];
+      },
+    }));
+
+    const result = await fullSync();
+    expect(result.errors).toEqual([]);
+    expect(result.totalCompacted).toBe(2);
+
+    expect(getJobFromDb("q1", "expired", { view: "all" })).toBeNull();
+    expect(getJobFromDb("q2", "expired", { view: "all" })).toBeNull();
+    expect(getJobFromDb("q1", "live")).not.toBeNull();
+    expect(getJobFromDb("q2", "live")).not.toBeNull();
   });
 });

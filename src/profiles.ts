@@ -19,6 +19,12 @@ const profileSchema = z
     pollInterval: z.coerce.number().int().positive().optional(),
     prefix: z.string().optional(),
     queues: z.array(z.string()).optional(),
+    /**
+     * Soft-delete retention window in milliseconds. Jobs reconciliation
+     * stamped as removed are physically purged once this window elapses.
+     * Falls back to the application default (7 days) when omitted.
+     */
+    retentionMs: z.coerce.number().int().positive().optional(),
   })
   .strict();
 

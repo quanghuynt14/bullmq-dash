@@ -127,9 +127,7 @@ describe("computeRetryExitCode", () => {
     expect(computeRetryExitCode(baseOutput({ dryRun: true, matched: 100 }))).toBe(0);
     // Errors shouldn't be set on dry-run, but guard against mistaken input:
     expect(
-      computeRetryExitCode(
-        baseOutput({ dryRun: true, errors: [{ jobId: "a", error: "x" }] }),
-      ),
+      computeRetryExitCode(baseOutput({ dryRun: true, errors: [{ jobId: "a", error: "x" }] })),
     ).toBe(0);
   });
 

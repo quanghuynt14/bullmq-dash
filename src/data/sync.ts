@@ -1,15 +1,18 @@
 import type { Database } from "bun:sqlite";
+import { getConfig } from "../config.js";
 import { getAllJobIds } from "./jobs.js";
 import { discoverQueueNames } from "./queues.js";
 import {
+  compactRemovedJobs,
   createSyncStaging,
   insertStagingBatch,
   findNewIdsByStagingDiff,
   findChangedIdsByStagingDiff,
+  findResurrectedIdsByStagingDiff,
   findStaleIdsByStagingDiff,
-  deleteJobsByIds,
   dropSyncStaging,
   getSqliteDb,
+  softDeleteJobsByIds,
   upsertJobStubs,
   upsertSyncState,
 } from "./sqlite.js";
@@ -17,7 +20,8 @@ import {
 export interface SyncResult {
   inserted: number;
   stateUpdated: number;
-  deleted: number;
+  /** Rows newly stamped with `removed_at` because they vanished from Redis. */
+  softDeleted: number;
   total: number;
   /** Set when the sync failed; callers can use this to surface the error. */
   error?: string;
@@ -124,12 +128,18 @@ function wasPolledSince(queue: string, jobId: string, threshold: number): boolea
  *
  * Uses a staging table for SQL-side diffing:
  * 1. Paginate all job IDs from Redis into staging (5000 at a time)
- * 2. SQL JOIN to find new IDs → insert as stubs (id + state, no data)
- * 3. SQL JOIN to find changed states → update state only
+ * 2. Resurrection check — staging IDs that exist as soft-deleted rows in
+ *    jobs are an invariant violation; throw with the queue + offending IDs.
+ * 3. SQL JOIN to find new IDs → insert as stubs (id + state, no data)
+ * 4. SQL JOIN to find changed states (live rows only) → update state only
  *    (skip IDs polling refreshed after sync started — staging is stale for those)
- * 4. SQL LEFT JOIN to find stale IDs → delete
+ * 5. SQL LEFT JOIN to find stale live IDs → soft-delete (`removed_at = now`)
  *    (same exclusion — polling may have just inserted a job sync's snapshot missed)
- * 5. Update sync_state metadata
+ * 6. Update sync_state metadata
+ *
+ * Compaction (physical purge of soft-deleted rows past the retention window)
+ * runs once per `fullSync`, not per queue — it scans `jobs` globally so
+ * doing it inside `syncQueue` would re-scan the same rows N times per cycle.
  *
  * Name, timestamp, and data_preview are populated lazily when jobs are
  * viewed in TUI or fetched via CLI — not during background sync.
@@ -155,7 +165,7 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
     return {
       inserted: 0,
       stateUpdated: 0,
-      deleted: 0,
+      softDeleted: 0,
       total: 0,
       error: message,
     };
@@ -171,9 +181,7 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
   const syncDb: Database = getSqliteDb();
   const assertSameConnection = () => {
     if (getSqliteDb() !== syncDb) {
-      throw new Error(
-        `syncQueue("${queueName}") aborted: SQLite connection was closed mid-sync`,
-      );
+      throw new Error(`syncQueue("${queueName}") aborted: SQLite connection was closed mid-sync`);
     }
   };
   try {
@@ -189,7 +197,21 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
 
     assertSameConnection();
 
-    // Step 2: Find and insert new jobs as stubs.
+    // Step 2: Resurrection check. BullMQ job IDs are treated as monotonic
+    // (ADR-0001), so a soft-deleted ID reappearing in Redis is an invariant
+    // violation, not a reinstatement. Throw loudly with the queue + the
+    // offending ids so operators see the violation in logs and downstream
+    // assumptions (history view, compaction) don't get silently corrupted.
+    const resurrected = findResurrectedIdsByStagingDiff(queueName);
+    if (resurrected.length > 0) {
+      throw new Error(
+        `Resurrected job IDs detected in queue "${queueName}": ` +
+          `${resurrected.join(", ")}. ` +
+          `Soft-deleted IDs are not allowed to reappear in Redis.`,
+      );
+    }
+
+    // Step 3: Find and insert new jobs as stubs.
     // findNewIdsByStagingDiff returns id + state, so we can hand the rows
     // straight to upsertJobStubs without a second round-trip.
     const newStubs = findNewIdsByStagingDiff(queueName);
@@ -197,7 +219,7 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
       upsertJobStubs(queueName, newStubs);
     }
 
-    // Step 3: Find and update changed states — but skip jobs polling
+    // Step 4: Find and update changed states — but skip jobs polling
     // refreshed after we started, because staging's state for them is stale.
     const changed = findChangedIdsByStagingDiff(queueName).filter(
       (row) => !wasPolledSince(queueName, row.id, syncStart),
@@ -206,25 +228,28 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
       upsertJobStubs(queueName, changed);
     }
 
-    // Step 4: Delete stale jobs — same exclusion. A job polling inserted
-    // between syncStart and now isn't in staging (we built staging from a
-    // Redis snapshot that predated the insert), so the anti-join would
-    // misclassify it as stale and delete it.
+    // Step 5: Soft-delete stale jobs — same recently-polled exclusion. A job
+    // polling inserted between syncStart and now isn't in staging (we built
+    // staging from a Redis snapshot that predated the insert), so the anti-
+    // join would misclassify it as stale and stamp it removed.
     const staleIds = findStaleIdsByStagingDiff(queueName).filter(
       (id) => !wasPolledSince(queueName, id, syncStart),
     );
-    const deleted = deleteJobsByIds(queueName, staleIds);
+    // Single `now` for the soft-delete stamp; reused for sync_state below so
+    // a row stamped this cycle and `synced_at` line up exactly.
+    const now = Date.now();
+    const softDeleted = softDeleteJobsByIds(queueName, staleIds, now);
 
-    // Step 5: Update sync state
+    // Step 6: Update sync state
     upsertSyncState(queueName, {
       jobCount: total,
-      syncedAt: Date.now(),
+      syncedAt: now,
     });
 
     return {
       inserted: newStubs.length,
       stateUpdated: changed.length,
-      deleted,
+      softDeleted,
       total,
     };
   } catch (error) {
@@ -233,7 +258,7 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
     return {
       inserted: 0,
       stateUpdated: 0,
-      deleted: 0,
+      softDeleted: 0,
       total: 0,
       error: message,
     };
@@ -245,10 +270,7 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
       try {
         dropSyncStaging();
       } catch (cleanupError) {
-        console.error(
-          `Failed to drop sync_staging for queue "${queueName}":`,
-          cleanupError,
-        );
+        console.error(`Failed to drop sync_staging for queue "${queueName}":`, cleanupError);
       }
     }
     releaseSyncLock();
@@ -258,7 +280,8 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
 export interface FullSyncResult {
   queues: number;
   totalInserted: number;
-  totalDeleted: number;
+  totalSoftDeleted: number;
+  totalCompacted: number;
   /** Per-queue failures. Empty array means every queue succeeded. */
   errors: Array<{ queue: string; error: string }>;
 }
@@ -284,13 +307,14 @@ export async function fullSync(): Promise<FullSyncResult> {
     return {
       queues: 0,
       totalInserted: 0,
-      totalDeleted: 0,
+      totalSoftDeleted: 0,
+      totalCompacted: 0,
       errors: [{ queue: "", error: message }],
     };
   }
 
   let totalInserted = 0;
-  let totalDeleted = 0;
+  let totalSoftDeleted = 0;
   const errors: Array<{ queue: string; error: string }> = [];
 
   for (const q of queues) {
@@ -302,9 +326,20 @@ export async function fullSync(): Promise<FullSyncResult> {
       errors.push({ queue: q, error: result.error });
     } else {
       totalInserted += result.inserted;
-      totalDeleted += result.deleted;
+      totalSoftDeleted += result.softDeleted;
     }
   }
 
-  return { queues: queues.length, totalInserted, totalDeleted, errors };
+  // One global compaction pass after every queue has reconciled. Hoisted out
+  // of syncQueue because compactRemovedJobs scans `jobs` globally — running
+  // it per-queue would re-scan the same rows N times per cycle for no gain.
+  const totalCompacted = compactRemovedJobs(Date.now(), getConfig().retentionMs);
+
+  return {
+    queues: queues.length,
+    totalInserted,
+    totalSoftDeleted,
+    totalCompacted,
+    errors,
+  };
 }

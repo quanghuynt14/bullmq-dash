@@ -11,13 +11,31 @@ CREATE TABLE IF NOT EXISTS jobs (
   state TEXT NOT NULL,
   timestamp INTEGER,
   data_preview TEXT,
+  removed_at INTEGER,
   PRIMARY KEY (queue, id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_queue_state ON jobs(queue, state);
 CREATE INDEX IF NOT EXISTS idx_jobs_name ON jobs(name);
 CREATE INDEX IF NOT EXISTS idx_jobs_timestamp ON jobs(timestamp);
+CREATE INDEX IF NOT EXISTS idx_jobs_active
+  ON jobs(queue, state, timestamp) WHERE removed_at IS NULL;
 `;
+
+/**
+ * Bring a pre-soft-delete jobs table forward. The CREATE TABLE IF NOT EXISTS
+ * above is a no-op against an existing table, so older installs would never
+ * gain `removed_at` without an explicit ALTER. The partial index in SCHEMA
+ * is created idempotently after the column exists.
+ */
+function migrateRemovedAtColumn(database: Database): void {
+  const cols = database.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
+  // Fresh DB: no jobs table yet — SCHEMA below will create it with removed_at.
+  if (cols.length === 0) return;
+  // Already migrated: column exists.
+  if (cols.some((c) => c.name === "removed_at")) return;
+  database.exec("ALTER TABLE jobs ADD COLUMN removed_at INTEGER");
+}
 
 const FTS_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
@@ -62,6 +80,9 @@ export function createSqliteDb(dbPath?: string): Database {
   db = new Database(path);
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA synchronous=NORMAL");
+  // Migration runs BEFORE SCHEMA so the partial index in SCHEMA can reference
+  // removed_at on a freshly-upgraded legacy table.
+  migrateRemovedAtColumn(db);
   db.exec(SCHEMA);
   db.exec(FTS_SCHEMA);
   db.exec(SYNC_STATE_SCHEMA);
@@ -89,7 +110,17 @@ export interface JobRow {
   state: string;
   timestamp: number | null;
   data_preview: string | null;
+  removed_at: number | null;
 }
+
+/**
+ * Which slice of the cache a read addresses.
+ *  - `"live"` (default): only rows where `removed_at IS NULL` — current state.
+ *  - `"history"`: only soft-deleted rows. Useful for the historical-view
+ *    feature that shows jobs past Redis retention.
+ *  - `"all"`: both live and soft-deleted, for debugging and audits.
+ */
+export type JobView = "live" | "history" | "all";
 
 export interface JobQueryParams {
   queue: string;
@@ -99,6 +130,20 @@ export interface JobQueryParams {
   order?: "asc" | "desc";
   page?: number;
   pageSize?: number;
+  view?: JobView;
+}
+
+/** SQL fragment matching the requested view. Returns "" for `"all"`. */
+function viewClause(view: JobView, alias: string): string {
+  const col = `${alias}removed_at`;
+  switch (view) {
+    case "live":
+      return `${col} IS NULL`;
+    case "history":
+      return `${col} IS NOT NULL`;
+    case "all":
+      return "";
+  }
 }
 
 export interface JobQueryResult {
@@ -108,7 +153,16 @@ export interface JobQueryResult {
 
 export function queryJobs(params: JobQueryParams): JobQueryResult {
   const database = getSqliteDb();
-  const { queue, search, state, sort = "timestamp", order = "desc", page = 1, pageSize = 25 } = params;
+  const {
+    queue,
+    search,
+    state,
+    sort = "timestamp",
+    order = "desc",
+    page = 1,
+    pageSize = 25,
+    view = "live",
+  } = params;
 
   const validSorts = ["id", "name", "state", "timestamp"];
   const sortCol = validSorts.includes(sort) ? sort : "timestamp";
@@ -125,6 +179,9 @@ export function queryJobs(params: JobQueryParams): JobQueryResult {
       conditions.push("j.state = ?");
       values.push(state);
     }
+
+    const viewSql = viewClause(view, "j.");
+    if (viewSql) conditions.push(viewSql);
 
     const where = conditions.join(" AND ");
     // FTS5 MATCH uses implicit prefix matching with * for better UX
@@ -148,6 +205,9 @@ export function queryJobs(params: JobQueryParams): JobQueryResult {
     conditions.push("state = ?");
     values.push(state);
   }
+
+  const viewSql = viewClause(view, "");
+  if (viewSql) conditions.push(viewSql);
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
@@ -199,14 +259,28 @@ export function upsertJobs(
   upsert(jobs);
 }
 
-export function getJobFromDb(queue: string, jobId: string): JobRow | null {
+export function getJobFromDb(
+  queue: string,
+  jobId: string,
+  options: { view?: JobView } = {},
+): JobRow | null {
   const database = getSqliteDb();
-  return database.prepare("SELECT * FROM jobs WHERE queue = ? AND id = ?").get(queue, jobId) as JobRow | null;
+  const view = options.view ?? "live";
+  const viewSql = viewClause(view, "");
+  const sql = viewSql
+    ? `SELECT * FROM jobs WHERE queue = ? AND id = ? AND ${viewSql}`
+    : "SELECT * FROM jobs WHERE queue = ? AND id = ?";
+  return database.prepare(sql).get(queue, jobId) as JobRow | null;
 }
 
-export function getQueueJobCount(queue: string): number {
+export function getQueueJobCount(queue: string, options: { view?: JobView } = {}): number {
   const database = getSqliteDb();
-  const result = database.prepare("SELECT COUNT(*) as total FROM jobs WHERE queue = ?").get(queue) as { total: number };
+  const view = options.view ?? "live";
+  const viewSql = viewClause(view, "");
+  const sql = viewSql
+    ? `SELECT COUNT(*) as total FROM jobs WHERE queue = ? AND ${viewSql}`
+    : "SELECT COUNT(*) as total FROM jobs WHERE queue = ?";
+  const result = database.prepare(sql).get(queue) as { total: number };
   return result.total;
 }
 
@@ -225,11 +299,15 @@ export function rebuildFtsIndex(): void {
  * Used by incremental sync to cheaply record job existence and state
  * without fetching full job data from Redis. Preserves existing name,
  * timestamp, and data_preview if the job already exists.
+ *
+ * The ON CONFLICT clause deliberately does NOT touch `removed_at`. Per
+ * ADR-0001, soft-deleted IDs are not allowed to reappear in Redis — the
+ * reconciler enforces this via the resurrection check. Sync code paths
+ * that get here have already passed that check, so leaving `removed_at`
+ * alone is correct: if a row is soft-deleted, it stays soft-deleted.
+ * (`upsertJobs` follows the same rule for the polling write path.)
  */
-export function upsertJobStubs(
-  queue: string,
-  jobs: Array<{ id: string; state: string }>,
-): void {
+export function upsertJobStubs(queue: string, jobs: Array<{ id: string; state: string }>): void {
   const database = getSqliteDb();
   const stmt = database.prepare(`
     INSERT INTO jobs (id, queue, name, state, timestamp, data_preview)
@@ -255,9 +333,9 @@ export interface SyncState {
 
 export function getSyncState(queue: string): SyncState | null {
   const database = getSqliteDb();
-  const row = database.prepare(
-    "SELECT queue, job_count, synced_at FROM sync_state WHERE queue = ?",
-  ).get(queue) as { queue: string; job_count: number; synced_at: number } | null;
+  const row = database
+    .prepare("SELECT queue, job_count, synced_at FROM sync_state WHERE queue = ?")
+    .get(queue) as { queue: string; job_count: number; synced_at: number } | null;
 
   if (!row) return null;
 
@@ -273,13 +351,15 @@ export function upsertSyncState(
   input: { jobCount: number; syncedAt: number },
 ): void {
   const database = getSqliteDb();
-  database.prepare(`
+  database
+    .prepare(`
     INSERT INTO sync_state (queue, job_count, synced_at)
     VALUES (?, ?, ?)
     ON CONFLICT(queue) DO UPDATE SET
       job_count = excluded.job_count,
       synced_at = excluded.synced_at
-  `).run(queue, input.jobCount, input.syncedAt);
+  `)
+    .run(queue, input.jobCount, input.syncedAt);
 }
 
 /**
@@ -330,40 +410,67 @@ export function insertStagingBatch(
 }
 
 /**
+ * Find job IDs in staging that exist in jobs but as soft-deleted rows.
+ *
+ * BullMQ job IDs are treated as monotonic (per ADR-0001), so a soft-deleted
+ * ID reappearing in Redis is an invariant violation, not a reinstatement —
+ * the reconciler will throw on a non-empty result rather than silently
+ * undelete the row.
+ */
+export function findResurrectedIdsByStagingDiff(queue: string): string[] {
+  const database = getSqliteDb();
+  const rows = database
+    .prepare(`
+    SELECT s.id FROM sync_staging s
+    JOIN jobs j ON s.queue = j.queue AND s.id = j.id
+    WHERE s.queue = ? AND j.removed_at IS NOT NULL
+  `)
+    .all(queue) as Array<{ id: string }>;
+  return rows.map((r) => r.id);
+}
+
+/**
  * Find job IDs that exist in staging but not in the jobs table.
  * These are new jobs that need to be inserted. Returns id + state so the
  * caller can build job stubs without a second round-trip to SQLite.
+ *
+ * Soft-deleted rows still live in `jobs` (with `removed_at IS NOT NULL`),
+ * so the LEFT JOIN already excludes them from the "new" set — they show up
+ * via findResurrectedIdsByStagingDiff instead.
  */
-export function findNewIdsByStagingDiff(
-  queue: string,
-): Array<{ id: string; state: string }> {
+export function findNewIdsByStagingDiff(queue: string): Array<{ id: string; state: string }> {
   const database = getSqliteDb();
-  return database.prepare(`
+  return database
+    .prepare(`
     SELECT s.id, s.state FROM sync_staging s
     LEFT JOIN jobs j ON s.queue = j.queue AND s.id = j.id
     WHERE s.queue = ? AND j.id IS NULL
-  `).all(queue) as Array<{ id: string; state: string }>;
+  `)
+    .all(queue) as Array<{ id: string; state: string }>;
 }
 
 /**
- * Find job IDs that exist in both staging and jobs table but have different states.
- * Returns the staging (new) state for each changed job.
+ * Find job IDs that exist in both staging and jobs (as live rows) but have
+ * different states. Soft-deleted rows are excluded — those go through the
+ * resurrection path (or stay soft-deleted) instead of getting their state
+ * silently overwritten.
  */
-export function findChangedIdsByStagingDiff(
-  queue: string,
-): Array<{ id: string; state: string }> {
+export function findChangedIdsByStagingDiff(queue: string): Array<{ id: string; state: string }> {
   const database = getSqliteDb();
-  return database.prepare(`
+  return database
+    .prepare(`
     SELECT s.id, s.state FROM sync_staging s
     JOIN jobs j ON s.queue = j.queue AND s.id = j.id
-    WHERE s.queue = ? AND s.state != j.state
-  `).all(queue) as Array<{ id: string; state: string }>;
+    WHERE s.queue = ? AND j.removed_at IS NULL AND s.state != j.state
+  `)
+    .all(queue) as Array<{ id: string; state: string }>;
 }
 
 /**
- * Find job IDs that exist in the jobs table but NOT in staging.
- * These are candidates for stale-row deletion. Callers may filter the list
- * (e.g., to skip jobs polling just upserted) before calling deleteJobsByIds.
+ * Find LIVE job IDs (`removed_at IS NULL`) that exist in the jobs table but
+ * NOT in staging. These are soft-delete candidates — the reconciler stamps
+ * `removed_at = now` on them. Already soft-deleted rows are skipped so the
+ * sync doesn't keep re-stamping them on every cycle.
  *
  * Uses a LEFT JOIN anti-join (rather than `NOT IN (subquery)`) so SQLite can
  * use the (queue, id) primary key on both sides and avoid materializing the
@@ -371,12 +478,66 @@ export function findChangedIdsByStagingDiff(
  */
 export function findStaleIdsByStagingDiff(queue: string): string[] {
   const database = getSqliteDb();
-  const rows = database.prepare(`
+  const rows = database
+    .prepare(`
     SELECT j.id FROM jobs j
     LEFT JOIN sync_staging s ON j.queue = s.queue AND j.id = s.id
-    WHERE j.queue = ? AND s.id IS NULL
-  `).all(queue) as Array<{ id: string }>;
+    WHERE j.queue = ? AND j.removed_at IS NULL AND s.id IS NULL
+  `)
+    .all(queue) as Array<{ id: string }>;
   return rows.map((r) => r.id);
+}
+
+/**
+ * Mark jobs as soft-deleted by setting `removed_at = now`. Returns the
+ * number of rows we asked to update — see deleteJobsByIds for why we don't
+ * use `result.changes` here either (FTS5 update triggers inflate it).
+ *
+ * The reconciler calls this in place of deleteJobsByIds when a job in the
+ * cache no longer appears in Redis. Compaction (compactRemovedJobs) does the
+ * physical removal once the retention window elapses.
+ */
+export function softDeleteJobsByIds(queue: string, ids: string[], now: number): number {
+  if (ids.length === 0) return 0;
+  const database = getSqliteDb();
+  const BATCH_SIZE = 900;
+
+  const run = database.transaction(() => {
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+      const batch = ids.slice(i, i + BATCH_SIZE);
+      const placeholders = batch.map(() => "?").join(",");
+      database
+        .prepare(`UPDATE jobs SET removed_at = ? WHERE queue = ? AND id IN (${placeholders})`)
+        .run(now, queue, ...batch);
+    }
+  });
+  run();
+  return ids.length;
+}
+
+/**
+ * Physically delete soft-deleted rows older than the retention window.
+ * Cutoff is `now − retentionMs`; any row with `removed_at < cutoff` is gone.
+ *
+ * Counts via SELECT before DELETE because the FTS5 `jobs_ad` trigger writes
+ * to the shadow table, which `result.changes` would conflate with the real
+ * row deletions (same reason deleteJobsByIds doesn't trust changes()).
+ */
+export function compactRemovedJobs(now: number, retentionMs: number): number {
+  const database = getSqliteDb();
+  const cutoff = now - retentionMs;
+  // Single source of truth so the count and delete can't drift apart.
+  const filter = "removed_at IS NOT NULL AND removed_at < ?";
+  const run = database.transaction(() => {
+    const { n } = database
+      .prepare(`SELECT COUNT(*) as n FROM jobs WHERE ${filter}`)
+      .get(cutoff) as { n: number };
+    if (n > 0) {
+      database.prepare(`DELETE FROM jobs WHERE ${filter}`).run(cutoff);
+    }
+    return n;
+  });
+  return run();
 }
 
 /**
@@ -393,9 +554,9 @@ export function deleteJobsByIds(queue: string, ids: string[]): number {
     for (let i = 0; i < ids.length; i += BATCH_SIZE) {
       const batch = ids.slice(i, i + BATCH_SIZE);
       const placeholders = batch.map(() => "?").join(",");
-      database.prepare(
-        `DELETE FROM jobs WHERE queue = ? AND id IN (${placeholders})`,
-      ).run(queue, ...batch);
+      database
+        .prepare(`DELETE FROM jobs WHERE queue = ? AND id IN (${placeholders})`)
+        .run(queue, ...batch);
     }
   });
   run();

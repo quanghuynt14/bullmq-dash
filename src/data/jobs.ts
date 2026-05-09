@@ -50,7 +50,14 @@ const PAGE_SIZE = 25;
 const DEFAULT_MAX_RESULTS = 1000;
 
 /** All job states we sync (BullMQ JobType values). */
-const SYNC_JOB_TYPES: JobType[] = ["active", "waiting", "completed", "failed", "delayed", "prioritized"];
+const SYNC_JOB_TYPES: JobType[] = [
+  "active",
+  "waiting",
+  "completed",
+  "failed",
+  "delayed",
+  "prioritized",
+];
 
 /** Number of IDs to fetch per Redis call during sync. */
 const SYNC_PAGE_SIZE = 5000;
@@ -412,10 +419,7 @@ export async function retryFailedJobs(
     dryRun?: boolean;
   },
 ): Promise<RetryResult> {
-  const pageSize = Math.min(
-    options.pageSize ?? DEFAULT_RETRY_PAGE_SIZE,
-    MAX_RETRY_PAGE_SIZE,
-  );
+  const pageSize = Math.min(options.pageSize ?? DEFAULT_RETRY_PAGE_SIZE, MAX_RETRY_PAGE_SIZE);
   const dryRun = options.dryRun ?? false;
 
   let cutoffMs: number | undefined;

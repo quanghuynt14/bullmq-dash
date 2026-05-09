@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
 import { unlinkSync } from "node:fs";
 import { setConfig } from "../config.js";
 import {
   closeSqliteDb,
+  compactRemovedJobs,
   createSqliteDb,
+  findResurrectedIdsByStagingDiff,
   getJobFromDb,
   getSqliteDb,
   queryJobs,
+  softDeleteJobsByIds,
   upsertJobs,
   upsertJobStubs,
   getSyncState,
@@ -28,6 +32,7 @@ beforeEach(() => {
     redis: { host: "localhost", port: 6379, db: 0 },
     pollInterval: 3000,
     prefix: "bull",
+    retentionMs: 7 * 24 * 60 * 60 * 1000,
   });
   createSqliteDb(TEST_DB_PATH);
 });
@@ -62,10 +67,22 @@ describe("createSqliteDb", () => {
     }>;
 
     const columnNames = tableInfo.map((c) => c.name);
-    expect(columnNames).toEqual(["id", "queue", "name", "state", "timestamp", "data_preview"]);
+    expect(columnNames).toEqual([
+      "id",
+      "queue",
+      "name",
+      "state",
+      "timestamp",
+      "data_preview",
+      "removed_at",
+    ]);
 
     const pkCols = tableInfo.filter((c) => c.pk > 0).map((c) => c.name);
     expect(pkCols).toEqual(["id", "queue"]);
+
+    const removedAt = tableInfo.find((c) => c.name === "removed_at");
+    expect(removedAt).toBeDefined();
+    expect(removedAt!.notnull).toBe(0); // nullable
   });
 
   it("creates required indexes", () => {
@@ -78,6 +95,64 @@ describe("createSqliteDb", () => {
     expect(indexNames).toContain("idx_jobs_queue_state");
     expect(indexNames).toContain("idx_jobs_name");
     expect(indexNames).toContain("idx_jobs_timestamp");
+    expect(indexNames).toContain("idx_jobs_active");
+  });
+
+  it("idx_jobs_active is a partial index over removed_at IS NULL", () => {
+    const db = getSqliteDb();
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_jobs_active'")
+      .get() as { sql: string } | null;
+    expect(row).not.toBeNull();
+    // Must filter rows by removed_at IS NULL so "live" reads can use it.
+    expect(row!.sql).toMatch(/removed_at\s+IS\s+NULL/i);
+  });
+
+  it("migrates an existing jobs table that lacks removed_at", () => {
+    // Simulate the pre-soft-delete schema from a prior install.
+    closeSqliteDb();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        unlinkSync(`${TEST_DB_PATH}${suffix}`);
+      } catch {
+        // ignore
+      }
+    }
+
+    // Open a raw DB and create the old schema (no removed_at column).
+    const raw = new Database(TEST_DB_PATH);
+    raw.exec(`
+      CREATE TABLE jobs (
+        id TEXT NOT NULL,
+        queue TEXT NOT NULL,
+        name TEXT,
+        state TEXT NOT NULL,
+        timestamp INTEGER,
+        data_preview TEXT,
+        PRIMARY KEY (queue, id)
+      );
+    `);
+    raw
+      .prepare("INSERT INTO jobs (id, queue, name, state, timestamp) VALUES (?, ?, ?, ?, ?)")
+      .run("1", "email", "legacy", "active", 1000);
+    raw.close();
+
+    // Reopen via createSqliteDb — migration should add removed_at.
+    createSqliteDb(TEST_DB_PATH);
+    const db = getSqliteDb();
+
+    const tableInfo = db.prepare("PRAGMA table_info(jobs)").all() as Array<{
+      name: string;
+    }>;
+    expect(tableInfo.map((c) => c.name)).toContain("removed_at");
+
+    // Existing row must remain accessible and treated as live (removed_at IS NULL).
+    const row = db.prepare("SELECT id, removed_at FROM jobs WHERE id = ?").get("1") as {
+      id: string;
+      removed_at: number | null;
+    };
+    expect(row.id).toBe("1");
+    expect(row.removed_at).toBeNull();
   });
 
   it("sets WAL journal mode", () => {
@@ -95,7 +170,9 @@ describe("upsertJobs", () => {
     ]);
 
     const db = getSqliteDb();
-    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id").all("email") as JobRow[];
+    const rows = db
+      .prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id")
+      .all("email") as JobRow[];
     expect(rows).toHaveLength(2);
     expect(rows[0]!.id).toBe("1");
     expect(rows[0]!.name).toBe("send-welcome");
@@ -116,7 +193,9 @@ describe("upsertJobs", () => {
 
   it("stores data_preview truncated to 500 chars", () => {
     const longData = { message: "x".repeat(600) };
-    upsertJobs("email", [{ id: "1", name: "job", state: "active", timestamp: 1000, data: longData }]);
+    upsertJobs("email", [
+      { id: "1", name: "job", state: "active", timestamp: 1000, data: longData },
+    ]);
 
     const db = getSqliteDb();
     const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get("1") as JobRow;
@@ -146,7 +225,9 @@ describe("upsertJobs", () => {
   it("returns null data_preview when JSON.stringify throws (circular ref)", () => {
     const circular: Record<string, unknown> = { a: 1 };
     circular.self = circular;
-    upsertJobs("email", [{ id: "1", name: "job", state: "active", timestamp: 1000, data: circular }]);
+    upsertJobs("email", [
+      { id: "1", name: "job", state: "active", timestamp: 1000, data: circular },
+    ]);
 
     const row = getSqliteDb().prepare("SELECT * FROM jobs WHERE id = ?").get("1") as JobRow;
     expect(row.data_preview).toBeNull();
@@ -275,6 +356,62 @@ describe("queryJobs", () => {
   });
 });
 
+describe("queryJobs / getJobFromDb view filter", () => {
+  beforeEach(() => {
+    upsertJobs("email", [
+      { id: "live-1", name: "send-active", state: "active", timestamp: 1000 },
+      { id: "live-2", name: "send-completed", state: "completed", timestamp: 2000 },
+      { id: "gone", name: "send-trashed", state: "completed", timestamp: 500 },
+    ]);
+    softDeleteJobsByIds("email", ["gone"], 1_700_000_000_000);
+  });
+
+  it("queryJobs default view excludes soft-deleted rows", () => {
+    const result = queryJobs({ queue: "email" });
+    expect(result.total).toBe(2);
+    expect(result.jobs.map((j) => j.id).toSorted()).toEqual(["live-1", "live-2"]);
+  });
+
+  it("queryJobs view='history' returns only soft-deleted rows", () => {
+    const result = queryJobs({ queue: "email", view: "history" });
+    expect(result.total).toBe(1);
+    expect(result.jobs[0]!.id).toBe("gone");
+    expect(result.jobs[0]!.removed_at).toBe(1_700_000_000_000);
+  });
+
+  it("queryJobs view='all' returns both live and soft-deleted rows", () => {
+    const result = queryJobs({ queue: "email", view: "all" });
+    expect(result.total).toBe(3);
+  });
+
+  it("FTS search default view excludes soft-deleted rows", () => {
+    const result = queryJobs({ queue: "email", search: "send" });
+    expect(result.total).toBe(2);
+    expect(result.jobs.every((j) => !j.id.startsWith("gone"))).toBe(true);
+  });
+
+  it("FTS search view='all' includes soft-deleted rows", () => {
+    const result = queryJobs({ queue: "email", search: "send", view: "all" });
+    expect(result.total).toBe(3);
+  });
+
+  it("FTS search view='history' returns only soft-deleted matches", () => {
+    const result = queryJobs({ queue: "email", search: "trashed", view: "history" });
+    expect(result.total).toBe(1);
+    expect(result.jobs[0]!.id).toBe("gone");
+  });
+
+  it("getJobFromDb default view returns null for soft-deleted job", () => {
+    expect(getJobFromDb("email", "gone")).toBeNull();
+  });
+
+  it("getJobFromDb view='all' returns soft-deleted job", () => {
+    const row = getJobFromDb("email", "gone", { view: "all" });
+    expect(row).not.toBeNull();
+    expect(row!.removed_at).toBe(1_700_000_000_000);
+  });
+});
+
 describe("getJobFromDb", () => {
   it("returns a job row for existing job", () => {
     upsertJobs("email", [{ id: "42", name: "my-job", state: "completed", timestamp: 5000 }]);
@@ -314,10 +451,34 @@ describe("closeSqliteDb", () => {
 describe("FTS5 full-text search", () => {
   beforeEach(() => {
     upsertJobs("email", [
-      { id: "1", name: "send-welcome-email", state: "completed", timestamp: 1000, data: { to: "alice@example.com" } },
-      { id: "2", name: "send-newsletter", state: "active", timestamp: 3000, data: { subject: "Weekly digest" } },
-      { id: "3", name: "send-receipt", state: "completed", timestamp: 2000, data: { orderId: "ORD-123" } },
-      { id: "4", name: "process-payment", state: "failed", timestamp: 4000, data: { amount: 99.99 } },
+      {
+        id: "1",
+        name: "send-welcome-email",
+        state: "completed",
+        timestamp: 1000,
+        data: { to: "alice@example.com" },
+      },
+      {
+        id: "2",
+        name: "send-newsletter",
+        state: "active",
+        timestamp: 3000,
+        data: { subject: "Weekly digest" },
+      },
+      {
+        id: "3",
+        name: "send-receipt",
+        state: "completed",
+        timestamp: 2000,
+        data: { orderId: "ORD-123" },
+      },
+      {
+        id: "4",
+        name: "process-payment",
+        state: "failed",
+        timestamp: 4000,
+        data: { amount: 99.99 },
+      },
       { id: "5", name: "send-alert-notification", state: "active", timestamp: 5000 },
     ]);
   });
@@ -372,7 +533,9 @@ describe("FTS5 full-text search", () => {
 
   it("FTS5 index stays in sync after updates", () => {
     // Update job name
-    upsertJobs("email", [{ id: "1", name: "updated-job-name", state: "completed", timestamp: 1000 }]);
+    upsertJobs("email", [
+      { id: "1", name: "updated-job-name", state: "completed", timestamp: 1000 },
+    ]);
 
     // Old name should not match
     const oldResult = queryJobs({ queue: "email", search: "welcome" });
@@ -408,7 +571,9 @@ describe("upsertJobStubs", () => {
     ]);
 
     const db = getSqliteDb();
-    const rows = db.prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id").all("email") as JobRow[];
+    const rows = db
+      .prepare("SELECT * FROM jobs WHERE queue = ? ORDER BY id")
+      .all("email") as JobRow[];
     expect(rows).toHaveLength(2);
     expect(rows[0]!.id).toBe("1");
     expect(rows[0]!.state).toBe("active");
@@ -417,13 +582,13 @@ describe("upsertJobStubs", () => {
   });
 
   it("updates state without overwriting non-null name", () => {
-    upsertJobs("email", [
-      { id: "1", name: "send-email", state: "active", timestamp: 1000 },
-    ]);
+    upsertJobs("email", [{ id: "1", name: "send-email", state: "active", timestamp: 1000 }]);
     upsertJobStubs("email", [{ id: "1", state: "completed" }]);
 
     const db = getSqliteDb();
-    const row = db.prepare("SELECT * FROM jobs WHERE queue = ? AND id = ?").get("email", "1") as JobRow;
+    const row = db
+      .prepare("SELECT * FROM jobs WHERE queue = ? AND id = ?")
+      .get("email", "1") as JobRow;
     expect(row.state).toBe("completed");
     expect(row.name).toBe("send-email");
     expect(row.timestamp).toBe(1000);
@@ -477,6 +642,100 @@ describe("sync_state", () => {
   });
 });
 
+describe("softDeleteJobsByIds", () => {
+  beforeEach(() => {
+    upsertJobs("email", [
+      { id: "1", name: "a", state: "active", timestamp: 1000 },
+      { id: "2", name: "b", state: "completed", timestamp: 2000 },
+      { id: "3", name: "c", state: "failed", timestamp: 3000 },
+    ]);
+  });
+
+  it("sets removed_at = now for given ids without dropping the row", () => {
+    const now = 1_700_000_000_000;
+    const updated = softDeleteJobsByIds("email", ["2"], now);
+    expect(updated).toBe(1);
+
+    // Soft-deleted rows hide from the default view; ask for "all" to verify.
+    const row = getJobFromDb("email", "2", { view: "all" });
+    expect(row).not.toBeNull();
+    expect(row!.removed_at).toBe(now);
+    // Other rows are unaffected.
+    expect(getJobFromDb("email", "1")!.removed_at).toBeNull();
+    expect(getJobFromDb("email", "3")!.removed_at).toBeNull();
+  });
+
+  it("returns 0 and is a no-op for an empty id list", () => {
+    const updated = softDeleteJobsByIds("email", [], Date.now());
+    expect(updated).toBe(0);
+  });
+
+  it("does not soft-delete jobs in a different queue", () => {
+    upsertJobs("sms", [{ id: "1", name: "x", state: "active", timestamp: 1 }]);
+    softDeleteJobsByIds("email", ["1"], 1_700_000_000_000);
+    expect(getJobFromDb("sms", "1")!.removed_at).toBeNull();
+  });
+
+  it("re-soft-deleting an already soft-deleted row updates the timestamp", () => {
+    softDeleteJobsByIds("email", ["1"], 100);
+    softDeleteJobsByIds("email", ["1"], 200);
+    const row = getJobFromDb("email", "1", { view: "all" });
+    expect(row!.removed_at).toBe(200);
+  });
+});
+
+describe("compactRemovedJobs", () => {
+  it("physically deletes rows where removed_at < now − retention", () => {
+    upsertJobs("email", [
+      { id: "old", name: "a", state: "completed", timestamp: 1 },
+      { id: "recent", name: "b", state: "completed", timestamp: 2 },
+      { id: "live", name: "c", state: "active", timestamp: 3 },
+    ]);
+    softDeleteJobsByIds("email", ["old"], 1_000);
+    softDeleteJobsByIds("email", ["recent"], 9_000);
+
+    const removed = compactRemovedJobs(10_000, 5_000); // cutoff = 5_000
+    expect(removed).toBe(1);
+
+    expect(getJobFromDb("email", "old", { view: "all" })).toBeNull(); // physically gone
+    expect(getJobFromDb("email", "recent", { view: "all" })).not.toBeNull(); // soft-deleted but inside window
+    expect(getJobFromDb("email", "live")).not.toBeNull(); // never soft-deleted
+  });
+
+  it("ignores live rows (removed_at IS NULL) regardless of age", () => {
+    upsertJobs("email", [{ id: "1", name: "a", state: "active", timestamp: 1 }]);
+    const removed = compactRemovedJobs(Date.now(), 1);
+    expect(removed).toBe(0);
+    expect(getJobFromDb("email", "1")).not.toBeNull();
+  });
+
+  it("compacts across queues in one pass", () => {
+    upsertJobs("email", [{ id: "1", name: "a", state: "active", timestamp: 1 }]);
+    upsertJobs("sms", [{ id: "1", name: "b", state: "active", timestamp: 1 }]);
+    softDeleteJobsByIds("email", ["1"], 100);
+    softDeleteJobsByIds("sms", ["1"], 100);
+
+    const removed = compactRemovedJobs(10_000, 1_000); // cutoff = 9_000
+    expect(removed).toBe(2);
+    expect(getJobFromDb("email", "1", { view: "all" })).toBeNull();
+    expect(getJobFromDb("sms", "1", { view: "all" })).toBeNull();
+  });
+
+  it("removes compacted rows from the FTS index", () => {
+    upsertJobs("email", [{ id: "1", name: "send-receipt", state: "completed", timestamp: 1 }]);
+    softDeleteJobsByIds("email", ["1"], 100);
+    compactRemovedJobs(10_000, 1_000);
+
+    // Search via raw FTS to bypass any view filter — the row should be gone
+    // from the index entirely after physical delete fires the jobs_ad trigger.
+    const db = getSqliteDb();
+    const hits = db
+      .prepare("SELECT COUNT(*) as n FROM jobs_fts WHERE jobs_fts MATCH 'receipt*'")
+      .get() as { n: number };
+    expect(hits.n).toBe(0);
+  });
+});
+
 describe("staging table diff", () => {
   beforeEach(() => {
     upsertJobs("email", [
@@ -517,7 +776,9 @@ describe("staging table diff", () => {
     expect(deleted).toBe(1);
 
     const db = getSqliteDb();
-    const rows = db.prepare("SELECT id FROM jobs WHERE queue = ? ORDER BY id").all("email") as Array<{ id: string }>;
+    const rows = db
+      .prepare("SELECT id FROM jobs WHERE queue = ? ORDER BY id")
+      .all("email") as Array<{ id: string }>;
     expect(rows.map((r) => r.id)).toEqual(["1", "3"]);
     dropSyncStaging();
   });
@@ -552,7 +813,9 @@ describe("staging table diff", () => {
     deleteJobsByIds("email", toDelete);
 
     const db = getSqliteDb();
-    const rows = db.prepare("SELECT id FROM jobs WHERE queue = ? ORDER BY id").all("email") as Array<{ id: string }>;
+    const rows = db
+      .prepare("SELECT id FROM jobs WHERE queue = ? ORDER BY id")
+      .all("email") as Array<{ id: string }>;
     expect(rows.map((r) => r.id)).toEqual(["1", "3"]);
     dropSyncStaging();
   });
@@ -584,6 +847,64 @@ describe("staging table diff", () => {
     dropSyncStaging();
   });
 
+  it("findResurrectedIdsByStagingDiff returns staging ids that are soft-deleted in jobs", () => {
+    softDeleteJobsByIds("email", ["2"], 1_000); // job-b is now soft-deleted
+
+    createSyncStaging();
+    insertStagingBatch("email", [
+      { id: "1", state: "active" }, // live in jobs — not resurrected
+      { id: "2", state: "completed" }, // soft-deleted in jobs — RESURRECTED
+      { id: "4", state: "delayed" }, // not in jobs — new, not resurrected
+    ]);
+
+    const resurrected = findResurrectedIdsByStagingDiff("email");
+    expect(resurrected.toSorted()).toEqual(["2"]);
+    dropSyncStaging();
+  });
+
+  it("findNewIdsByStagingDiff excludes resurrected (soft-deleted) rows", () => {
+    softDeleteJobsByIds("email", ["2"], 1_000);
+
+    createSyncStaging();
+    insertStagingBatch("email", [
+      { id: "2", state: "completed" }, // resurrection — must NOT be reported as new
+      { id: "9", state: "active" }, // genuinely new
+    ]);
+
+    const newIds = findNewIdsByStagingDiff("email")
+      .map((r) => r.id)
+      .toSorted();
+    expect(newIds).toEqual(["9"]);
+    dropSyncStaging();
+  });
+
+  it("findChangedIdsByStagingDiff ignores soft-deleted rows", () => {
+    softDeleteJobsByIds("email", ["2"], 1_000); // jobs row state=completed, soft-deleted
+
+    createSyncStaging();
+    // staging.state="active" differs from jobs.state="completed", but the row
+    // is soft-deleted — resurrection takes precedence over the changed path.
+    insertStagingBatch("email", [{ id: "2", state: "active" }]);
+
+    const changed = findChangedIdsByStagingDiff("email");
+    expect(changed).toEqual([]);
+    dropSyncStaging();
+  });
+
+  it("findStaleIdsByStagingDiff ignores rows already soft-deleted", () => {
+    softDeleteJobsByIds("email", ["2"], 1_000);
+
+    createSyncStaging();
+    // Staging is empty for queue email — under the old semantics, all three
+    // rows would be stale; with soft-delete, the already-removed row is
+    // skipped so we don't churn it on every sync.
+    insertStagingBatch("sms", [{ id: "x", state: "active" }]);
+
+    const staleIds = findStaleIdsByStagingDiff("email").toSorted();
+    expect(staleIds).toEqual(["1", "3"]);
+    dropSyncStaging();
+  });
+
   it("handles large batches in staging", () => {
     createSyncStaging();
     const batch: Array<{ id: string; state: string }> = [];
@@ -593,7 +914,9 @@ describe("staging table diff", () => {
     insertStagingBatch("email", batch);
 
     const db = getSqliteDb();
-    const count = db.prepare("SELECT COUNT(*) as total FROM sync_staging WHERE queue = ?").get("email") as { total: number };
+    const count = db
+      .prepare("SELECT COUNT(*) as total FROM sync_staging WHERE queue = ?")
+      .get("email") as { total: number };
     expect(count.total).toBe(5000);
     dropSyncStaging();
   });

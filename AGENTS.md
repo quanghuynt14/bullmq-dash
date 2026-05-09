@@ -87,13 +87,13 @@ bullmq-dash jobs list email --redis-url redis://localhost --page-size 50
 
 ### Command Options
 
-| Flag                  | Type    | Applies to                     | Description                                                     |
-| --------------------- | ------- | ------------------------------ | --------------------------------------------------------------- |
-| `--job-state <state>` | string  | `jobs list`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed` |
-| `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000, must be >= 1)             |
-| `--human-friendly`    | boolean | all subcommands                | Human-readable table output (default: JSON)                     |
-| `--profile <name>`    | string  | all commands                   | Use a named profile from the config file                        |
-| `--config <path>`     | string  | all commands                   | Path to config file (default: `~/.config/bullmq-dash/config.json`) |
+| Flag                  | Type    | Applies to                     | Description                                                                                                                                                                                                                                               |
+| --------------------- | ------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--job-state <state>` | string  | `jobs list`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed`                                                                                                                                                                                           |
+| `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000, must be >= 1)                                                                                                                                                                                                       |
+| `--human-friendly`    | boolean | all subcommands                | Human-readable table output (default: JSON)                                                                                                                                                                                                               |
+| `--profile <name>`    | string  | all commands                   | Use a named profile from the config file                                                                                                                                                                                                                  |
+| `--config <path>`     | string  | all commands                   | Path to config file (default: `~/.config/bullmq-dash/config.json`)                                                                                                                                                                                        |
 | `--redis-url <url>`   | string  | all commands                   | Full Redis URL (`redis://[user:pass@]host[:port][/db]`, or `rediss://` for TLS). The single way to specify a Redis connection — discrete `--redis-host` / `--redis-port` / `--redis-password` / `--redis-db` flags were removed in the URL-only redesign. |
 
 ### Connection Profiles
@@ -270,12 +270,12 @@ interface SchedulerDetailOutput {
 
 ### Exit Codes
 
-| Code | Meaning                                           |
-| ---- | ------------------------------------------------- |
-| `0`  | Success                                           |
-| `1`  | Runtime error (unhandled exception)               |
+| Code | Meaning                                                         |
+| ---- | --------------------------------------------------------------- |
+| `0`  | Success                                                         |
+| `1`  | Runtime error (unhandled exception)                             |
 | `2`  | Configuration error (bad/missing CLI flags) or no command given |
-| `3`  | Redis connection error                            |
+| `3`  | Redis connection error                                          |
 
 ### Idempotency
 
@@ -288,6 +288,7 @@ Agents can safely:
 - Run multiple commands in parallel against the same queues
 
 When destructive subcommands are added (e.g., `jobs delete`, `jobs retry`):
+
 - They **MUST** support `--dry-run` to preview the effect without executing it.
 - They **MUST** support `--yes` / `--force` to skip interactive confirmation (agents cannot answer prompts).
 - They **MUST** be idempotent — retrying the same command with the same arguments must produce the same result and not cause unintended duplicate side effects.
@@ -534,7 +535,22 @@ Uses Catppuccin Mocha palette. Key colors:
 | `tsup`          | Build tool            |
 
 ## Design System
+
 Always read DESIGN.md before making any visual or UI decisions.
 All font choices, colors, spacing, and aesthetic direction are defined there.
 Do not deviate without explicit user approval.
 In QA mode, flag any code that doesn't match DESIGN.md.
+
+## Agent skills
+
+### Backlog
+
+GitHub Issues at `quanghuynt14/bullmq-dash` via the `gh` CLI. See `docs/agents/backlog.md`.
+
+### Triage labels
+
+Canonical labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

@@ -10,14 +10,6 @@ function formatTs(ts: number | undefined): string {
   return new Date(ts).toISOString().replace("T", " ").slice(0, 19);
 }
 
-function padRight(str: string, len: number): string {
-  return str.length >= len ? str : str + " ".repeat(len - str.length);
-}
-
-function padLeft(str: string, len: number): string {
-  return str.length >= len ? str : " ".repeat(len - str.length) + str;
-}
-
 /**
  * Render a table from rows of strings.
  * First row is treated as the header.
@@ -33,8 +25,10 @@ function table(headers: string[], rows: string[][], align?: ("l" | "r")[]): stri
     }
   }
 
-  const pad = (val: string, i: number) =>
-    (align?.[i] ?? "l") === "r" ? padLeft(val, widths[i]!) : padRight(val, widths[i]!);
+  const pad = (val: string, i: number) => {
+    const width = widths[i]!;
+    return (align?.[i] ?? "l") === "r" ? val.padStart(width) : val.padEnd(width);
+  };
 
   const headerLine = headers.map(pad).join("  ");
   const separator = widths.map((w) => "-".repeat(w)).join("  ");

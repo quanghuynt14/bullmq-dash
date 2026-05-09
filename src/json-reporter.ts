@@ -20,6 +20,15 @@ import {
 
 import readline from "node:readline";
 
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+function createResponse<T>(data: T): { timestamp: string } & T {
+  return {
+    timestamp: new Date().toISOString(),
+    ...data,
+  };
+}
+
 // ── Queues overview (default) ───────────────────────────────────────────
 
 async function fetchQueuesOverview() {
@@ -38,21 +47,19 @@ async function fetchQueuesOverview() {
     { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, total: 0 },
   );
 
-  return {
-    timestamp: new Date().toISOString(),
+  return createResponse({
     queues,
     metrics: {
       queueCount: queues.length,
       jobCounts,
     },
-  };
+  });
 }
 
 async function fetchQueuesDelete(queueName: string, dryRun: boolean) {
   const result = await deleteQueue(queueName, dryRun);
 
-  return {
-    timestamp: new Date().toISOString(),
+  return createResponse({
     queue: queueName,
     deleted: !dryRun,
     dryRun,
@@ -63,7 +70,7 @@ async function fetchQueuesDelete(queueName: string, dryRun: boolean) {
       result.counts.completed +
       result.counts.failed +
       result.counts.delayed,
-  };
+  });
 }
 
 // ── Jobs list ───────────────────────────────────────────────────────────
@@ -93,13 +100,12 @@ async function fetchJobsList(queueName: string, jobState?: JsonJobStatus, maxRes
     // SQLite upsert is best-effort; don't break CLI output on failure
   }
 
-  return {
-    timestamp: new Date().toISOString(),
+  return createResponse({
     queue: queueName,
     jobState: jobState ?? "all",
     jobs,
     total,
-  };
+  });
 }
 
 // ── Jobs retry ──────────────────────────────────────────────────────────
@@ -141,8 +147,7 @@ async function fetchJobsRetry(
   if (since !== undefined) filter.since = since;
   if (name !== undefined) filter.name = name;
 
-  return {
-    timestamp: new Date().toISOString(),
+  return createResponse({
     command: "jobs-retry",
     dryRun,
     queue: queueName,
@@ -153,7 +158,7 @@ async function fetchJobsRetry(
     sampleJobIds: result.sampleJobIds,
     totalFailed: result.totalFailed,
     truncated: result.truncated,
-  };
+  });
 }
 
 // ── Job detail ──────────────────────────────────────────────────────────
@@ -171,11 +176,10 @@ async function fetchJobDetail(queueName: string, jobId: string) {
     process.exit(1);
   }
 
-  return {
-    timestamp: new Date().toISOString(),
+  return createResponse({
     queue: queueName,
     job,
-  };
+  });
 }
 
 // ── Schedulers list ─────────────────────────────────────────────────────
@@ -183,12 +187,11 @@ async function fetchJobDetail(queueName: string, jobId: string) {
 async function fetchSchedulersList(queueName: string, maxResults?: number) {
   const { schedulers, total } = await getAllJobSchedulers(queueName, maxResults);
 
-  return {
-    timestamp: new Date().toISOString(),
+  return createResponse({
     queue: queueName,
     schedulers,
     total,
-  };
+  });
 }
 
 // ── Scheduler detail ────────────────────────────────────────────────────
@@ -206,11 +209,10 @@ async function fetchSchedulerDetail(queueName: string, schedulerKey: string) {
     process.exit(1);
   }
 
-  return {
-    timestamp: new Date().toISOString(),
+  return createResponse({
     queue: queueName,
     scheduler,
-  };
+  });
 }
 
 // ── Validation ──────────────────────────────────────────────────────────
