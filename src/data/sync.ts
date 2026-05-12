@@ -43,6 +43,27 @@ let syncInProgress = false;
 let syncLockAcquiredAt: number | null = null;
 const SYNC_LOCK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
+class JobResurrectionError extends Error {
+  constructor(queueName: string, ids: string[]) {
+    super(
+      `Resurrected job IDs detected in queue "${queueName}": ` +
+        `${ids.join(", ")}. ` +
+        `Soft-deleted IDs are not allowed to reappear in Redis.`,
+    );
+    this.name = "JobResurrectionError";
+  }
+}
+
+class FullSyncInvariantError extends Error {
+  constructor(readonly errors: Array<{ queue: string; error: string }>) {
+    super(
+      `SQLite full sync invariant violation in ${errors.length} queue(s): ` +
+        errors.map((e) => `${e.queue}: ${e.error}`).join("; "),
+    );
+    this.name = "FullSyncInvariantError";
+  }
+}
+
 function tryAcquireSyncLock(): { ok: true } | { ok: false; heldForMs: number } {
   if (syncInProgress && syncLockAcquiredAt !== null) {
     const heldForMs = Date.now() - syncLockAcquiredAt;
@@ -153,6 +174,10 @@ function wasPolledSince(queue: string, jobId: string, threshold: number): boolea
  * fails mid-way (Redis disconnect, SQLite error, process killed), the
  * staging table is dropped and the next run starts from scratch. Already-
  * persisted jobs are preserved; the next successful sync will reconcile.
+ *
+ * @throws JobResurrectionError when Redis contains a job ID that SQLite has
+ * already soft-deleted. This is an invariant violation, not an operational
+ * sync failure, so it rejects instead of returning `SyncResult.error`.
  */
 export async function syncQueue(queueName: string): Promise<SyncResult> {
   const lock = tryAcquireSyncLock();
@@ -204,11 +229,7 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
     // assumptions (history view, compaction) don't get silently corrupted.
     const resurrected = findResurrectedIdsByStagingDiff(queueName);
     if (resurrected.length > 0) {
-      throw new Error(
-        `Resurrected job IDs detected in queue "${queueName}": ` +
-          `${resurrected.join(", ")}. ` +
-          `Soft-deleted IDs are not allowed to reappear in Redis.`,
-      );
+      throw new JobResurrectionError(queueName, resurrected);
     }
 
     // Step 3: Find and insert new jobs as stubs.
@@ -255,6 +276,11 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`SQLite sync failed for queue "${queueName}":`, error);
+
+    if (error instanceof JobResurrectionError) {
+      throw error;
+    }
+
     return {
       inserted: 0,
       stateUpdated: 0,
@@ -292,10 +318,18 @@ export interface FullSyncResult {
  * Sequential because they share the same staging table. Each queue
  * creates/drops the staging table in its own syncQueue() call.
  *
- * Per-queue failures are collected into `errors` rather than aborting the
- * whole sync. A non-empty `errors` array with `queues > 0` means partial
- * success; `queues: 0` with `errors: [{queue: "", ...}]` means discovery
- * itself failed.
+ * Operational per-queue failures are collected into `errors` rather than
+ * aborting the whole sync. A non-empty `errors` array with `queues > 0` means
+ * partial success; `queues: 0` with `errors: [{queue: "", ...}]` means
+ * discovery itself failed.
+ *
+ * Invariant violations from `syncQueue` (for example, a soft-deleted job ID
+ * reappearing in Redis) are accumulated while the remaining queues continue
+ * to sync. Compaction still runs, then `fullSync` rejects with all invariant
+ * failures so callers can report them loudly without starving unrelated queues.
+ *
+ * @throws FullSyncInvariantError after all queues and compaction finish if any
+ * queue hit an invariant violation.
  */
 export async function fullSync(): Promise<FullSyncResult> {
   let queues: string[];
@@ -316,17 +350,25 @@ export async function fullSync(): Promise<FullSyncResult> {
   let totalInserted = 0;
   let totalSoftDeleted = 0;
   const errors: Array<{ queue: string; error: string }> = [];
+  const invariantErrors: Array<{ queue: string; error: string }> = [];
 
   for (const q of queues) {
     // Sequential by design: queues share the single sync_staging TEMP table
     // on the shared SQLite connection. Parallelizing would corrupt the diff.
-    // eslint-disable-next-line no-await-in-loop
-    const result = await syncQueue(q);
-    if (result.error) {
-      errors.push({ queue: q, error: result.error });
-    } else {
-      totalInserted += result.inserted;
-      totalSoftDeleted += result.softDeleted;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const result = await syncQueue(q);
+      if (result.error) {
+        errors.push({ queue: q, error: result.error });
+      } else {
+        totalInserted += result.inserted;
+        totalSoftDeleted += result.softDeleted;
+      }
+    } catch (error) {
+      if (!(error instanceof JobResurrectionError)) {
+        throw error;
+      }
+      invariantErrors.push({ queue: q, error: error.message });
     }
   }
 
@@ -334,6 +376,10 @@ export async function fullSync(): Promise<FullSyncResult> {
   // of syncQueue because compactRemovedJobs scans `jobs` globally — running
   // it per-queue would re-scan the same rows N times per cycle for no gain.
   const totalCompacted = compactRemovedJobs(Date.now(), getConfig().retentionMs);
+
+  if (invariantErrors.length > 0) {
+    throw new FullSyncInvariantError(invariantErrors);
+  }
 
   return {
     queues: queues.length,
