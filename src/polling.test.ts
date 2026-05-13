@@ -55,9 +55,12 @@ mock.module("./data/queues.js", () => ({
       getFailed: async () => [],
       getDelayed: async () => [],
       getPrioritized: async () => [],
-      getJobSchedulers: async () => {
+      getJobSchedulers: async (
+        start: number = 0,
+        end: number = mockState.schedulers.length - 1,
+      ) => {
         if (mockState.schedulersError) throw new Error(mockState.schedulersError);
-        return mockState.schedulers;
+        return mockState.schedulers.slice(start, end + 1);
       },
       getJobSchedulersCount: async () => {
         if (mockState.schedulersError) throw new Error(mockState.schedulersError);
@@ -166,6 +169,46 @@ describe("pollingManager", () => {
     expect(state.jobsTotalPages).toBe(4);
   });
 
+  it("renders the observed Redis jobs page when the SQLite cache is sparse", async () => {
+    const email = queueStats("email");
+    mockState.observedQueues = [email];
+    mockState.activeTotal = 75;
+    mockState.activeJobs = [{ id: "page-3", name: "third-page-job", timestamp: 3000 }];
+    stateManager.setState({
+      jobsStatus: "active",
+      jobsPage: 3,
+    });
+
+    await pollingManager.poll();
+
+    const state = stateManager.getState();
+    expect(state.connected).toBe(true);
+    expect(state.jobs).toEqual([
+      { id: "page-3", name: "third-page-job", state: "active", timestamp: 3000 },
+    ]);
+    expect(state.jobsTotal).toBe(75);
+    expect(state.jobsTotalPages).toBe(3);
+  });
+
+  it("does not render stale cached jobs when Redis observes an empty page", async () => {
+    const email = queueStats("email");
+    mockState.observedQueues = [email];
+    mockState.activeTotal = 0;
+    mockState.activeJobs = [];
+    upsertJobs("email", [{ id: "stale", name: "stale-job", state: "active", timestamp: 1000 }]);
+    stateManager.setState({
+      jobsStatus: "active",
+    });
+
+    await pollingManager.poll();
+
+    const state = stateManager.getState();
+    expect(state.connected).toBe(true);
+    expect(state.jobs).toEqual([]);
+    expect(state.jobsTotal).toBe(0);
+    expect(state.jobsTotalPages).toBe(0);
+  });
+
   it("marks disconnected and renders last-known store jobs when Redis job observation fails", async () => {
     const email = queueStats("email");
     mockState.observedQueues = [email];
@@ -240,6 +283,27 @@ describe("pollingManager", () => {
     expect(state.schedulersTotal).toBe(1);
     expect(state.schedulersTotalPages).toBe(1);
     expect(state.jobs).toEqual([]);
+  });
+
+  it("renders scheduler pages beyond the default 1000-row bulk cap", async () => {
+    const email = queueStats("email");
+    mockState.observedQueues = [email];
+    mockState.schedulers = Array.from({ length: 1001 }, (_, i) => ({
+      key: `s-${String(i).padStart(4, "0")}`,
+      name: `scheduler-${i}`,
+    }));
+    stateManager.setState({
+      jobsStatus: "schedulers",
+      schedulersPage: 41,
+    });
+
+    await pollingManager.poll();
+
+    const state = stateManager.getState();
+    expect(state.connected).toBe(true);
+    expect(state.schedulers).toEqual([{ key: "s-1000", name: "scheduler-1000" }]);
+    expect(state.schedulersTotal).toBe(1001);
+    expect(state.schedulersTotalPages).toBe(41);
   });
 
   it("recovers from disconnect: keeps last-known state, then refreshes when Redis returns", async () => {

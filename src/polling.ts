@@ -117,14 +117,8 @@ class PollingManager {
           );
           this.persistObservedJobs(selectedQueue.name, observedJobsResult.jobs);
 
-          const jobsResult = await getJobsFromStore(
-            selectedQueue.name,
-            updatedState.jobsStatus,
-            updatedState.jobsPage,
-          );
-
           stateManager.setState({
-            jobs: jobsResult.jobs,
+            jobs: observedJobsResult.jobs,
             jobsTotal: observedJobsResult.total,
             jobsTotalPages: observedJobsResult.totalPages,
             // Clear schedulers when viewing jobs
@@ -271,7 +265,11 @@ class PollingManager {
   private async fetchAllSchedulers(
     queueName: string,
   ): Promise<{ schedulers: JobSchedulerSummary[]; total: number }> {
-    return getAllJobSchedulers(queueName);
+    const firstBatch = await getAllJobSchedulers(queueName);
+    if (firstBatch.schedulers.length >= firstBatch.total) {
+      return firstBatch;
+    }
+    return getAllJobSchedulers(queueName, firstBatch.total);
   }
 
   private persistObservedSchedulers(queueName: string, schedulers: JobSchedulerSummary[]): void {
@@ -322,16 +320,14 @@ class PollingManager {
           console.error("Failed to observe jobs:", error instanceof Error ? error.message : error);
         }
 
-        const jobsResult = await getJobsFromStore(
-          selectedQueue.name,
-          state.jobsStatus,
-          state.jobsPage,
-        );
+        const jobsResult =
+          observedJobsResult ??
+          (await getJobsFromStore(selectedQueue.name, state.jobsStatus, state.jobsPage));
 
         stateManager.setState({
           jobs: jobsResult.jobs,
-          jobsTotal: observedJobsResult?.total ?? jobsResult.total,
-          jobsTotalPages: observedJobsResult?.totalPages ?? jobsResult.totalPages,
+          jobsTotal: jobsResult.total,
+          jobsTotalPages: jobsResult.totalPages,
         });
       }
     } catch (error) {
