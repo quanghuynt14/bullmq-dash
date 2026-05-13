@@ -249,13 +249,15 @@ describe("syncQueue", () => {
       ],
     ];
 
-    const result = await syncQueue("q");
-    expect(result.error).toBeDefined();
-    expect(result.error!.toLowerCase()).toContain("resurrect");
+    const thrown = await syncQueue("q").catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+
+    expect(message.toLowerCase()).toContain("resurrect");
     // The error message must name the queue and the offending id so operators
     // can grep logs after the throw.
-    expect(result.error).toContain('"q"');
-    expect(result.error).toContain("2");
+    expect(message).toContain('"q"');
+    expect(message).toContain("2");
 
     // Soft-delete must NOT be cleared — the row stays soft-deleted.
     const row = getJobFromDb("q", "2", { view: "all" });
@@ -278,11 +280,13 @@ describe("syncQueue", () => {
       ],
     ];
 
-    const result = await syncQueue("q");
-    expect(result.error).toBeDefined();
+    const thrown = await syncQueue("q").catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+
     // Both offending ids must appear so operators can grep for the violation.
-    expect(result.error).toContain("2");
-    expect(result.error).toContain("3");
+    expect(message).toContain("2");
+    expect(message).toContain("3");
   });
 
   it("aborts with a clear error when closeSqliteDb fires mid-sync", async () => {
@@ -381,6 +385,36 @@ describe("fullSync", () => {
     const result = await fullSync();
     expect(result.queues).toBe(2);
     expect(result.errors).toEqual([]);
+  });
+
+  it("rethrows resurrected ids after syncing remaining queues and compacting", async () => {
+    upsertJobs("bad", [{ id: "ghost", name: "ghost", state: "completed", timestamp: 1 }]);
+    upsertJobs("good", [{ id: "expired", name: "old", state: "completed", timestamp: 1 }]);
+    softDeleteJobsByIds("bad", ["ghost"], Date.now());
+    softDeleteJobsByIds("good", ["expired"], 1);
+
+    setConfig({
+      redis: { host: "localhost", port: 6379, db: 0 },
+      pollInterval: 3000,
+      prefix: "bull",
+      retentionMs: 10,
+    });
+
+    mockState.queues = ["bad", "good"];
+    mock.module("./jobs.js", () => ({
+      getAllJobIds: async function* (q: string) {
+        if (q === "bad") yield [{ id: "ghost", state: "completed" }];
+        if (q === "good") yield [{ id: "live", state: "active" }];
+      },
+    }));
+
+    await expect(fullSync()).rejects.toThrow(/bad: .*resurrect/i);
+
+    // The bad queue is still soft-deleted, but the unrelated queue still synced.
+    expect(getJobFromDb("bad", "ghost", { view: "all" })!.removed_at).not.toBeNull();
+    expect(getJobFromDb("good", "live")).not.toBeNull();
+    // Compaction still ran after all queues, even though fullSync ultimately rejected.
+    expect(getJobFromDb("good", "expired", { view: "all" })).toBeNull();
   });
 
   it("compacts rows past retentionMs once after all queues reconcile", async () => {

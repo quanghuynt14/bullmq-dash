@@ -92,13 +92,17 @@ export class App {
     // Start polling
     pollingManager.start();
 
+    const runFullSync = () => {
+      fullSync().catch((error) => {
+        console.error("SQLite full sync failed:", error);
+      });
+    };
+
     // Run initial full sync in background (non-blocking)
-    fullSync().catch(() => {});
+    runFullSync();
 
     // Schedule background full sync every 60s
-    this.syncIntervalId = setInterval(() => {
-      fullSync().catch(() => {});
-    }, 60_000);
+    this.syncIntervalId = setInterval(runFullSync, 60_000);
 
     // Initial render
     this.render();
