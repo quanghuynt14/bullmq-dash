@@ -249,12 +249,9 @@ describe("syncQueue", () => {
       ],
     ];
 
-    let message = "";
-    try {
-      await syncQueue("q");
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
+    const thrown = await syncQueue("q").catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
 
     expect(message.toLowerCase()).toContain("resurrect");
     // The error message must name the queue and the offending id so operators
@@ -283,12 +280,9 @@ describe("syncQueue", () => {
       ],
     ];
 
-    let message = "";
-    try {
-      await syncQueue("q");
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
+    const thrown = await syncQueue("q").catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
 
     // Both offending ids must appear so operators can grep for the violation.
     expect(message).toContain("2");

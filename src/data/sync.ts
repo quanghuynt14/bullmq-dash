@@ -274,13 +274,14 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
       total,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`SQLite sync failed for queue "${queueName}":`, error);
-
+    // Resurrections are an invariant violation, not an operational sync
+    // failure. Let fullSync aggregate them into FullSyncInvariantError so
+    // callers see one accurate log line, not a misleading "sync failed".
     if (error instanceof JobResurrectionError) {
       throw error;
     }
-
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`SQLite sync failed for queue "${queueName}":`, error);
     return {
       inserted: 0,
       stateUpdated: 0,
