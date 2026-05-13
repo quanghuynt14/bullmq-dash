@@ -183,6 +183,21 @@ function viewClause(view: JobView, alias: string): string {
   }
 }
 
+function appendStateClause(
+  conditions: string[],
+  values: (string | number)[],
+  state: string | string[] | undefined,
+  prefix: string,
+): void {
+  if (Array.isArray(state)) {
+    conditions.push(`${prefix}state IN (${state.map(() => "?").join(",")})`);
+    values.push(...state);
+  } else if (state && state !== "all") {
+    conditions.push(`${prefix}state = ?`);
+    values.push(state);
+  }
+}
+
 export interface JobQueryResult {
   jobs: JobRow[];
   total: number;
@@ -428,13 +443,7 @@ export function queryJobs(params: JobQueryParams): JobQueryResult {
     const conditions: string[] = ["j.queue = ?"];
     const values: (string | number)[] = [queue];
 
-    if (Array.isArray(state)) {
-      conditions.push(`j.state IN (${state.map(() => "?").join(",")})`);
-      values.push(...state);
-    } else if (state && state !== "all") {
-      conditions.push("j.state = ?");
-      values.push(state);
-    }
+    appendStateClause(conditions, values, state, "j.");
 
     const viewSql = viewClause(view, "j.");
     if (viewSql) conditions.push(viewSql);
@@ -457,13 +466,7 @@ export function queryJobs(params: JobQueryParams): JobQueryResult {
   const conditions: string[] = ["queue = ?"];
   const values: (string | number)[] = [queue];
 
-  if (Array.isArray(state)) {
-    conditions.push(`state IN (${state.map(() => "?").join(",")})`);
-    values.push(...state);
-  } else if (state && state !== "all") {
-    conditions.push("state = ?");
-    values.push(state);
-  }
+  appendStateClause(conditions, values, state, "");
 
   const viewSql = viewClause(view, "");
   if (viewSql) conditions.push(viewSql);

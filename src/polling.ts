@@ -16,7 +16,7 @@
  * On disconnect, both render from SQLite via the disconnected fallback.
  */
 import { getConfig } from "./config.js";
-import { getAllQueueStats } from "./data/queues.js";
+import { getAllQueueStats, type QueueStats } from "./data/queues.js";
 import {
   getJobs,
   getJobsFromStore,
@@ -80,6 +80,10 @@ const EMPTY_QUEUE_VIEW: Partial<AppState> = {
   schedulersTotalPages: 0,
 };
 
+function clampQueueIndex(queues: QueueStats[], currentIndex: number): number {
+  return queues.length > 0 ? Math.min(currentIndex, queues.length - 1) : 0;
+}
+
 class PollingManager {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private isRunning = false;
@@ -129,8 +133,7 @@ class PollingManager {
 
       // Clamp selectedQueueIndex to valid range if queues changed
       const currentState = stateManager.getState();
-      const clampedIndex =
-        queues.length > 0 ? Math.min(currentState.selectedQueueIndex, queues.length - 1) : 0;
+      const clampedIndex = clampQueueIndex(queues, currentState.selectedQueueIndex);
 
       stateManager.setState({
         queues,
@@ -140,18 +143,18 @@ class PollingManager {
         selectedQueueIndex: clampedIndex,
       });
 
-      // Re-read state after update to get current jobsStatus and jobsPage
-      const updatedState = stateManager.getState();
+      // jobsStatus / jobsPage / schedulersPage weren't touched above, so
+      // currentState is still authoritative for the view selection.
       const selectedQueue = queues[clampedIndex];
       if (selectedQueue) {
         // If status is "schedulers", fetch schedulers instead of jobs
-        if (updatedState.jobsStatus === "schedulers") {
+        if (currentState.jobsStatus === "schedulers") {
           const observed = await this.fetchAllSchedulers(selectedQueue.name);
           this.persistObservedSchedulers(selectedQueue.name, observed.schedulers);
 
           const storeResult = querySchedulers(
             selectedQueue.name,
-            updatedState.schedulersPage,
+            currentState.schedulersPage,
             SCHEDULER_PAGE_SIZE,
           );
 
@@ -159,8 +162,8 @@ class PollingManager {
         } else {
           const observedJobsResult = await this.fetchVisibleJobs(
             selectedQueue.name,
-            updatedState.jobsStatus,
-            updatedState.jobsPage,
+            currentState.jobsStatus,
+            currentState.jobsPage,
           );
           this.persistObservedJobs(selectedQueue.name, observedJobsResult.jobs);
 
@@ -194,11 +197,29 @@ class PollingManager {
     try {
       const queues = queryQueueStats();
       const currentState = stateManager.getState();
-      const clampedIndex =
-        queues.length > 0 ? Math.min(currentState.selectedQueueIndex, queues.length - 1) : 0;
+      const clampedIndex = clampQueueIndex(queues, currentState.selectedQueueIndex);
       const selectedQueue = queues[clampedIndex];
 
-      const fallbackState: Parameters<typeof stateManager.setState>[0] = {
+      let viewState: Partial<AppState>;
+      if (selectedQueue && currentState.jobsStatus === "schedulers") {
+        const storeResult = querySchedulers(
+          selectedQueue.name,
+          currentState.schedulersPage,
+          SCHEDULER_PAGE_SIZE,
+        );
+        viewState = schedulersViewState(storeResult.schedulers, storeResult.total);
+      } else if (selectedQueue) {
+        const jobsResult = await getJobsFromStore(
+          selectedQueue.name,
+          currentState.jobsStatus,
+          currentState.jobsPage,
+        );
+        viewState = jobsViewState(jobsResult);
+      } else {
+        viewState = EMPTY_QUEUE_VIEW;
+      }
+
+      stateManager.setState({
         queues,
         selectedQueueIndex: clampedIndex,
         // Pass explicit zeroed rates: feeding the tracker stale SQLite stats
@@ -209,30 +230,8 @@ class PollingManager {
         connected: false,
         error: errorMessage,
         isLoading: false,
-      };
-
-      if (selectedQueue && currentState.jobsStatus === "schedulers") {
-        const storeResult = querySchedulers(
-          selectedQueue.name,
-          currentState.schedulersPage,
-          SCHEDULER_PAGE_SIZE,
-        );
-        Object.assign(
-          fallbackState,
-          schedulersViewState(storeResult.schedulers, storeResult.total),
-        );
-      } else if (selectedQueue) {
-        const jobsResult = await getJobsFromStore(
-          selectedQueue.name,
-          currentState.jobsStatus,
-          currentState.jobsPage,
-        );
-        Object.assign(fallbackState, jobsViewState(jobsResult));
-      } else {
-        Object.assign(fallbackState, EMPTY_QUEUE_VIEW);
-      }
-
-      stateManager.setState(fallbackState);
+        ...viewState,
+      });
     } catch (fallbackError) {
       // The cache itself failed during a disconnect — without this log, the
       // user only sees the original Redis error and operators have no signal
