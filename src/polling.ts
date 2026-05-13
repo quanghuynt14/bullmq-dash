@@ -1,15 +1,29 @@
 import { getConfig } from "./config.js";
 import { getAllQueueStats } from "./data/queues.js";
-import { getJobs, getJobsFromStore, type JobListView, type JobsResult } from "./data/jobs.js";
-import { getJobSchedulers } from "./data/schedulers.js";
+import {
+  getJobs,
+  getJobsFromStore,
+  type JobListView,
+  type JobsResult,
+  type JobSummary,
+} from "./data/jobs.js";
+import { getAllJobSchedulers, type JobSchedulerSummary } from "./data/schedulers.js";
 import {
   calculateGlobalMetricsFromQueueStats,
   resetMetricsTracker,
   updateMetricsTracker,
 } from "./data/metrics.js";
 import { stateManager } from "./state.js";
-import { queryQueueStats, upsertJobs, upsertQueueStats } from "./data/sqlite.js";
+import {
+  querySchedulers,
+  queryQueueStats,
+  upsertJobs,
+  upsertQueueStats,
+  upsertSchedulers,
+} from "./data/sqlite.js";
 import { markPolledWrites } from "./data/sync.js";
+
+const SCHEDULER_PAGE_SIZE = 25;
 
 class PollingManager {
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -77,26 +91,31 @@ class PollingManager {
       if (selectedQueue) {
         // If status is "schedulers", fetch schedulers instead of jobs
         if (updatedState.jobsStatus === "schedulers") {
-          const schedulersResult = await getJobSchedulers(
+          const observed = await this.fetchAllSchedulers(selectedQueue.name);
+          this.persistObservedSchedulers(selectedQueue.name, observed.schedulers);
+
+          const storeResult = querySchedulers(
             selectedQueue.name,
             updatedState.schedulersPage,
+            SCHEDULER_PAGE_SIZE,
           );
 
           stateManager.setState({
-            schedulers: schedulersResult.schedulers,
-            schedulersTotal: schedulersResult.total,
-            schedulersTotalPages: schedulersResult.totalPages,
+            schedulers: storeResult.schedulers,
+            schedulersTotal: observed.total,
+            schedulersTotalPages: Math.ceil(observed.total / SCHEDULER_PAGE_SIZE),
             // Clear jobs when viewing schedulers
             jobs: [],
             jobsTotal: 0,
             jobsTotalPages: 0,
           });
         } else {
-          const observedJobsResult = await this.observeVisibleJobs(
+          const observedJobsResult = await this.fetchVisibleJobs(
             selectedQueue.name,
             updatedState.jobsStatus,
             updatedState.jobsPage,
           );
+          this.persistObservedJobs(selectedQueue.name, observedJobsResult.jobs);
 
           const jobsResult = await getJobsFromStore(
             selectedQueue.name,
@@ -169,14 +188,21 @@ class PollingManager {
         connected: false,
         error: errorMessage,
         isLoading: false,
-        // Schedulers are not persisted in SQLite yet, so don't show stale
-        // scheduler rows while disconnected.
-        schedulers: [],
-        schedulersTotal: 0,
-        schedulersTotalPages: 0,
       };
 
-      if (selectedQueue && currentState.jobsStatus !== "schedulers") {
+      if (selectedQueue && currentState.jobsStatus === "schedulers") {
+        const storeResult = querySchedulers(
+          selectedQueue.name,
+          currentState.schedulersPage,
+          SCHEDULER_PAGE_SIZE,
+        );
+        fallbackState.schedulers = storeResult.schedulers;
+        fallbackState.schedulersTotal = storeResult.total;
+        fallbackState.schedulersTotalPages = Math.ceil(storeResult.total / SCHEDULER_PAGE_SIZE);
+        fallbackState.jobs = [];
+        fallbackState.jobsTotal = 0;
+        fallbackState.jobsTotalPages = 0;
+      } else if (selectedQueue) {
         const jobsResult = await getJobsFromStore(
           selectedQueue.name,
           currentState.jobsStatus,
@@ -185,10 +211,16 @@ class PollingManager {
         fallbackState.jobs = jobsResult.jobs;
         fallbackState.jobsTotal = jobsResult.total;
         fallbackState.jobsTotalPages = jobsResult.totalPages;
+        fallbackState.schedulers = [];
+        fallbackState.schedulersTotal = 0;
+        fallbackState.schedulersTotalPages = 0;
       } else {
         fallbackState.jobs = [];
         fallbackState.jobsTotal = 0;
         fallbackState.jobsTotalPages = 0;
+        fallbackState.schedulers = [];
+        fallbackState.schedulersTotal = 0;
+        fallbackState.schedulersTotalPages = 0;
       }
 
       stateManager.setState(fallbackState);
@@ -201,26 +233,53 @@ class PollingManager {
     }
   }
 
-  private async observeVisibleJobs(
+  /**
+   * Fetch a page of visible jobs from Redis. Read-only — see
+   * [[persistObservedJobs]] for the SQLite write step.
+   */
+  private async fetchVisibleJobs(
     queueName: string,
     status: JobListView,
     page: number,
   ): Promise<JobsResult> {
-    const observedJobs = await getJobs(queueName, status, page, undefined, true);
+    return getJobs(queueName, status, page, undefined, true);
+  }
 
-    // Upsert fetched jobs into SQLite (best-effort, non-blocking).
-    // markPolledWrites tells the background sync not to overwrite this
-    // fresh state with a stale staging snapshot.
+  /**
+   * Upsert observed jobs into SQLite and tell the background sync to leave
+   * them alone for the next staging cycle. Best-effort: a SQLite failure
+   * here must not break polling — the next cycle will retry.
+   */
+  private persistObservedJobs(queueName: string, jobs: JobSummary[]): void {
     try {
-      upsertJobs(queueName, observedJobs.jobs);
+      upsertJobs(queueName, jobs);
       markPolledWrites(
         queueName,
-        observedJobs.jobs.map((j) => j.id),
+        jobs.map((j) => j.id),
       );
     } catch {
       // SQLite upsert is best-effort; don't break polling on failure
     }
-    return observedJobs;
+  }
+
+  /**
+   * Fetch every scheduler for a queue (up to the BullMQ-side cap in
+   * [[getAllJobSchedulers]]). We mirror the full set rather than a page so
+   * [[upsertSchedulers]]'s replace semantics produce a SQLite cache that
+   * matches Redis — pagination is then served from SQLite.
+   */
+  private async fetchAllSchedulers(
+    queueName: string,
+  ): Promise<{ schedulers: JobSchedulerSummary[]; total: number }> {
+    return getAllJobSchedulers(queueName);
+  }
+
+  private persistObservedSchedulers(queueName: string, schedulers: JobSchedulerSummary[]): void {
+    try {
+      upsertSchedulers(queueName, schedulers);
+    } catch {
+      // SQLite upsert is best-effort; don't break polling on failure
+    }
   }
 
   // Manual refresh - full poll
@@ -248,21 +307,17 @@ class PollingManager {
     try {
       // If status is "schedulers", fetch schedulers instead of jobs
       if (state.jobsStatus === "schedulers") {
-        const schedulersResult = await getJobSchedulers(selectedQueue.name, state.schedulersPage);
-
-        stateManager.setState({
-          schedulers: schedulersResult.schedulers,
-          schedulersTotal: schedulersResult.total,
-          schedulersTotalPages: schedulersResult.totalPages,
-        });
+        await this.refreshSchedulers();
+        return;
       } else {
         let observedJobsResult: JobsResult | null = null;
         try {
-          observedJobsResult = await this.observeVisibleJobs(
+          observedJobsResult = await this.fetchVisibleJobs(
             selectedQueue.name,
             state.jobsStatus,
             state.jobsPage,
           );
+          this.persistObservedJobs(selectedQueue.name, observedJobsResult.jobs);
         } catch (error) {
           console.error("Failed to observe jobs:", error instanceof Error ? error.message : error);
         }
@@ -299,20 +354,30 @@ class PollingManager {
       return;
     }
 
+    let observed: { schedulers: JobSchedulerSummary[]; total: number } | null = null;
     try {
-      const schedulersResult = await getJobSchedulers(selectedQueue.name, state.schedulersPage);
-
-      stateManager.setState({
-        schedulers: schedulersResult.schedulers,
-        schedulersTotal: schedulersResult.total,
-        schedulersTotalPages: schedulersResult.totalPages,
-      });
+      observed = await this.fetchAllSchedulers(selectedQueue.name);
+      this.persistObservedSchedulers(selectedQueue.name, observed.schedulers);
     } catch (error) {
       console.error(
         "Failed to refresh schedulers:",
         error instanceof Error ? error.message : error,
       );
     }
+
+    const storeResult = querySchedulers(
+      selectedQueue.name,
+      state.schedulersPage,
+      SCHEDULER_PAGE_SIZE,
+    );
+
+    stateManager.setState({
+      schedulers: storeResult.schedulers,
+      schedulersTotal: observed?.total ?? storeResult.total,
+      schedulersTotalPages: observed
+        ? Math.ceil(observed.total / SCHEDULER_PAGE_SIZE)
+        : Math.ceil(storeResult.total / SCHEDULER_PAGE_SIZE),
+    });
   }
 }
 

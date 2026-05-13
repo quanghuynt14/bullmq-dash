@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { getConfig } from "../config.js";
 import type { QueueStats } from "./queues.js";
+import type { JobSchedulerSummary } from "./schedulers.js";
 
 let db: Database | null = null;
 
@@ -33,6 +34,20 @@ CREATE TABLE IF NOT EXISTS queues (
   delayed_count INTEGER NOT NULL DEFAULT 0,
   schedulers_count INTEGER NOT NULL DEFAULT 0,
   is_paused INTEGER NOT NULL DEFAULT 0
+);
+`;
+
+const SCHEDULERS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS schedulers (
+  queue TEXT NOT NULL,
+  key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  pattern TEXT,
+  every INTEGER,
+  next INTEGER,
+  iteration_count INTEGER,
+  tz TEXT,
+  PRIMARY KEY (queue, key)
 );
 `;
 
@@ -99,6 +114,7 @@ export function createSqliteDb(dbPath?: string): Database {
   migrateRemovedAtColumn(db);
   db.exec(SCHEMA);
   db.exec(QUEUES_SCHEMA);
+  db.exec(SCHEDULERS_SCHEMA);
   db.exec(FTS_SCHEMA);
   db.exec(SYNC_STATE_SCHEMA);
   return db;
@@ -215,6 +231,106 @@ export function upsertQueueStats(queues: QueueStats[]): void {
   });
 
   replaceObservedQueues(queues);
+}
+
+export interface SchedulerQueryResult {
+  schedulers: JobSchedulerSummary[];
+  total: number;
+}
+
+/**
+ * Replace the cached scheduler set for one queue.
+ *
+ * Mirrors `upsertQueueStats`: upserts the supplied rows, then deletes any
+ * row for the same queue whose key is not in the new set. This keeps the
+ * cache aligned with the latest Redis observation so a scheduler deleted
+ * upstream stops showing up in the disconnected fallback.
+ *
+ * Pass an empty array to wipe the queue's schedulers.
+ */
+export function upsertSchedulers(queue: string, schedulers: JobSchedulerSummary[]): void {
+  const database = getSqliteDb();
+  const stmt = database.prepare(`
+    INSERT INTO schedulers (queue, key, name, pattern, every, next, iteration_count, tz)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(queue, key) DO UPDATE SET
+      name = excluded.name,
+      pattern = excluded.pattern,
+      every = excluded.every,
+      next = excluded.next,
+      iteration_count = excluded.iteration_count,
+      tz = excluded.tz
+  `);
+
+  const replaceForQueue = database.transaction((items: JobSchedulerSummary[]) => {
+    if (items.length === 0) {
+      database.prepare("DELETE FROM schedulers WHERE queue = ?").run(queue);
+      return;
+    }
+
+    for (const s of items) {
+      stmt.run(
+        queue,
+        s.key,
+        s.name,
+        s.pattern ?? null,
+        s.every ?? null,
+        s.next ?? null,
+        s.iterationCount ?? null,
+        s.tz ?? null,
+      );
+    }
+
+    const placeholders = items.map(() => "?").join(",");
+    database
+      .prepare(`DELETE FROM schedulers WHERE queue = ? AND key NOT IN (${placeholders})`)
+      .run(queue, ...items.map((s) => s.key));
+  });
+
+  replaceForQueue(schedulers);
+}
+
+export function querySchedulers(
+  queue: string,
+  page: number = 1,
+  pageSize: number = 25,
+): SchedulerQueryResult {
+  const database = getSqliteDb();
+  const offset = (page - 1) * pageSize;
+
+  const { total } = database
+    .prepare("SELECT COUNT(*) as total FROM schedulers WHERE queue = ?")
+    .get(queue) as { total: number };
+
+  const rows = database
+    .prepare(`
+      SELECT key, name, pattern, every, next, iteration_count, tz
+      FROM schedulers
+      WHERE queue = ?
+      ORDER BY key ASC
+      LIMIT ? OFFSET ?
+    `)
+    .all(queue, pageSize, offset) as Array<{
+    key: string;
+    name: string;
+    pattern: string | null;
+    every: number | null;
+    next: number | null;
+    iteration_count: number | null;
+    tz: string | null;
+  }>;
+
+  const schedulers: JobSchedulerSummary[] = rows.map((row) => ({
+    key: row.key,
+    name: row.name,
+    pattern: row.pattern ?? undefined,
+    every: row.every ?? undefined,
+    next: row.next ?? undefined,
+    iterationCount: row.iteration_count ?? undefined,
+    tz: row.tz ?? undefined,
+  }));
+
+  return { schedulers, total };
 }
 
 export function queryQueueStats(): QueueStats[] {

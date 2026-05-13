@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { setConfig } from "./config.js";
 import type { QueueStats } from "./data/queues.js";
@@ -26,6 +26,8 @@ interface MockState {
   getQueueError: string | null;
   activeJobs: Array<{ id: string; name: string; timestamp: number; data?: unknown }>;
   activeTotal: number;
+  schedulers: JobSchedulerSummary[];
+  schedulersError: string | null;
 }
 
 const mockState: MockState = {
@@ -34,6 +36,8 @@ const mockState: MockState = {
   getQueueError: null,
   activeJobs: [],
   activeTotal: 0,
+  schedulers: [],
+  schedulersError: null,
 };
 
 mock.module("./data/queues.js", () => ({
@@ -51,13 +55,27 @@ mock.module("./data/queues.js", () => ({
       getFailed: async () => [],
       getDelayed: async () => [],
       getPrioritized: async () => [],
+      getJobSchedulers: async () => {
+        if (mockState.schedulersError) throw new Error(mockState.schedulersError);
+        return mockState.schedulers;
+      },
+      getJobSchedulersCount: async () => {
+        if (mockState.schedulersError) throw new Error(mockState.schedulersError);
+        return mockState.schedulers.length;
+      },
     };
   },
 }));
 
 // Import after mocks are registered.
 import { pollingManager } from "./polling.js";
-import { closeSqliteDb, createSqliteDb, upsertJobs, upsertQueueStats } from "./data/sqlite.js";
+import {
+  closeSqliteDb,
+  createSqliteDb,
+  upsertJobs,
+  upsertQueueStats,
+  upsertSchedulers,
+} from "./data/sqlite.js";
 import { stateManager } from "./state.js";
 
 function resetAppState(): void {
@@ -107,6 +125,8 @@ beforeEach(() => {
   mockState.getQueueError = null;
   mockState.activeJobs = [];
   mockState.activeTotal = 0;
+  mockState.schedulers = [];
+  mockState.schedulersError = null;
   resetAppState();
 });
 
@@ -119,6 +139,13 @@ afterEach(() => {
       // ignore
     }
   }
+});
+
+// `mock.module` is process-global in Bun, so without restore the stub
+// for ./data/queues.js leaks into later test files (any test running after
+// this one would see undefined for discoverQueueNames, getQueueStats, etc.).
+afterAll(() => {
+  mock.restore();
 });
 
 describe("pollingManager", () => {
@@ -159,15 +186,21 @@ describe("pollingManager", () => {
     expect(state.schedulers).toEqual([]);
   });
 
-  it("clears stale scheduler rows during disconnected fallback", async () => {
+  it("renders last-known schedulers from SQLite during disconnected fallback", async () => {
     const email = queueStats("email");
-    const staleScheduler: JobSchedulerSummary = { key: "old", name: "old" };
+    const cachedScheduler: JobSchedulerSummary = {
+      key: "every-hour",
+      name: "every-hour",
+      every: 3_600_000,
+    };
     mockState.getAllQueueStatsError = "redis down";
     upsertQueueStats([email]);
+    upsertSchedulers("email", [cachedScheduler]);
     stateManager.setState({
       queues: [email],
       jobsStatus: "schedulers",
-      schedulers: [staleScheduler],
+      // Simulate a stale in-memory copy: SQLite is the source of truth now.
+      schedulers: [{ key: "old", name: "old" }],
       schedulersTotal: 1,
       schedulersTotalPages: 1,
     });
@@ -180,8 +213,83 @@ describe("pollingManager", () => {
     expect(state.jobs).toEqual([]);
     expect(state.jobsTotal).toBe(0);
     expect(state.jobsTotalPages).toBe(0);
-    expect(state.schedulers).toEqual([]);
-    expect(state.schedulersTotal).toBe(0);
-    expect(state.schedulersTotalPages).toBe(0);
+    expect(state.schedulers).toEqual([cachedScheduler]);
+    expect(state.schedulersTotal).toBe(1);
+    expect(state.schedulersTotalPages).toBe(1);
+  });
+
+  it("persists schedulers to SQLite on the connected schedulers path", async () => {
+    const email = queueStats("email");
+    const scheduler: JobSchedulerSummary = {
+      key: "nightly",
+      name: "nightly",
+      pattern: "0 0 * * *",
+    };
+    mockState.observedQueues = [email];
+    mockState.schedulers = [scheduler];
+    stateManager.setState({
+      jobsStatus: "schedulers",
+      schedulersPage: 1,
+    });
+
+    await pollingManager.poll();
+
+    const state = stateManager.getState();
+    expect(state.connected).toBe(true);
+    expect(state.schedulers).toEqual([scheduler]);
+    expect(state.schedulersTotal).toBe(1);
+    expect(state.schedulersTotalPages).toBe(1);
+    expect(state.jobs).toEqual([]);
+  });
+
+  it("recovers from disconnect: keeps last-known state, then refreshes when Redis returns", async () => {
+    // Cycle 1: connected — populate state.
+    const email = queueStats("email");
+    mockState.observedQueues = [email];
+    mockState.activeTotal = 10;
+    mockState.activeJobs = [{ id: "j1", name: "job-1", timestamp: 1000 }];
+
+    await pollingManager.poll();
+
+    const afterFirstPoll = stateManager.getState();
+    expect(afterFirstPoll.connected).toBe(true);
+    expect(afterFirstPoll.queues).toEqual([email]);
+    expect(afterFirstPoll.jobs).toEqual([
+      { id: "j1", name: "job-1", state: "active", timestamp: 1000 },
+    ]);
+    expect(afterFirstPoll.jobsTotal).toBe(10);
+
+    // Cycle 2: Redis goes down — last-known state should remain visible.
+    mockState.getAllQueueStatsError = "connection refused";
+
+    await pollingManager.poll();
+
+    const afterFailure = stateManager.getState();
+    expect(afterFailure.connected).toBe(false);
+    expect(afterFailure.error).toBe("connection refused");
+    // Queue still visible (from SQLite).
+    expect(afterFailure.queues).toEqual([email]);
+    // Last-known job still visible (from SQLite — j1 was persisted in cycle 1).
+    expect(afterFailure.jobs).toEqual([
+      { id: "j1", name: "job-1", state: "active", timestamp: 1000 },
+    ]);
+    // Rates explicitly zeroed during disconnect.
+    expect(afterFailure.globalMetrics?.rates).toEqual(zeroRates);
+
+    // Cycle 3: Redis recovers with fresh data.
+    mockState.getAllQueueStatsError = null;
+    mockState.activeTotal = 11;
+    mockState.activeJobs = [{ id: "j2", name: "job-2", timestamp: 2000 }];
+
+    await pollingManager.poll();
+
+    const afterRecovery = stateManager.getState();
+    expect(afterRecovery.connected).toBe(true);
+    expect(afterRecovery.error).toBeNull();
+    expect(afterRecovery.jobsTotal).toBe(11);
+    // Fresh job rendered; cached job still in SQLite but the new one sorts
+    // higher by timestamp and the "latest" view returns both.
+    const renderedIds = afterRecovery.jobs.map((j) => j.id);
+    expect(renderedIds).toContain("j2");
   });
 });
