@@ -13,7 +13,7 @@ import {
   resetMetricsTracker,
   updateMetricsTracker,
 } from "./data/metrics.js";
-import { stateManager } from "./state.js";
+import { stateManager, type AppState } from "./state.js";
 import {
   querySchedulers,
   queryQueueStats,
@@ -24,6 +24,41 @@ import {
 import { markPolledWrites } from "./data/sync.js";
 
 const SCHEDULER_PAGE_SIZE = 25;
+
+function jobsViewState(result: {
+  jobs: JobSummary[];
+  total: number;
+  totalPages: number;
+}): Partial<AppState> {
+  return {
+    jobs: result.jobs,
+    jobsTotal: result.total,
+    jobsTotalPages: result.totalPages,
+    schedulers: [],
+    schedulersTotal: 0,
+    schedulersTotalPages: 0,
+  };
+}
+
+function schedulersViewState(schedulers: JobSchedulerSummary[], total: number): Partial<AppState> {
+  return {
+    schedulers,
+    schedulersTotal: total,
+    schedulersTotalPages: Math.ceil(total / SCHEDULER_PAGE_SIZE),
+    jobs: [],
+    jobsTotal: 0,
+    jobsTotalPages: 0,
+  };
+}
+
+const EMPTY_QUEUE_VIEW: Partial<AppState> = {
+  jobs: [],
+  jobsTotal: 0,
+  jobsTotalPages: 0,
+  schedulers: [],
+  schedulersTotal: 0,
+  schedulersTotalPages: 0,
+};
 
 class PollingManager {
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -100,15 +135,7 @@ class PollingManager {
             SCHEDULER_PAGE_SIZE,
           );
 
-          stateManager.setState({
-            schedulers: storeResult.schedulers,
-            schedulersTotal: observed.total,
-            schedulersTotalPages: Math.ceil(observed.total / SCHEDULER_PAGE_SIZE),
-            // Clear jobs when viewing schedulers
-            jobs: [],
-            jobsTotal: 0,
-            jobsTotalPages: 0,
-          });
+          stateManager.setState(schedulersViewState(storeResult.schedulers, observed.total));
         } else {
           const observedJobsResult = await this.fetchVisibleJobs(
             selectedQueue.name,
@@ -117,25 +144,10 @@ class PollingManager {
           );
           this.persistObservedJobs(selectedQueue.name, observedJobsResult.jobs);
 
-          stateManager.setState({
-            jobs: observedJobsResult.jobs,
-            jobsTotal: observedJobsResult.total,
-            jobsTotalPages: observedJobsResult.totalPages,
-            // Clear schedulers when viewing jobs
-            schedulers: [],
-            schedulersTotal: 0,
-            schedulersTotalPages: 0,
-          });
+          stateManager.setState(jobsViewState(observedJobsResult));
         }
       } else {
-        stateManager.setState({
-          jobs: [],
-          jobsTotal: 0,
-          jobsTotalPages: 0,
-          schedulers: [],
-          schedulersTotal: 0,
-          schedulersTotalPages: 0,
-        });
+        stateManager.setState(EMPTY_QUEUE_VIEW);
       }
 
       stateManager.setState({ isLoading: false });
@@ -190,31 +202,19 @@ class PollingManager {
           currentState.schedulersPage,
           SCHEDULER_PAGE_SIZE,
         );
-        fallbackState.schedulers = storeResult.schedulers;
-        fallbackState.schedulersTotal = storeResult.total;
-        fallbackState.schedulersTotalPages = Math.ceil(storeResult.total / SCHEDULER_PAGE_SIZE);
-        fallbackState.jobs = [];
-        fallbackState.jobsTotal = 0;
-        fallbackState.jobsTotalPages = 0;
+        Object.assign(
+          fallbackState,
+          schedulersViewState(storeResult.schedulers, storeResult.total),
+        );
       } else if (selectedQueue) {
         const jobsResult = await getJobsFromStore(
           selectedQueue.name,
           currentState.jobsStatus,
           currentState.jobsPage,
         );
-        fallbackState.jobs = jobsResult.jobs;
-        fallbackState.jobsTotal = jobsResult.total;
-        fallbackState.jobsTotalPages = jobsResult.totalPages;
-        fallbackState.schedulers = [];
-        fallbackState.schedulersTotal = 0;
-        fallbackState.schedulersTotalPages = 0;
+        Object.assign(fallbackState, jobsViewState(jobsResult));
       } else {
-        fallbackState.jobs = [];
-        fallbackState.jobsTotal = 0;
-        fallbackState.jobsTotalPages = 0;
-        fallbackState.schedulers = [];
-        fallbackState.schedulersTotal = 0;
-        fallbackState.schedulersTotalPages = 0;
+        Object.assign(fallbackState, EMPTY_QUEUE_VIEW);
       }
 
       stateManager.setState(fallbackState);
@@ -257,10 +257,18 @@ class PollingManager {
   }
 
   /**
-   * Fetch every scheduler for a queue (up to the BullMQ-side cap in
-   * [[getAllJobSchedulers]]). We mirror the full set rather than a page so
-   * [[upsertSchedulers]]'s replace semantics produce a SQLite cache that
-   * matches Redis — pagination is then served from SQLite.
+   * Fetch every scheduler for a queue.
+   *
+   * Common case (total ≤ 1000): one round-trip via [[getAllJobSchedulers]]'s
+   * parallel count+fetch. Rare case (total > 1000): the first 1000-item
+   * batch is discarded and a second call refetches sized to the observed
+   * total. The wastage is bounded; we keep the parallel fast-path rather
+   * than always doing a sequential count-then-fetch that would cost an
+   * extra round-trip in the common case.
+   *
+   * We mirror the full set rather than a page so [[upsertSchedulers]]'s
+   * replace semantics produce a SQLite cache that matches Redis —
+   * pagination is then served from SQLite.
    */
   private async fetchAllSchedulers(
     queueName: string,
@@ -291,14 +299,7 @@ class PollingManager {
     const selectedQueue = state.queues[state.selectedQueueIndex];
 
     if (!selectedQueue) {
-      stateManager.setState({
-        jobs: [],
-        jobsTotal: 0,
-        jobsTotalPages: 0,
-        schedulers: [],
-        schedulersTotal: 0,
-        schedulersTotalPages: 0,
-      });
+      stateManager.setState(EMPTY_QUEUE_VIEW);
       return;
     }
 
@@ -366,13 +367,12 @@ class PollingManager {
       state.schedulersPage,
       SCHEDULER_PAGE_SIZE,
     );
+    const total = observed?.total ?? storeResult.total;
 
     stateManager.setState({
       schedulers: storeResult.schedulers,
-      schedulersTotal: observed?.total ?? storeResult.total,
-      schedulersTotalPages: observed
-        ? Math.ceil(observed.total / SCHEDULER_PAGE_SIZE)
-        : Math.ceil(storeResult.total / SCHEDULER_PAGE_SIZE),
+      schedulersTotal: total,
+      schedulersTotalPages: Math.ceil(total / SCHEDULER_PAGE_SIZE),
     });
   }
 }
