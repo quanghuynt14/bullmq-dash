@@ -233,7 +233,14 @@ class PollingManager {
       }
 
       stateManager.setState(fallbackState);
-    } catch {
+    } catch (fallbackError) {
+      // The cache itself failed during a disconnect — without this log, the
+      // user only sees the original Redis error and operators have no signal
+      // that the SQLite layer also broke.
+      console.error(
+        "Disconnect fallback failed:",
+        fallbackError instanceof Error ? fallbackError.message : fallbackError,
+      );
       stateManager.setState({
         connected: false,
         error: errorMessage,
@@ -266,8 +273,14 @@ class PollingManager {
         queueName,
         jobs.map((j) => j.id),
       );
-    } catch {
-      // SQLite upsert is best-effort; don't break polling on failure
+    } catch (error) {
+      // SQLite upsert is best-effort; don't break polling on failure. But
+      // warn so disk-full / schema-corrupt scenarios don't masquerade as
+      // silently stale disconnect fallbacks.
+      console.warn(
+        `Failed to persist observed jobs for "${queueName}":`,
+        error instanceof Error ? error.message : error,
+      );
     }
   }
 
@@ -298,8 +311,12 @@ class PollingManager {
   private persistObservedSchedulers(queueName: string, schedulers: JobSchedulerSummary[]): void {
     try {
       upsertSchedulers(queueName, schedulers);
-    } catch {
-      // SQLite upsert is best-effort; don't break polling on failure
+    } catch (error) {
+      // Best-effort, same as persistObservedJobs — warn for visibility.
+      console.warn(
+        `Failed to persist observed schedulers for "${queueName}":`,
+        error instanceof Error ? error.message : error,
+      );
     }
   }
 

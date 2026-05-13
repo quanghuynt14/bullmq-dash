@@ -145,6 +145,32 @@ describe("createSqliteDb", () => {
     expect(indexNames).toContain("idx_jobs_name");
     expect(indexNames).toContain("idx_jobs_timestamp");
     expect(indexNames).toContain("idx_jobs_active");
+    expect(indexNames).toContain("idx_jobs_queue_timestamp_live");
+  });
+
+  it("idx_jobs_queue_timestamp_live covers the disconnected 'latest' query without a sort", () => {
+    const db = getSqliteDb();
+    // Seed enough rows that the planner would otherwise prefer a sort.
+    const stmt = db.prepare(
+      "INSERT INTO jobs (id, queue, name, state, timestamp) VALUES (?, ?, ?, ?, ?)",
+    );
+    const tx = db.transaction(() => {
+      for (let i = 0; i < 500; i++) {
+        stmt.run(String(i), "email", `job-${i}`, "completed", i);
+      }
+    });
+    tx();
+
+    const plan = db
+      .prepare(
+        "EXPLAIN QUERY PLAN SELECT * FROM jobs WHERE queue = ? AND removed_at IS NULL ORDER BY timestamp DESC LIMIT 25 OFFSET 0",
+      )
+      .all("email") as Array<{ detail: string }>;
+    const planText = plan.map((p) => p.detail).join(" | ");
+    // Must use the partial-live index and must not need a TEMP B-TREE sort —
+    // that's the regression that motivated this index.
+    expect(planText).toContain("idx_jobs_queue_timestamp_live");
+    expect(planText).not.toMatch(/TEMP B-TREE/i);
   });
 
   it("idx_jobs_active is a partial index over removed_at IS NULL", () => {

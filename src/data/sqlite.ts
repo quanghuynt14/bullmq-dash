@@ -22,6 +22,12 @@ CREATE INDEX IF NOT EXISTS idx_jobs_name ON jobs(name);
 CREATE INDEX IF NOT EXISTS idx_jobs_timestamp ON jobs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_jobs_active
   ON jobs(queue, state, timestamp) WHERE removed_at IS NULL;
+-- Covers the disconnected-fallback "latest" view: queue + removed_at IS NULL,
+-- ordered by timestamp DESC. Without this, the planner falls back to
+-- idx_jobs_queue_state + a TEMP B-TREE sort, which is O(n log n) over the
+-- queue's live rows and becomes the bottleneck at multi-million row scale.
+CREATE INDEX IF NOT EXISTS idx_jobs_queue_timestamp_live
+  ON jobs(queue, timestamp DESC) WHERE removed_at IS NULL;
 `;
 
 const QUEUES_SCHEMA = `
@@ -182,6 +188,19 @@ export interface JobQueryResult {
   total: number;
 }
 
+/**
+ * Replace the cached queue observation atomically.
+ *
+ * Treats the supplied list as the authoritative current set: queues missing
+ * from `queues` are deleted, and their scheduler rows are dropped in the same
+ * transaction so deleted queues don't leak scheduler entries.
+ *
+ * **Empty input is a wipe.** Passing `[]` deletes every queue and scheduler
+ * row. Callers must therefore distinguish "Redis returned no queues" from
+ * "the Redis call failed" — the disconnected fallback in polling.ts only
+ * triggers on a thrown error, not on an empty successful response. A
+ * transient empty observation from upstream will erase the SQLite cache.
+ */
 export function upsertQueueStats(queues: QueueStats[]): void {
   const database = getSqliteDb();
   const stmt = database.prepare(`
