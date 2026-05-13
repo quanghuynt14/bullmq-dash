@@ -1,3 +1,20 @@
+/**
+ * Polling: Redis observes, SQLite renders on disconnect.
+ *
+ * Jobs and schedulers use asymmetric strategies on the connected path,
+ * justified by their data shapes:
+ *
+ *   - Jobs: page-only observation. Render directly from the observed page;
+ *     also persist it so the disconnected fallback can serve last-known
+ *     rows. SQLite can't be the connected render source because we only
+ *     ever observe the current page — other pages aren't in the cache.
+ *
+ *   - Schedulers: full-set observation (up to ~1000). Mirror the full set
+ *     into SQLite, then paginate from SQLite. The full-set mirror lets
+ *     SQLite pagination match Redis exactly.
+ *
+ * On disconnect, both render from SQLite via the disconnected fallback.
+ */
 import { getConfig } from "./config.js";
 import { getAllQueueStats } from "./data/queues.js";
 import {
@@ -24,6 +41,13 @@ import {
 import { markPolledWrites } from "./data/sync.js";
 
 const SCHEDULER_PAGE_SIZE = 25;
+
+const ZERO_RATES = {
+  enqueuedPerMin: 0,
+  enqueuedPerSec: 0,
+  dequeuedPerMin: 0,
+  dequeuedPerSec: 0,
+} as const;
 
 function jobsViewState(result: JobsResult): Partial<AppState> {
   return {
@@ -181,12 +205,7 @@ class PollingManager {
         // every error tick would let the previous-sample timestamp drift, and
         // the first successful reconnect would compute a rate against a stale
         // snapshot, producing a spurious spike until the next tick smooths it.
-        globalMetrics: calculateGlobalMetricsFromQueueStats(queues, {
-          enqueuedPerMin: 0,
-          enqueuedPerSec: 0,
-          dequeuedPerMin: 0,
-          dequeuedPerSec: 0,
-        }),
+        globalMetrics: calculateGlobalMetricsFromQueueStats(queues, ZERO_RATES),
         connected: false,
         error: errorMessage,
         isLoading: false,

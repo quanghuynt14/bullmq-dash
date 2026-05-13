@@ -208,6 +208,9 @@ export function upsertQueueStats(queues: QueueStats[]): void {
   const replaceObservedQueues = database.transaction((items: QueueStats[]) => {
     if (items.length === 0) {
       database.prepare("DELETE FROM queues").run();
+      // Schedulers cache is keyed by queue; drop rows for queues that no
+      // longer exist so deleted queues don't leak scheduler rows.
+      database.prepare("DELETE FROM schedulers").run();
       return;
     }
 
@@ -225,9 +228,9 @@ export function upsertQueueStats(queues: QueueStats[]): void {
     }
 
     const placeholders = items.map(() => "?").join(",");
-    database
-      .prepare(`DELETE FROM queues WHERE name NOT IN (${placeholders})`)
-      .run(...items.map((queue) => queue.name));
+    const names = items.map((queue) => queue.name);
+    database.prepare(`DELETE FROM queues WHERE name NOT IN (${placeholders})`).run(...names);
+    database.prepare(`DELETE FROM schedulers WHERE queue NOT IN (${placeholders})`).run(...names);
   });
 
   replaceObservedQueues(queues);

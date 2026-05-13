@@ -773,6 +773,53 @@ describe("queue observations", () => {
 
     expect(queryQueueStats()).toEqual([]);
   });
+
+  it("drops scheduler rows for queues removed by the latest observation", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 1, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 1 },
+        isPaused: false,
+        total: 1,
+      },
+      {
+        name: "video",
+        counts: { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 1 },
+        isPaused: false,
+        total: 0,
+      },
+    ]);
+    upsertSchedulers("email", [{ key: "daily", name: "daily" }]);
+    upsertSchedulers("video", [{ key: "weekly", name: "weekly" }]);
+
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 1, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 1 },
+        isPaused: false,
+        total: 1,
+      },
+    ]);
+
+    expect(querySchedulers("email", 1, 25).total).toBe(1);
+    expect(querySchedulers("video", 1, 25).total).toBe(0);
+  });
+
+  it("drops every scheduler row when the latest observation is empty", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 1, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 1 },
+        isPaused: false,
+        total: 1,
+      },
+    ]);
+    upsertSchedulers("email", [{ key: "daily", name: "daily" }]);
+
+    upsertQueueStats([]);
+
+    expect(querySchedulers("email", 1, 25).total).toBe(0);
+  });
 });
 
 describe("scheduler observations", () => {

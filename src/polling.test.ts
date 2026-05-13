@@ -152,7 +152,7 @@ afterAll(() => {
 });
 
 describe("pollingManager", () => {
-  it("keeps Redis pagination totals when rendering connected rows from the store", async () => {
+  it("renders Redis observations and keeps Redis pagination totals on the connected path", async () => {
     const email = queueStats("email");
     mockState.observedQueues = [email];
     mockState.activeTotal = 100;
