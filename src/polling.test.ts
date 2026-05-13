@@ -24,12 +24,16 @@ interface MockState {
   observedQueues: QueueStats[];
   getAllQueueStatsError: string | null;
   getQueueError: string | null;
+  activeJobs: Array<{ id: string; name: string; timestamp: number; data?: unknown }>;
+  activeTotal: number;
 }
 
 const mockState: MockState = {
   observedQueues: [],
   getAllQueueStatsError: null,
   getQueueError: null,
+  activeJobs: [],
+  activeTotal: 0,
 };
 
 mock.module("./data/queues.js", () => ({
@@ -39,7 +43,15 @@ mock.module("./data/queues.js", () => ({
   },
   getQueue: () => {
     if (mockState.getQueueError) throw new Error(mockState.getQueueError);
-    throw new Error("Unexpected getQueue call in polling test");
+    return {
+      getJobCounts: async () => ({ active: mockState.activeTotal }),
+      getActive: async () => mockState.activeJobs,
+      getWaiting: async () => [],
+      getCompleted: async () => [],
+      getFailed: async () => [],
+      getDelayed: async () => [],
+      getPrioritized: async () => [],
+    };
   },
 }));
 
@@ -93,6 +105,8 @@ beforeEach(() => {
   mockState.observedQueues = [];
   mockState.getAllQueueStatsError = null;
   mockState.getQueueError = null;
+  mockState.activeJobs = [];
+  mockState.activeTotal = 0;
   resetAppState();
 });
 
@@ -108,6 +122,23 @@ afterEach(() => {
 });
 
 describe("pollingManager", () => {
+  it("keeps Redis pagination totals when rendering connected rows from the store", async () => {
+    const email = queueStats("email");
+    mockState.observedQueues = [email];
+    mockState.activeTotal = 100;
+    mockState.activeJobs = [{ id: "fresh", name: "fresh-job", timestamp: 1000 }];
+
+    await pollingManager.poll();
+
+    const state = stateManager.getState();
+    expect(state.connected).toBe(true);
+    expect(state.jobs).toEqual([
+      { id: "fresh", name: "fresh-job", state: "active", timestamp: 1000 },
+    ]);
+    expect(state.jobsTotal).toBe(100);
+    expect(state.jobsTotalPages).toBe(4);
+  });
+
   it("marks disconnected and renders last-known store jobs when Redis job observation fails", async () => {
     const email = queueStats("email");
     mockState.observedQueues = [email];

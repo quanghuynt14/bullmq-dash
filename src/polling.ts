@@ -1,6 +1,6 @@
 import { getConfig } from "./config.js";
 import { getAllQueueStats } from "./data/queues.js";
-import { getJobs, getJobsFromStore, type JobListView } from "./data/jobs.js";
+import { getJobs, getJobsFromStore, type JobListView, type JobsResult } from "./data/jobs.js";
 import { getJobSchedulers } from "./data/schedulers.js";
 import {
   calculateGlobalMetricsFromQueueStats,
@@ -92,7 +92,7 @@ class PollingManager {
             jobsTotalPages: 0,
           });
         } else {
-          await this.observeVisibleJobs(
+          const observedJobsResult = await this.observeVisibleJobs(
             selectedQueue.name,
             updatedState.jobsStatus,
             updatedState.jobsPage,
@@ -106,8 +106,8 @@ class PollingManager {
 
           stateManager.setState({
             jobs: jobsResult.jobs,
-            jobsTotal: jobsResult.total,
-            jobsTotalPages: jobsResult.totalPages,
+            jobsTotal: observedJobsResult.total,
+            jobsTotalPages: observedJobsResult.totalPages,
             // Clear schedulers when viewing jobs
             schedulers: [],
             schedulersTotal: 0,
@@ -205,7 +205,7 @@ class PollingManager {
     queueName: string,
     status: JobListView,
     page: number,
-  ): Promise<void> {
+  ): Promise<JobsResult> {
     const observedJobs = await getJobs(queueName, status, page, undefined, true);
 
     // Upsert fetched jobs into SQLite (best-effort, non-blocking).
@@ -220,6 +220,7 @@ class PollingManager {
     } catch {
       // SQLite upsert is best-effort; don't break polling on failure
     }
+    return observedJobs;
   }
 
   // Manual refresh - full poll
@@ -255,8 +256,13 @@ class PollingManager {
           schedulersTotalPages: schedulersResult.totalPages,
         });
       } else {
+        let observedJobsResult: JobsResult | null = null;
         try {
-          await this.observeVisibleJobs(selectedQueue.name, state.jobsStatus, state.jobsPage);
+          observedJobsResult = await this.observeVisibleJobs(
+            selectedQueue.name,
+            state.jobsStatus,
+            state.jobsPage,
+          );
         } catch (error) {
           console.error("Failed to observe jobs:", error instanceof Error ? error.message : error);
         }
@@ -269,8 +275,8 @@ class PollingManager {
 
         stateManager.setState({
           jobs: jobsResult.jobs,
-          jobsTotal: jobsResult.total,
-          jobsTotalPages: jobsResult.totalPages,
+          jobsTotal: observedJobsResult?.total ?? jobsResult.total,
+          jobsTotalPages: observedJobsResult?.totalPages ?? jobsResult.totalPages,
         });
       }
     } catch (error) {
