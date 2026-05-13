@@ -1,6 +1,7 @@
 import type { Job, JobType } from "bullmq";
 import { getQueue } from "./queues.js";
 import { DEFAULT_RETRY_PAGE_SIZE, MAX_RETRY_PAGE_SIZE, parseDuration } from "./duration.js";
+import { queryJobs, type JobRow } from "./sqlite.js";
 
 export type JobListView =
   | "latest"
@@ -341,6 +342,57 @@ export async function getJobs(
     page,
     pageSize,
     totalPages: Math.ceil(total / pageSize),
+  };
+}
+
+function rowToJobSummary(row: JobRow): JobSummary {
+  return {
+    id: row.id,
+    name: row.name ?? "unknown",
+    state: row.state,
+    timestamp: row.timestamp ?? 0,
+  };
+}
+
+function storeStateFilter(status: JobListView): string | string[] | undefined {
+  switch (status) {
+    case "latest":
+      return undefined;
+    case "wait":
+      return ["waiting", "prioritized"];
+    case "schedulers":
+      throw new Error(
+        "Cannot fetch schedulers via getJobsFromStore(). Use getJobSchedulers() instead.",
+      );
+    default:
+      return status;
+  }
+}
+
+/**
+ * Get jobs by status with pagination from the queue-data store.
+ */
+export async function getJobsFromStore(
+  queueName: string,
+  status: JobListView,
+  page: number = 1,
+  pageSize: number = PAGE_SIZE,
+): Promise<JobsResult> {
+  const result = queryJobs({
+    queue: queueName,
+    state: storeStateFilter(status),
+    sort: "timestamp",
+    order: "desc",
+    page,
+    pageSize,
+  });
+
+  return {
+    jobs: result.jobs.map(rowToJobSummary),
+    total: result.total,
+    page,
+    pageSize,
+    totalPages: Math.ceil(result.total / pageSize),
   };
 }
 

@@ -1,4 +1,4 @@
-import { getQueue, discoverQueueNames } from "./queues.js";
+import type { QueueStats } from "./queues.js";
 
 export interface GlobalMetrics {
   queueCount: number;
@@ -129,60 +129,47 @@ export function resetMetricsTracker(): void {
   metricsTracker.reset();
 }
 
-/**
- * Get aggregated global metrics across all queues
- */
-export async function getGlobalMetrics(): Promise<GlobalMetrics> {
-  const queueNames = await discoverQueueNames();
-
-  if (queueNames.length === 0) {
-    return {
-      queueCount: 0,
-      jobCounts: { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, total: 0 },
-      rates: { enqueuedPerMin: 0, enqueuedPerSec: 0, dequeuedPerMin: 0, dequeuedPerSec: 0 },
-    };
+function aggregateJobCounts(queues: QueueStats[]): GlobalMetrics["jobCounts"] {
+  const jobCounts: GlobalMetrics["jobCounts"] = {
+    wait: 0,
+    active: 0,
+    completed: 0,
+    failed: 0,
+    delayed: 0,
+    total: 0,
+  };
+  for (const { counts } of queues) {
+    jobCounts.wait += counts.wait;
+    jobCounts.active += counts.active;
+    jobCounts.completed += counts.completed;
+    jobCounts.failed += counts.failed;
+    jobCounts.delayed += counts.delayed;
+    jobCounts.total +=
+      counts.wait + counts.active + counts.completed + counts.failed + counts.delayed;
   }
+  return jobCounts;
+}
 
-  // Get all queue stats in parallel
-  const allQueuesData = await Promise.all(
-    queueNames.map(async (name) => {
-      const queue = getQueue(name);
-
-      // Use getJobCounts() which includes prioritized count, avoiding the need to fetch all prioritized jobs
-      const counts = await queue.getJobCounts();
-
-      return {
-        wait: (counts.waiting || 0) + (counts.prioritized || 0),
-        active: counts.active || 0,
-        completed: counts.completed || 0,
-        failed: counts.failed || 0,
-        delayed: counts.delayed || 0,
-      };
-    }),
-  );
-
-  // Aggregate counts
-  const jobCounts = allQueuesData.reduce<GlobalMetrics["jobCounts"]>(
-    (acc, q) => {
-      const queueTotal = q.wait + q.active + q.completed + q.failed + q.delayed;
-      return {
-        wait: acc.wait + q.wait,
-        active: acc.active + q.active,
-        completed: acc.completed + q.completed,
-        failed: acc.failed + q.failed,
-        delayed: acc.delayed + q.delayed,
-        total: acc.total + queueTotal,
-      };
-    },
-    { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, total: 0 },
-  );
-
-  // Calculate rates using the tracker
-  const rates = metricsTracker.update(jobCounts);
-
+/**
+ * Pure aggregation: no tracker mutation. Callers feed `rates` explicitly —
+ * either fresh from [[updateMetricsTracker]] on the success path, or zeroed
+ * on the disconnected path.
+ */
+export function calculateGlobalMetricsFromQueueStats(
+  queues: QueueStats[],
+  rates: GlobalMetrics["rates"],
+): GlobalMetrics {
   return {
-    queueCount: queueNames.length,
-    jobCounts,
+    queueCount: queues.length,
+    jobCounts: aggregateJobCounts(queues),
     rates,
   };
+}
+
+/**
+ * Feed the singleton tracker with current counts and return the new rates.
+ * Mutates tracker state — call exactly once per successful poll cycle.
+ */
+export function updateMetricsTracker(queues: QueueStats[]): GlobalMetrics["rates"] {
+  return metricsTracker.update(aggregateJobCounts(queues));
 }

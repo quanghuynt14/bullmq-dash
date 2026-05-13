@@ -22,6 +22,8 @@ import {
   findNewIdsByStagingDiff,
   findChangedIdsByStagingDiff,
   dropSyncStaging,
+  queryQueueStats,
+  upsertQueueStats,
   type JobRow,
 } from "./sqlite.js";
 
@@ -83,6 +85,25 @@ describe("createSqliteDb", () => {
     const removedAt = tableInfo.find((c) => c.name === "removed_at");
     expect(removedAt).toBeDefined();
     expect(removedAt!.notnull).toBe(0); // nullable
+  });
+
+  it("creates the observed queues table", () => {
+    const db = getSqliteDb();
+    const tableInfo = db.prepare("PRAGMA table_info(queues)").all() as Array<{
+      name: string;
+    }>;
+
+    const columnNames = tableInfo.map((c) => c.name);
+    expect(columnNames).toEqual([
+      "name",
+      "wait_count",
+      "active_count",
+      "completed_count",
+      "failed_count",
+      "delayed_count",
+      "schedulers_count",
+      "is_paused",
+    ]);
   });
 
   it("creates required indexes", () => {
@@ -354,6 +375,12 @@ describe("queryJobs", () => {
     expect(result.jobs).toHaveLength(0);
     expect(result.total).toBe(0);
   });
+
+  it("returns empty for an empty state filter array", () => {
+    const result = queryJobs({ queue: "email", state: [] });
+    expect(result.jobs).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
 });
 
 describe("queryJobs / getJobFromDb view filter", () => {
@@ -605,6 +632,118 @@ describe("upsertJobStubs", () => {
     expect(row!.name).toBe("my-job");
     expect(row!.timestamp).toBe(5000);
     expect(row!.data_preview).not.toBeNull();
+  });
+});
+
+describe("queue observations", () => {
+  it("returns queue stats from observed queue rows", () => {
+    upsertQueueStats([
+      {
+        name: "empty",
+        counts: { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 2 },
+        isPaused: true,
+        total: 0,
+      },
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+    ]);
+
+    expect(queryQueueStats()).toEqual([
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+      {
+        name: "empty",
+        counts: { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 2 },
+        isPaused: true,
+        total: 0,
+      },
+    ]);
+  });
+
+  it("overwrites the existing row when upserted again", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+    ]);
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 0, active: 0, completed: 7, failed: 0, delayed: 0, schedulers: 4 },
+        isPaused: true,
+        total: 7,
+      },
+    ]);
+
+    expect(queryQueueStats()).toEqual([
+      {
+        name: "email",
+        counts: { wait: 0, active: 0, completed: 7, failed: 0, delayed: 0, schedulers: 4 },
+        isPaused: true,
+        total: 7,
+      },
+    ]);
+  });
+
+  it("removes queues no longer present in the latest observation", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+      {
+        name: "video",
+        counts: { wait: 1, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 0 },
+        isPaused: false,
+        total: 1,
+      },
+    ]);
+
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 0, active: 0, completed: 7, failed: 0, delayed: 0, schedulers: 4 },
+        isPaused: true,
+        total: 7,
+      },
+    ]);
+
+    expect(queryQueueStats()).toEqual([
+      {
+        name: "email",
+        counts: { wait: 0, active: 0, completed: 7, failed: 0, delayed: 0, schedulers: 4 },
+        isPaused: true,
+        total: 7,
+      },
+    ]);
+  });
+
+  it("clears queue stats when the latest observation is empty", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+    ]);
+
+    upsertQueueStats([]);
+
+    expect(queryQueueStats()).toEqual([]);
   });
 });
 

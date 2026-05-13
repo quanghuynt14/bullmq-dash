@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { getConfig } from "../config.js";
+import type { QueueStats } from "./queues.js";
 
 let db: Database | null = null;
 
@@ -20,6 +21,19 @@ CREATE INDEX IF NOT EXISTS idx_jobs_name ON jobs(name);
 CREATE INDEX IF NOT EXISTS idx_jobs_timestamp ON jobs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_jobs_active
   ON jobs(queue, state, timestamp) WHERE removed_at IS NULL;
+`;
+
+const QUEUES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS queues (
+  name TEXT PRIMARY KEY,
+  wait_count INTEGER NOT NULL DEFAULT 0,
+  active_count INTEGER NOT NULL DEFAULT 0,
+  completed_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  delayed_count INTEGER NOT NULL DEFAULT 0,
+  schedulers_count INTEGER NOT NULL DEFAULT 0,
+  is_paused INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 /**
@@ -84,6 +98,7 @@ export function createSqliteDb(dbPath?: string): Database {
   // removed_at on a freshly-upgraded legacy table.
   migrateRemovedAtColumn(db);
   db.exec(SCHEMA);
+  db.exec(QUEUES_SCHEMA);
   db.exec(FTS_SCHEMA);
   db.exec(SYNC_STATE_SCHEMA);
   return db;
@@ -125,7 +140,7 @@ export type JobView = "live" | "history" | "all";
 export interface JobQueryParams {
   queue: string;
   search?: string;
-  state?: string;
+  state?: string | string[];
   sort?: string;
   order?: "asc" | "desc";
   page?: number;
@@ -151,6 +166,102 @@ export interface JobQueryResult {
   total: number;
 }
 
+export function upsertQueueStats(queues: QueueStats[]): void {
+  const database = getSqliteDb();
+  const stmt = database.prepare(`
+    INSERT INTO queues (
+      name,
+      wait_count,
+      active_count,
+      completed_count,
+      failed_count,
+      delayed_count,
+      schedulers_count,
+      is_paused
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET
+      wait_count = excluded.wait_count,
+      active_count = excluded.active_count,
+      completed_count = excluded.completed_count,
+      failed_count = excluded.failed_count,
+      delayed_count = excluded.delayed_count,
+      schedulers_count = excluded.schedulers_count,
+      is_paused = excluded.is_paused
+  `);
+
+  const replaceObservedQueues = database.transaction((items: QueueStats[]) => {
+    if (items.length === 0) {
+      database.prepare("DELETE FROM queues").run();
+      return;
+    }
+
+    for (const queue of items) {
+      stmt.run(
+        queue.name,
+        queue.counts.wait,
+        queue.counts.active,
+        queue.counts.completed,
+        queue.counts.failed,
+        queue.counts.delayed,
+        queue.counts.schedulers,
+        queue.isPaused ? 1 : 0,
+      );
+    }
+
+    const placeholders = items.map(() => "?").join(",");
+    database
+      .prepare(`DELETE FROM queues WHERE name NOT IN (${placeholders})`)
+      .run(...items.map((queue) => queue.name));
+  });
+
+  replaceObservedQueues(queues);
+}
+
+export function queryQueueStats(): QueueStats[] {
+  const database = getSqliteDb();
+  const rows = database
+    .prepare(`
+      SELECT
+        name,
+        wait_count,
+        active_count,
+        completed_count,
+        failed_count,
+        delayed_count,
+        schedulers_count,
+        is_paused
+      FROM queues
+      ORDER BY name ASC
+    `)
+    .all() as Array<{
+    name: string;
+    wait_count: number;
+    active_count: number;
+    completed_count: number;
+    failed_count: number;
+    delayed_count: number;
+    schedulers_count: number;
+    is_paused: number;
+  }>;
+
+  return rows.map((row) => {
+    const counts = {
+      wait: row.wait_count,
+      active: row.active_count,
+      completed: row.completed_count,
+      failed: row.failed_count,
+      delayed: row.delayed_count,
+      schedulers: row.schedulers_count,
+    };
+    return {
+      name: row.name,
+      counts,
+      isPaused: row.is_paused === 1,
+      total: counts.wait + counts.active + counts.completed + counts.failed + counts.delayed,
+    };
+  });
+}
+
 export function queryJobs(params: JobQueryParams): JobQueryResult {
   const database = getSqliteDb();
   const {
@@ -169,13 +280,20 @@ export function queryJobs(params: JobQueryParams): JobQueryResult {
   const sortOrder = order === "asc" ? "ASC" : "DESC";
   const offset = (page - 1) * pageSize;
 
+  if (Array.isArray(state) && state.length === 0) {
+    return { jobs: [], total: 0 };
+  }
+
   // When a search term is provided, use FTS5 for sub-ms full-text search.
   // Falls back to LIKE if FTS5 table is somehow unavailable (shouldn't happen).
   if (search) {
     const conditions: string[] = ["j.queue = ?"];
     const values: (string | number)[] = [queue];
 
-    if (state && state !== "all") {
+    if (Array.isArray(state)) {
+      conditions.push(`j.state IN (${state.map(() => "?").join(",")})`);
+      values.push(...state);
+    } else if (state && state !== "all") {
       conditions.push("j.state = ?");
       values.push(state);
     }
@@ -201,7 +319,10 @@ export function queryJobs(params: JobQueryParams): JobQueryResult {
   const conditions: string[] = ["queue = ?"];
   const values: (string | number)[] = [queue];
 
-  if (state && state !== "all") {
+  if (Array.isArray(state)) {
+    conditions.push(`state IN (${state.map(() => "?").join(",")})`);
+    values.push(...state);
+  } else if (state && state !== "all") {
     conditions.push("state = ?");
     values.push(state);
   }
