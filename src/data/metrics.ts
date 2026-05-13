@@ -144,9 +144,9 @@ function aggregateJobCounts(queues: QueueStats[]): GlobalMetrics["jobCounts"] {
     jobCounts.completed += counts.completed;
     jobCounts.failed += counts.failed;
     jobCounts.delayed += counts.delayed;
-    jobCounts.total +=
-      counts.wait + counts.active + counts.completed + counts.failed + counts.delayed;
   }
+  jobCounts.total =
+    jobCounts.wait + jobCounts.active + jobCounts.completed + jobCounts.failed + jobCounts.delayed;
   return jobCounts;
 }
 

@@ -25,11 +25,7 @@ import { markPolledWrites } from "./data/sync.js";
 
 const SCHEDULER_PAGE_SIZE = 25;
 
-function jobsViewState(result: {
-  jobs: JobSummary[];
-  total: number;
-  totalPages: number;
-}): Partial<AppState> {
+function jobsViewState(result: JobsResult): Partial<AppState> {
   return {
     jobs: result.jobs,
     jobsTotal: result.total,
@@ -308,29 +304,29 @@ class PollingManager {
       if (state.jobsStatus === "schedulers") {
         await this.refreshSchedulers();
         return;
-      } else {
-        let observedJobsResult: JobsResult | null = null;
-        try {
-          observedJobsResult = await this.fetchVisibleJobs(
-            selectedQueue.name,
-            state.jobsStatus,
-            state.jobsPage,
-          );
-          this.persistObservedJobs(selectedQueue.name, observedJobsResult.jobs);
-        } catch (error) {
-          console.error("Failed to observe jobs:", error instanceof Error ? error.message : error);
-        }
-
-        const jobsResult =
-          observedJobsResult ??
-          (await getJobsFromStore(selectedQueue.name, state.jobsStatus, state.jobsPage));
-
-        stateManager.setState({
-          jobs: jobsResult.jobs,
-          jobsTotal: jobsResult.total,
-          jobsTotalPages: jobsResult.totalPages,
-        });
       }
+
+      let observedJobsResult: JobsResult | null = null;
+      try {
+        observedJobsResult = await this.fetchVisibleJobs(
+          selectedQueue.name,
+          state.jobsStatus,
+          state.jobsPage,
+        );
+        this.persistObservedJobs(selectedQueue.name, observedJobsResult.jobs);
+      } catch (error) {
+        console.error("Failed to observe jobs:", error instanceof Error ? error.message : error);
+      }
+
+      const jobsResult =
+        observedJobsResult ??
+        (await getJobsFromStore(selectedQueue.name, state.jobsStatus, state.jobsPage));
+
+      stateManager.setState({
+        jobs: jobsResult.jobs,
+        jobsTotal: jobsResult.total,
+        jobsTotalPages: jobsResult.totalPages,
+      });
     } catch (error) {
       // Don't disconnect on job refresh failure, but log the error for debugging
       console.error("Failed to refresh jobs:", error instanceof Error ? error.message : error);
