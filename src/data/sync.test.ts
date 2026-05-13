@@ -387,10 +387,10 @@ describe("fullSync", () => {
     expect(result.errors).toEqual([]);
   });
 
-  it("rethrows resurrected ids after syncing remaining queues and compacting", async () => {
+  it("rethrows resurrected ids after syncing remaining queues without compacting evidence", async () => {
     upsertJobs("bad", [{ id: "ghost", name: "ghost", state: "completed", timestamp: 1 }]);
     upsertJobs("good", [{ id: "expired", name: "old", state: "completed", timestamp: 1 }]);
-    softDeleteJobsByIds("bad", ["ghost"], Date.now());
+    softDeleteJobsByIds("bad", ["ghost"], 1);
     softDeleteJobsByIds("good", ["expired"], 1);
 
     setConfig({
@@ -411,10 +411,12 @@ describe("fullSync", () => {
     await expect(fullSync()).rejects.toThrow(/bad: .*resurrect/i);
 
     // The bad queue is still soft-deleted, but the unrelated queue still synced.
-    expect(getJobFromDb("bad", "ghost", { view: "all" })!.removed_at).not.toBeNull();
+    // This row is past retention; compaction must not erase it because that
+    // would let the same Redis ID insert as a brand-new live job on next sync.
+    expect(getJobFromDb("bad", "ghost", { view: "all" })!.removed_at).toBe(1);
     expect(getJobFromDb("good", "live")).not.toBeNull();
-    // Compaction still ran after all queues, even though fullSync ultimately rejected.
-    expect(getJobFromDb("good", "expired", { view: "all" })).toBeNull();
+    // Compaction is skipped for the whole cycle when an invariant fails.
+    expect(getJobFromDb("good", "expired", { view: "all" })).not.toBeNull();
   });
 
   it("compacts rows past retentionMs once after all queues reconcile", async () => {

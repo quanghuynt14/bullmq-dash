@@ -326,11 +326,14 @@ export interface FullSyncResult {
  *
  * Invariant violations from `syncQueue` (for example, a soft-deleted job ID
  * reappearing in Redis) are accumulated while the remaining queues continue
- * to sync. Compaction still runs, then `fullSync` rejects with all invariant
- * failures so callers can report them loudly without starving unrelated queues.
+ * to sync. Once every queue has been processed, `fullSync` rejects with all
+ * invariant failures so callers can report them loudly without starving
+ * unrelated queues. Compaction is skipped in that case — deleting an expired
+ * resurrected row would erase the evidence the next sync needs to detect the
+ * same Redis ID coming back as a brand-new job.
  *
- * @throws FullSyncInvariantError after all queues and compaction finish if any
- * queue hit an invariant violation.
+ * @throws FullSyncInvariantError after all queues finish (before compaction)
+ * if any queue hit an invariant violation.
  */
 export async function fullSync(): Promise<FullSyncResult> {
   let queues: string[];
@@ -373,14 +376,17 @@ export async function fullSync(): Promise<FullSyncResult> {
     }
   }
 
-  // One global compaction pass after every queue has reconciled. Hoisted out
-  // of syncQueue because compactRemovedJobs scans `jobs` globally — running
-  // it per-queue would re-scan the same rows N times per cycle for no gain.
-  const totalCompacted = compactRemovedJobs(Date.now(), getConfig().retentionMs);
-
   if (invariantErrors.length > 0) {
     throw new FullSyncInvariantError(invariantErrors);
   }
+
+  // One global compaction pass after every queue has reconciled. Hoisted out
+  // of syncQueue because compactRemovedJobs scans `jobs` globally — running
+  // it per-queue would re-scan the same rows N times per cycle for no gain.
+  // Only compact after invariant checks pass: deleting an expired resurrected
+  // row would erase evidence and let the same Redis ID insert as brand-new on
+  // the next sync.
+  const totalCompacted = compactRemovedJobs(Date.now(), getConfig().retentionMs);
 
   return {
     queues: queues.length,

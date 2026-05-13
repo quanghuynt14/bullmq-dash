@@ -42,9 +42,9 @@ function seedJobs(db: Database, queue: string, n: number, removedAt: number | nu
 }
 
 function explain(db: Database, sql: string, ...params: unknown[]): string {
-  const rows = db
-    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
-    .all(...(params as never[])) as Array<{ detail: string }>;
+  const rows = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as never[])) as Array<{
+    detail: string;
+  }>;
   return rows.map((r) => r.detail).join(" | ");
 }
 
@@ -74,21 +74,25 @@ async function main() {
     // Scale: 100k live + 5k soft-deleted, all of which are past retention.
     const LIVE = 100_000;
     const GONE = 5_000;
-    console.log(`Seeding ${LIVE.toLocaleString()} live + ${GONE.toLocaleString()} soft-deleted rows…`);
+    console.log(
+      `Seeding ${LIVE.toLocaleString()} live + ${GONE.toLocaleString()} soft-deleted rows…`,
+    );
     seedJobs(db, "q", LIVE, null);
     seedJobs(db, "q", GONE, 1); // removed long ago, well past retention=1ms
 
     console.log("\nQuery plans:");
-    console.log("  compaction SELECT:", explain(
-      db,
-      "SELECT COUNT(*) as n FROM jobs WHERE removed_at IS NOT NULL AND removed_at < ?",
-      Date.now(),
-    ));
-    console.log("  compaction DELETE:", explain(
-      db,
-      "DELETE FROM jobs WHERE removed_at IS NOT NULL AND removed_at < ?",
-      Date.now(),
-    ));
+    console.log(
+      "  compaction SELECT:",
+      explain(
+        db,
+        "SELECT COUNT(*) as n FROM jobs WHERE removed_at IS NOT NULL AND removed_at < ?",
+        Date.now(),
+      ),
+    );
+    console.log(
+      "  compaction DELETE:",
+      explain(db, "DELETE FROM jobs WHERE removed_at IS NOT NULL AND removed_at < ?", Date.now()),
+    );
 
     console.log("\nTimings (5 runs each, median reported):");
     // Re-seed for each compaction run since DELETE removes rows.
@@ -130,8 +134,9 @@ async function main() {
       const ids = Array.from({ length: 1_000 }, (_, i) => `q-live-${i}`);
       softDeleteJobsByIds("q", ids, Date.now());
       // restore for next iteration
-      db.prepare("UPDATE jobs SET removed_at = NULL WHERE id IN (" + ids.map(() => "?").join(",") + ")")
-        .run(...ids);
+      db.prepare(
+        "UPDATE jobs SET removed_at = NULL WHERE id IN (" + ids.map(() => "?").join(",") + ")",
+      ).run(...ids);
     });
   } finally {
     closeSqliteDb();

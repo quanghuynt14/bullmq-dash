@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 import { getConfig } from "../config.js";
+import type { QueueStats } from "./queues.js";
+import type { JobSchedulerSummary } from "./schedulers.js";
 
 let db: Database | null = null;
 
@@ -20,6 +22,39 @@ CREATE INDEX IF NOT EXISTS idx_jobs_name ON jobs(name);
 CREATE INDEX IF NOT EXISTS idx_jobs_timestamp ON jobs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_jobs_active
   ON jobs(queue, state, timestamp) WHERE removed_at IS NULL;
+-- Covers the disconnected-fallback "latest" view: queue + removed_at IS NULL,
+-- ordered by timestamp DESC. Without this, the planner falls back to
+-- idx_jobs_queue_state + a TEMP B-TREE sort, which is O(n log n) over the
+-- queue's live rows and becomes the bottleneck at multi-million row scale.
+CREATE INDEX IF NOT EXISTS idx_jobs_queue_timestamp_live
+  ON jobs(queue, timestamp DESC) WHERE removed_at IS NULL;
+`;
+
+const QUEUES_SCHEMA = `
+CREATE TABLE IF NOT EXISTS queues (
+  name TEXT PRIMARY KEY,
+  wait_count INTEGER NOT NULL DEFAULT 0,
+  active_count INTEGER NOT NULL DEFAULT 0,
+  completed_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  delayed_count INTEGER NOT NULL DEFAULT 0,
+  schedulers_count INTEGER NOT NULL DEFAULT 0,
+  is_paused INTEGER NOT NULL DEFAULT 0
+);
+`;
+
+const SCHEDULERS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS schedulers (
+  queue TEXT NOT NULL,
+  key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  pattern TEXT,
+  every INTEGER,
+  next INTEGER,
+  iteration_count INTEGER,
+  tz TEXT,
+  PRIMARY KEY (queue, key)
+);
 `;
 
 /**
@@ -84,6 +119,8 @@ export function createSqliteDb(dbPath?: string): Database {
   // removed_at on a freshly-upgraded legacy table.
   migrateRemovedAtColumn(db);
   db.exec(SCHEMA);
+  db.exec(QUEUES_SCHEMA);
+  db.exec(SCHEDULERS_SCHEMA);
   db.exec(FTS_SCHEMA);
   db.exec(SYNC_STATE_SCHEMA);
   return db;
@@ -125,7 +162,7 @@ export type JobView = "live" | "history" | "all";
 export interface JobQueryParams {
   queue: string;
   search?: string;
-  state?: string;
+  state?: string | string[];
   sort?: string;
   order?: "asc" | "desc";
   page?: number;
@@ -146,9 +183,236 @@ function viewClause(view: JobView, alias: string): string {
   }
 }
 
+function appendStateClause(
+  conditions: string[],
+  values: (string | number)[],
+  state: string | string[] | undefined,
+  prefix: string,
+): void {
+  if (Array.isArray(state)) {
+    conditions.push(`${prefix}state IN (${state.map(() => "?").join(",")})`);
+    values.push(...state);
+  } else if (state && state !== "all") {
+    conditions.push(`${prefix}state = ?`);
+    values.push(state);
+  }
+}
+
 export interface JobQueryResult {
   jobs: JobRow[];
   total: number;
+}
+
+/**
+ * Replace the cached queue observation atomically.
+ *
+ * Treats the supplied list as the authoritative current set: queues missing
+ * from `queues` are deleted, and their scheduler rows are dropped in the same
+ * transaction so deleted queues don't leak scheduler entries.
+ *
+ * **Empty input is a wipe.** Passing `[]` deletes every queue and scheduler
+ * row. Callers must therefore distinguish "Redis returned no queues" from
+ * "the Redis call failed" — the disconnected fallback in polling.ts only
+ * triggers on a thrown error, not on an empty successful response. A
+ * transient empty observation from upstream will erase the SQLite cache.
+ */
+export function upsertQueueStats(queues: QueueStats[]): void {
+  const database = getSqliteDb();
+  const stmt = database.prepare(`
+    INSERT INTO queues (
+      name,
+      wait_count,
+      active_count,
+      completed_count,
+      failed_count,
+      delayed_count,
+      schedulers_count,
+      is_paused
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET
+      wait_count = excluded.wait_count,
+      active_count = excluded.active_count,
+      completed_count = excluded.completed_count,
+      failed_count = excluded.failed_count,
+      delayed_count = excluded.delayed_count,
+      schedulers_count = excluded.schedulers_count,
+      is_paused = excluded.is_paused
+  `);
+
+  const replaceObservedQueues = database.transaction((items: QueueStats[]) => {
+    if (items.length === 0) {
+      database.prepare("DELETE FROM queues").run();
+      // Schedulers cache is keyed by queue; drop rows for queues that no
+      // longer exist so deleted queues don't leak scheduler rows.
+      database.prepare("DELETE FROM schedulers").run();
+      return;
+    }
+
+    for (const queue of items) {
+      stmt.run(
+        queue.name,
+        queue.counts.wait,
+        queue.counts.active,
+        queue.counts.completed,
+        queue.counts.failed,
+        queue.counts.delayed,
+        queue.counts.schedulers,
+        queue.isPaused ? 1 : 0,
+      );
+    }
+
+    const placeholders = items.map(() => "?").join(",");
+    const names = items.map((queue) => queue.name);
+    database.prepare(`DELETE FROM queues WHERE name NOT IN (${placeholders})`).run(...names);
+    database.prepare(`DELETE FROM schedulers WHERE queue NOT IN (${placeholders})`).run(...names);
+  });
+
+  replaceObservedQueues(queues);
+}
+
+export interface SchedulerQueryResult {
+  schedulers: JobSchedulerSummary[];
+  total: number;
+}
+
+/**
+ * Replace the cached scheduler set for one queue.
+ *
+ * Mirrors `upsertQueueStats`: upserts the supplied rows, then deletes any
+ * row for the same queue whose key is not in the new set. This keeps the
+ * cache aligned with the latest Redis observation so a scheduler deleted
+ * upstream stops showing up in the disconnected fallback.
+ *
+ * Pass an empty array to wipe the queue's schedulers.
+ */
+export function upsertSchedulers(queue: string, schedulers: JobSchedulerSummary[]): void {
+  const database = getSqliteDb();
+  const stmt = database.prepare(`
+    INSERT INTO schedulers (queue, key, name, pattern, every, next, iteration_count, tz)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(queue, key) DO UPDATE SET
+      name = excluded.name,
+      pattern = excluded.pattern,
+      every = excluded.every,
+      next = excluded.next,
+      iteration_count = excluded.iteration_count,
+      tz = excluded.tz
+  `);
+
+  const replaceForQueue = database.transaction((items: JobSchedulerSummary[]) => {
+    if (items.length === 0) {
+      database.prepare("DELETE FROM schedulers WHERE queue = ?").run(queue);
+      return;
+    }
+
+    for (const s of items) {
+      stmt.run(
+        queue,
+        s.key,
+        s.name,
+        s.pattern ?? null,
+        s.every ?? null,
+        s.next ?? null,
+        s.iterationCount ?? null,
+        s.tz ?? null,
+      );
+    }
+
+    const placeholders = items.map(() => "?").join(",");
+    database
+      .prepare(`DELETE FROM schedulers WHERE queue = ? AND key NOT IN (${placeholders})`)
+      .run(queue, ...items.map((s) => s.key));
+  });
+
+  replaceForQueue(schedulers);
+}
+
+export function querySchedulers(
+  queue: string,
+  page: number = 1,
+  pageSize: number = 25,
+): SchedulerQueryResult {
+  const database = getSqliteDb();
+  const offset = (page - 1) * pageSize;
+
+  const { total } = database
+    .prepare("SELECT COUNT(*) as total FROM schedulers WHERE queue = ?")
+    .get(queue) as { total: number };
+
+  const rows = database
+    .prepare(`
+      SELECT key, name, pattern, every, next, iteration_count, tz
+      FROM schedulers
+      WHERE queue = ?
+      ORDER BY key ASC
+      LIMIT ? OFFSET ?
+    `)
+    .all(queue, pageSize, offset) as Array<{
+    key: string;
+    name: string;
+    pattern: string | null;
+    every: number | null;
+    next: number | null;
+    iteration_count: number | null;
+    tz: string | null;
+  }>;
+
+  const schedulers: JobSchedulerSummary[] = rows.map((row) => ({
+    key: row.key,
+    name: row.name,
+    pattern: row.pattern ?? undefined,
+    every: row.every ?? undefined,
+    next: row.next ?? undefined,
+    iterationCount: row.iteration_count ?? undefined,
+    tz: row.tz ?? undefined,
+  }));
+
+  return { schedulers, total };
+}
+
+export function queryQueueStats(): QueueStats[] {
+  const database = getSqliteDb();
+  const rows = database
+    .prepare(`
+      SELECT
+        name,
+        wait_count,
+        active_count,
+        completed_count,
+        failed_count,
+        delayed_count,
+        schedulers_count,
+        is_paused
+      FROM queues
+      ORDER BY name ASC
+    `)
+    .all() as Array<{
+    name: string;
+    wait_count: number;
+    active_count: number;
+    completed_count: number;
+    failed_count: number;
+    delayed_count: number;
+    schedulers_count: number;
+    is_paused: number;
+  }>;
+
+  return rows.map((row) => {
+    const counts = {
+      wait: row.wait_count,
+      active: row.active_count,
+      completed: row.completed_count,
+      failed: row.failed_count,
+      delayed: row.delayed_count,
+      schedulers: row.schedulers_count,
+    };
+    return {
+      name: row.name,
+      counts,
+      isPaused: row.is_paused === 1,
+      total: counts.wait + counts.active + counts.completed + counts.failed + counts.delayed,
+    };
+  });
 }
 
 export function queryJobs(params: JobQueryParams): JobQueryResult {
@@ -169,16 +433,17 @@ export function queryJobs(params: JobQueryParams): JobQueryResult {
   const sortOrder = order === "asc" ? "ASC" : "DESC";
   const offset = (page - 1) * pageSize;
 
+  if (Array.isArray(state) && state.length === 0) {
+    return { jobs: [], total: 0 };
+  }
+
   // When a search term is provided, use FTS5 for sub-ms full-text search.
   // Falls back to LIKE if FTS5 table is somehow unavailable (shouldn't happen).
   if (search) {
     const conditions: string[] = ["j.queue = ?"];
     const values: (string | number)[] = [queue];
 
-    if (state && state !== "all") {
-      conditions.push("j.state = ?");
-      values.push(state);
-    }
+    appendStateClause(conditions, values, state, "j.");
 
     const viewSql = viewClause(view, "j.");
     if (viewSql) conditions.push(viewSql);
@@ -201,10 +466,7 @@ export function queryJobs(params: JobQueryParams): JobQueryResult {
   const conditions: string[] = ["queue = ?"];
   const values: (string | number)[] = [queue];
 
-  if (state && state !== "all") {
-    conditions.push("state = ?");
-    values.push(state);
-  }
+  appendStateClause(conditions, values, state, "");
 
   const viewSql = viewClause(view, "");
   if (viewSql) conditions.push(viewSql);

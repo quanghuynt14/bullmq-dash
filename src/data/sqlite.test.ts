@@ -22,6 +22,10 @@ import {
   findNewIdsByStagingDiff,
   findChangedIdsByStagingDiff,
   dropSyncStaging,
+  queryQueueStats,
+  querySchedulers,
+  upsertQueueStats,
+  upsertSchedulers,
   type JobRow,
 } from "./sqlite.js";
 
@@ -85,6 +89,51 @@ describe("createSqliteDb", () => {
     expect(removedAt!.notnull).toBe(0); // nullable
   });
 
+  it("creates the observed queues table", () => {
+    const db = getSqliteDb();
+    const tableInfo = db.prepare("PRAGMA table_info(queues)").all() as Array<{
+      name: string;
+    }>;
+
+    const columnNames = tableInfo.map((c) => c.name);
+    expect(columnNames).toEqual([
+      "name",
+      "wait_count",
+      "active_count",
+      "completed_count",
+      "failed_count",
+      "delayed_count",
+      "schedulers_count",
+      "is_paused",
+    ]);
+  });
+
+  it("creates the observed schedulers table", () => {
+    const db = getSqliteDb();
+    const tableInfo = db.prepare("PRAGMA table_info(schedulers)").all() as Array<{
+      name: string;
+      pk: number;
+    }>;
+
+    const columnNames = tableInfo.map((c) => c.name);
+    expect(columnNames).toEqual([
+      "queue",
+      "key",
+      "name",
+      "pattern",
+      "every",
+      "next",
+      "iteration_count",
+      "tz",
+    ]);
+
+    const pkCols = tableInfo
+      .filter((c) => c.pk > 0)
+      .toSorted((a, b) => a.pk - b.pk)
+      .map((c) => c.name);
+    expect(pkCols).toEqual(["queue", "key"]);
+  });
+
   it("creates required indexes", () => {
     const db = getSqliteDb();
     const indexes = db
@@ -96,6 +145,32 @@ describe("createSqliteDb", () => {
     expect(indexNames).toContain("idx_jobs_name");
     expect(indexNames).toContain("idx_jobs_timestamp");
     expect(indexNames).toContain("idx_jobs_active");
+    expect(indexNames).toContain("idx_jobs_queue_timestamp_live");
+  });
+
+  it("idx_jobs_queue_timestamp_live covers the disconnected 'latest' query without a sort", () => {
+    const db = getSqliteDb();
+    // Seed enough rows that the planner would otherwise prefer a sort.
+    const stmt = db.prepare(
+      "INSERT INTO jobs (id, queue, name, state, timestamp) VALUES (?, ?, ?, ?, ?)",
+    );
+    const tx = db.transaction(() => {
+      for (let i = 0; i < 500; i++) {
+        stmt.run(String(i), "email", `job-${i}`, "completed", i);
+      }
+    });
+    tx();
+
+    const plan = db
+      .prepare(
+        "EXPLAIN QUERY PLAN SELECT * FROM jobs WHERE queue = ? AND removed_at IS NULL ORDER BY timestamp DESC LIMIT 25 OFFSET 0",
+      )
+      .all("email") as Array<{ detail: string }>;
+    const planText = plan.map((p) => p.detail).join(" | ");
+    // Must use the partial-live index and must not need a TEMP B-TREE sort —
+    // that's the regression that motivated this index.
+    expect(planText).toContain("idx_jobs_queue_timestamp_live");
+    expect(planText).not.toMatch(/TEMP B-TREE/i);
   });
 
   it("idx_jobs_active is a partial index over removed_at IS NULL", () => {
@@ -354,6 +429,12 @@ describe("queryJobs", () => {
     expect(result.jobs).toHaveLength(0);
     expect(result.total).toBe(0);
   });
+
+  it("returns empty for an empty state filter array", () => {
+    const result = queryJobs({ queue: "email", state: [] });
+    expect(result.jobs).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
 });
 
 describe("queryJobs / getJobFromDb view filter", () => {
@@ -605,6 +686,227 @@ describe("upsertJobStubs", () => {
     expect(row!.name).toBe("my-job");
     expect(row!.timestamp).toBe(5000);
     expect(row!.data_preview).not.toBeNull();
+  });
+});
+
+describe("queue observations", () => {
+  it("returns queue stats from observed queue rows", () => {
+    upsertQueueStats([
+      {
+        name: "empty",
+        counts: { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 2 },
+        isPaused: true,
+        total: 0,
+      },
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+    ]);
+
+    expect(queryQueueStats()).toEqual([
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+      {
+        name: "empty",
+        counts: { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 2 },
+        isPaused: true,
+        total: 0,
+      },
+    ]);
+  });
+
+  it("overwrites the existing row when upserted again", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+    ]);
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 0, active: 0, completed: 7, failed: 0, delayed: 0, schedulers: 4 },
+        isPaused: true,
+        total: 7,
+      },
+    ]);
+
+    expect(queryQueueStats()).toEqual([
+      {
+        name: "email",
+        counts: { wait: 0, active: 0, completed: 7, failed: 0, delayed: 0, schedulers: 4 },
+        isPaused: true,
+        total: 7,
+      },
+    ]);
+  });
+
+  it("removes queues no longer present in the latest observation", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+      {
+        name: "video",
+        counts: { wait: 1, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 0 },
+        isPaused: false,
+        total: 1,
+      },
+    ]);
+
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 0, active: 0, completed: 7, failed: 0, delayed: 0, schedulers: 4 },
+        isPaused: true,
+        total: 7,
+      },
+    ]);
+
+    expect(queryQueueStats()).toEqual([
+      {
+        name: "email",
+        counts: { wait: 0, active: 0, completed: 7, failed: 0, delayed: 0, schedulers: 4 },
+        isPaused: true,
+        total: 7,
+      },
+    ]);
+  });
+
+  it("clears queue stats when the latest observation is empty", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 3, active: 1, completed: 5, failed: 1, delayed: 2, schedulers: 0 },
+        isPaused: false,
+        total: 12,
+      },
+    ]);
+
+    upsertQueueStats([]);
+
+    expect(queryQueueStats()).toEqual([]);
+  });
+
+  it("drops scheduler rows for queues removed by the latest observation", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 1, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 1 },
+        isPaused: false,
+        total: 1,
+      },
+      {
+        name: "video",
+        counts: { wait: 0, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 1 },
+        isPaused: false,
+        total: 0,
+      },
+    ]);
+    upsertSchedulers("email", [{ key: "daily", name: "daily" }]);
+    upsertSchedulers("video", [{ key: "weekly", name: "weekly" }]);
+
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 1, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 1 },
+        isPaused: false,
+        total: 1,
+      },
+    ]);
+
+    expect(querySchedulers("email", 1, 25).total).toBe(1);
+    expect(querySchedulers("video", 1, 25).total).toBe(0);
+  });
+
+  it("drops every scheduler row when the latest observation is empty", () => {
+    upsertQueueStats([
+      {
+        name: "email",
+        counts: { wait: 1, active: 0, completed: 0, failed: 0, delayed: 0, schedulers: 1 },
+        isPaused: false,
+        total: 1,
+      },
+    ]);
+    upsertSchedulers("email", [{ key: "daily", name: "daily" }]);
+
+    upsertQueueStats([]);
+
+    expect(querySchedulers("email", 1, 25).total).toBe(0);
+  });
+});
+
+describe("scheduler observations", () => {
+  it("returns paginated schedulers for one queue", () => {
+    upsertSchedulers("email", [
+      { key: "daily", name: "daily", pattern: "0 0 * * *" },
+      { key: "hourly", name: "hourly", every: 3_600_000 },
+    ]);
+    upsertSchedulers("video", [{ key: "weekly", name: "weekly", every: 604_800_000 }]);
+
+    const result = querySchedulers("email", 1, 25);
+    expect(result.total).toBe(2);
+    expect(result.schedulers.map((s) => s.key)).toEqual(["daily", "hourly"]);
+    // Unset numeric/string fields become undefined, not null, on the way out.
+    expect(result.schedulers[0]).toEqual({
+      key: "daily",
+      name: "daily",
+      pattern: "0 0 * * *",
+      every: undefined,
+      next: undefined,
+      iterationCount: undefined,
+      tz: undefined,
+    });
+  });
+
+  it("replaces existing schedulers for the same queue", () => {
+    upsertSchedulers("email", [
+      { key: "old-a", name: "old-a" },
+      { key: "old-b", name: "old-b" },
+    ]);
+    upsertSchedulers("email", [{ key: "new", name: "new", pattern: "*/5 * * * *" }]);
+
+    expect(querySchedulers("email", 1, 25).schedulers.map((s) => s.key)).toEqual(["new"]);
+  });
+
+  it("does not touch schedulers in other queues", () => {
+    upsertSchedulers("email", [{ key: "e1", name: "e1" }]);
+    upsertSchedulers("video", [{ key: "v1", name: "v1" }]);
+    upsertSchedulers("email", []);
+
+    expect(querySchedulers("email", 1, 25).total).toBe(0);
+    expect(querySchedulers("video", 1, 25).schedulers.map((s) => s.key)).toEqual(["v1"]);
+  });
+
+  it("paginates with offset and limit", () => {
+    upsertSchedulers(
+      "email",
+      Array.from({ length: 30 }, (_, i) => ({
+        key: `s-${String(i).padStart(2, "0")}`,
+        name: `s-${i}`,
+      })),
+    );
+
+    const page1 = querySchedulers("email", 1, 25);
+    expect(page1.total).toBe(30);
+    expect(page1.schedulers).toHaveLength(25);
+    expect(page1.schedulers[0].key).toBe("s-00");
+
+    const page2 = querySchedulers("email", 2, 25);
+    expect(page2.schedulers).toHaveLength(5);
+    expect(page2.schedulers[0].key).toBe("s-25");
   });
 });
 
