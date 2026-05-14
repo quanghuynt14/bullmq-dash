@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getConfig } from "../config.js";
+import type { Context } from "../context.js";
 import { getAllJobIds } from "./jobs.js";
 import { discoverQueueNames } from "./queues.js";
 import {
@@ -11,7 +11,6 @@ import {
   findResurrectedIdsByStagingDiff,
   findStaleIdsByStagingDiff,
   dropSyncStaging,
-  getSqliteDb,
   softDeleteJobsByIds,
   upsertJobStubs,
   upsertSyncState,
@@ -179,7 +178,7 @@ function wasPolledSince(queue: string, jobId: string, threshold: number): boolea
  * already soft-deleted. This is an invariant violation, not an operational
  * sync failure, so it rejects instead of returning `SyncResult.error`.
  */
-export async function syncQueue(queueName: string): Promise<SyncResult> {
+export async function syncQueue(ctx: Context, queueName: string): Promise<SyncResult> {
   const lock = tryAcquireSyncLock();
   if (!lock.ok) {
     const message =
@@ -203,20 +202,20 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
   // Snapshot the connection so we can detect a closeSqliteDb() mid-sync and
   // abort with a clear error instead of a confusing "no such table" from
   // operating on a fresh connection that never saw CREATE TEMP sync_staging.
-  const syncDb: Database = getSqliteDb();
+  const syncDb: Database = ctx.db;
   const assertSameConnection = () => {
-    if (getSqliteDb() !== syncDb) {
+    if (ctx.db !== syncDb) {
       throw new Error(`syncQueue("${queueName}") aborted: SQLite connection was closed mid-sync`);
     }
   };
   try {
-    createSyncStaging();
+    createSyncStaging(ctx);
 
     // Step 1: Paginate all IDs from Redis into staging
     let total = 0;
-    for await (const batch of getAllJobIds(queueName)) {
+    for await (const batch of getAllJobIds(ctx, queueName)) {
       assertSameConnection();
-      insertStagingBatch(queueName, batch);
+      insertStagingBatch(ctx, queueName, batch);
       total += batch.length;
     }
 
@@ -227,7 +226,7 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
     // violation, not a reinstatement. Throw loudly with the queue + the
     // offending ids so operators see the violation in logs and downstream
     // assumptions (history view, compaction) don't get silently corrupted.
-    const resurrected = findResurrectedIdsByStagingDiff(queueName);
+    const resurrected = findResurrectedIdsByStagingDiff(ctx, queueName);
     if (resurrected.length > 0) {
       throw new JobResurrectionError(queueName, resurrected);
     }
@@ -235,34 +234,34 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
     // Step 3: Find and insert new jobs as stubs.
     // findNewIdsByStagingDiff returns id + state, so we can hand the rows
     // straight to upsertJobStubs without a second round-trip.
-    const newStubs = findNewIdsByStagingDiff(queueName);
+    const newStubs = findNewIdsByStagingDiff(ctx, queueName);
     if (newStubs.length > 0) {
-      upsertJobStubs(queueName, newStubs);
+      upsertJobStubs(ctx, queueName, newStubs);
     }
 
     // Step 4: Find and update changed states — but skip jobs polling
     // refreshed after we started, because staging's state for them is stale.
-    const changed = findChangedIdsByStagingDiff(queueName).filter(
+    const changed = findChangedIdsByStagingDiff(ctx, queueName).filter(
       (row) => !wasPolledSince(queueName, row.id, syncStart),
     );
     if (changed.length > 0) {
-      upsertJobStubs(queueName, changed);
+      upsertJobStubs(ctx, queueName, changed);
     }
 
     // Step 5: Soft-delete stale jobs — same recently-polled exclusion. A job
     // polling inserted between syncStart and now isn't in staging (we built
     // staging from a Redis snapshot that predated the insert), so the anti-
     // join would misclassify it as stale and stamp it removed.
-    const staleIds = findStaleIdsByStagingDiff(queueName).filter(
+    const staleIds = findStaleIdsByStagingDiff(ctx, queueName).filter(
       (id) => !wasPolledSince(queueName, id, syncStart),
     );
     // Single `now` for the soft-delete stamp; reused for sync_state below so
     // a row stamped this cycle and `synced_at` line up exactly.
     const now = Date.now();
-    const softDeleted = softDeleteJobsByIds(queueName, staleIds, now);
+    const softDeleted = softDeleteJobsByIds(ctx, queueName, staleIds, now);
 
     // Step 6: Update sync state
-    upsertSyncState(queueName, {
+    upsertSyncState(ctx, queueName, {
       jobCount: total,
       syncedAt: now,
     });
@@ -293,9 +292,9 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
     // Skip dropSyncStaging if the connection was swapped — the old connection
     // is closed (DROP would throw), and the new connection's TEMP staging
     // never existed.
-    if (getSqliteDb() === syncDb) {
+    if (ctx.db === syncDb) {
       try {
-        dropSyncStaging();
+        dropSyncStaging(ctx);
       } catch (cleanupError) {
         console.error(`Failed to drop sync_staging for queue "${queueName}":`, cleanupError);
       }
@@ -335,10 +334,10 @@ export interface FullSyncResult {
  * @throws FullSyncInvariantError after all queues finish (before compaction)
  * if any queue hit an invariant violation.
  */
-export async function fullSync(): Promise<FullSyncResult> {
+export async function fullSync(ctx: Context): Promise<FullSyncResult> {
   let queues: string[];
   try {
-    queues = await discoverQueueNames();
+    queues = await discoverQueueNames(ctx);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("SQLite full sync: queue discovery failed:", error);
@@ -361,7 +360,7 @@ export async function fullSync(): Promise<FullSyncResult> {
     // on the shared SQLite connection. Parallelizing would corrupt the diff.
     try {
       // eslint-disable-next-line no-await-in-loop
-      const result = await syncQueue(q);
+      const result = await syncQueue(ctx, q);
       if (result.error) {
         errors.push({ queue: q, error: result.error });
       } else {
@@ -386,7 +385,7 @@ export async function fullSync(): Promise<FullSyncResult> {
   // Only compact after invariant checks pass: deleting an expired resurrected
   // row would erase evidence and let the same Redis ID insert as brand-new on
   // the next sync.
-  const totalCompacted = compactRemovedJobs(Date.now(), getConfig().retentionMs);
+  const totalCompacted = compactRemovedJobs(ctx, Date.now(), ctx.config.retentionMs);
 
   return {
     queues: queues.length,

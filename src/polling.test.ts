@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { setConfig } from "./config.js";
+import { createContext, type Context } from "./context.js";
 import type { QueueStats } from "./data/queues.js";
 import type { JobSchedulerSummary } from "./data/schedulers.js";
 
@@ -72,13 +72,7 @@ mock.module("./data/queues.js", () => ({
 
 // Import after mocks are registered.
 import { pollingManager } from "./polling.js";
-import {
-  closeSqliteDb,
-  createSqliteDb,
-  upsertJobs,
-  upsertQueueStats,
-  upsertSchedulers,
-} from "./data/sqlite.js";
+import { upsertJobs, upsertQueueStats, upsertSchedulers } from "./data/sqlite.js";
 import { stateManager } from "./state.js";
 
 function resetAppState(): void {
@@ -115,14 +109,19 @@ function resetAppState(): void {
   });
 }
 
+let ctx: Context;
+
 beforeEach(() => {
-  setConfig({
-    redis: { host: "localhost", port: 6379, db: 0 },
-    pollInterval: 3000,
-    prefix: "bull",
-    retentionMs: 7 * 24 * 60 * 60 * 1000,
-  });
-  createSqliteDb(TEST_DB_PATH);
+  ctx = createContext(
+    {
+      redis: { host: "localhost", port: 6379, db: 0 },
+      pollInterval: 3000,
+      prefix: "bull",
+      retentionMs: 7 * 24 * 60 * 60 * 1000,
+    },
+    { dbPath: TEST_DB_PATH },
+  );
+  pollingManager.start(ctx);
   mockState.observedQueues = [];
   mockState.getAllQueueStatsError = null;
   mockState.getQueueError = null;
@@ -133,8 +132,10 @@ beforeEach(() => {
   resetAppState();
 });
 
-afterEach(() => {
-  closeSqliteDb();
+afterEach(async () => {
+  pollingManager.stop();
+  ctx.db.close();
+  await ctx.redis.quit().catch(() => {});
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
       unlinkSync(`${TEST_DB_PATH}${suffix}`);
@@ -195,7 +196,7 @@ describe("pollingManager", () => {
     mockState.observedQueues = [email];
     mockState.activeTotal = 0;
     mockState.activeJobs = [];
-    upsertJobs("email", [{ id: "stale", name: "stale-job", state: "active", timestamp: 1000 }]);
+    upsertJobs(ctx, "email", [{ id: "stale", name: "stale-job", state: "active", timestamp: 1000 }]);
     stateManager.setState({
       jobsStatus: "active",
     });
@@ -213,7 +214,7 @@ describe("pollingManager", () => {
     const email = queueStats("email");
     mockState.observedQueues = [email];
     mockState.getQueueError = "redis job fetch failed";
-    upsertJobs("email", [{ id: "cached", name: "job-cached", state: "waiting", timestamp: 1000 }]);
+    upsertJobs(ctx, "email", [{ id: "cached", name: "job-cached", state: "waiting", timestamp: 1000 }]);
 
     await pollingManager.poll();
 
@@ -237,8 +238,8 @@ describe("pollingManager", () => {
       every: 3_600_000,
     };
     mockState.getAllQueueStatsError = "redis down";
-    upsertQueueStats([email]);
-    upsertSchedulers("email", [cachedScheduler]);
+    upsertQueueStats(ctx, [email]);
+    upsertSchedulers(ctx, "email", [cachedScheduler]);
     stateManager.setState({
       queues: [email],
       jobsStatus: "schedulers",

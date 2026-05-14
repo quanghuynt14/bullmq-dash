@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { getConfig } from "../config.js";
+import { getConfig, type Config } from "../config.js";
+import type { Context } from "../context.js";
 import type { QueueStats } from "./queues.js";
 import type { JobSchedulerSummary } from "./schedulers.js";
 
@@ -109,26 +110,33 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 `;
 
-export function createSqliteDb(dbPath?: string): Database {
-  const config = getConfig();
+/**
+ * Open (and migrate) a SQLite handle for bullmq-dash.
+ *
+ * Pure factory: callers own the returned `Database`. Used directly by
+ * `createContext` in `src/context.ts`; the module-level `db` is a
+ * compatibility shim consumed by the still-singleton `getSqliteDb()`.
+ */
+export function createSqliteDb(config: Config, dbPath?: string): Database {
   const path = dbPath ?? `/tmp/bullmq-dash-${config.redis.host}-${config.redis.port}.db`;
-  db = new Database(path);
-  db.exec("PRAGMA journal_mode=WAL");
-  db.exec("PRAGMA synchronous=NORMAL");
+  const handle = new Database(path);
+  handle.exec("PRAGMA journal_mode=WAL");
+  handle.exec("PRAGMA synchronous=NORMAL");
   // Migration runs BEFORE SCHEMA so the partial index in SCHEMA can reference
   // removed_at on a freshly-upgraded legacy table.
-  migrateRemovedAtColumn(db);
-  db.exec(SCHEMA);
-  db.exec(QUEUES_SCHEMA);
-  db.exec(SCHEDULERS_SCHEMA);
-  db.exec(FTS_SCHEMA);
-  db.exec(SYNC_STATE_SCHEMA);
-  return db;
+  migrateRemovedAtColumn(handle);
+  handle.exec(SCHEMA);
+  handle.exec(QUEUES_SCHEMA);
+  handle.exec(SCHEDULERS_SCHEMA);
+  handle.exec(FTS_SCHEMA);
+  handle.exec(SYNC_STATE_SCHEMA);
+  db = handle;
+  return handle;
 }
 
 export function getSqliteDb(): Database {
   if (!db) {
-    return createSqliteDb();
+    return createSqliteDb(getConfig());
   }
   return db;
 }
@@ -216,8 +224,8 @@ export interface JobQueryResult {
  * triggers on a thrown error, not on an empty successful response. A
  * transient empty observation from upstream will erase the SQLite cache.
  */
-export function upsertQueueStats(queues: QueueStats[]): void {
-  const database = getSqliteDb();
+export function upsertQueueStats(ctx: Context, queues: QueueStats[]): void {
+  const database = ctx.db;
   const stmt = database.prepare(`
     INSERT INTO queues (
       name,
@@ -285,8 +293,12 @@ export interface SchedulerQueryResult {
  *
  * Pass an empty array to wipe the queue's schedulers.
  */
-export function upsertSchedulers(queue: string, schedulers: JobSchedulerSummary[]): void {
-  const database = getSqliteDb();
+export function upsertSchedulers(
+  ctx: Context,
+  queue: string,
+  schedulers: JobSchedulerSummary[],
+): void {
+  const database = ctx.db;
   const stmt = database.prepare(`
     INSERT INTO schedulers (queue, key, name, pattern, every, next, iteration_count, tz)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -328,11 +340,12 @@ export function upsertSchedulers(queue: string, schedulers: JobSchedulerSummary[
 }
 
 export function querySchedulers(
+  ctx: Context,
   queue: string,
   page: number = 1,
   pageSize: number = 25,
 ): SchedulerQueryResult {
-  const database = getSqliteDb();
+  const database = ctx.db;
   const offset = (page - 1) * pageSize;
 
   const { total } = database
@@ -370,8 +383,8 @@ export function querySchedulers(
   return { schedulers, total };
 }
 
-export function queryQueueStats(): QueueStats[] {
-  const database = getSqliteDb();
+export function queryQueueStats(ctx: Context): QueueStats[] {
+  const database = ctx.db;
   const rows = database
     .prepare(`
       SELECT
@@ -415,8 +428,8 @@ export function queryQueueStats(): QueueStats[] {
   });
 }
 
-export function queryJobs(params: JobQueryParams): JobQueryResult {
-  const database = getSqliteDb();
+export function queryJobs(ctx: Context, params: JobQueryParams): JobQueryResult {
+  const database = ctx.db;
   const {
     queue,
     search,
@@ -497,10 +510,11 @@ function safeDataPreview(data: unknown): string | null {
 }
 
 export function upsertJobs(
+  ctx: Context,
   queue: string,
   jobs: Array<{ id: string; name: string; state: string; timestamp: number; data?: unknown }>,
 ): void {
-  const database = getSqliteDb();
+  const database = ctx.db;
   const stmt = database.prepare(`
     INSERT INTO jobs (id, queue, name, state, timestamp, data_preview)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -522,11 +536,12 @@ export function upsertJobs(
 }
 
 export function getJobFromDb(
+  ctx: Context,
   queue: string,
   jobId: string,
   options: { view?: JobView } = {},
 ): JobRow | null {
-  const database = getSqliteDb();
+  const database = ctx.db;
   const view = options.view ?? "live";
   const viewSql = viewClause(view, "");
   const sql = viewSql
@@ -535,8 +550,12 @@ export function getJobFromDb(
   return database.prepare(sql).get(queue, jobId) as JobRow | null;
 }
 
-export function getQueueJobCount(queue: string, options: { view?: JobView } = {}): number {
-  const database = getSqliteDb();
+export function getQueueJobCount(
+  ctx: Context,
+  queue: string,
+  options: { view?: JobView } = {},
+): number {
+  const database = ctx.db;
   const view = options.view ?? "live";
   const viewSql = viewClause(view, "");
   const sql = viewSql
@@ -550,9 +569,8 @@ export function getQueueJobCount(queue: string, options: { view?: JobView } = {}
  * Rebuild the FTS5 index from the jobs table.
  * Useful after bulk operations or if the index gets out of sync.
  */
-export function rebuildFtsIndex(): void {
-  const database = getSqliteDb();
-  database.exec("INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild')");
+export function rebuildFtsIndex(ctx: Context): void {
+  ctx.db.exec("INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild')");
 }
 
 /**
@@ -569,8 +587,12 @@ export function rebuildFtsIndex(): void {
  * alone is correct: if a row is soft-deleted, it stays soft-deleted.
  * (`upsertJobs` follows the same rule for the polling write path.)
  */
-export function upsertJobStubs(queue: string, jobs: Array<{ id: string; state: string }>): void {
-  const database = getSqliteDb();
+export function upsertJobStubs(
+  ctx: Context,
+  queue: string,
+  jobs: Array<{ id: string; state: string }>,
+): void {
+  const database = ctx.db;
   const stmt = database.prepare(`
     INSERT INTO jobs (id, queue, name, state, timestamp, data_preview)
     VALUES (?, ?, NULL, ?, NULL, NULL)
@@ -593,8 +615,8 @@ export interface SyncState {
   syncedAt: number;
 }
 
-export function getSyncState(queue: string): SyncState | null {
-  const database = getSqliteDb();
+export function getSyncState(ctx: Context, queue: string): SyncState | null {
+  const database = ctx.db;
   const row = database
     .prepare("SELECT queue, job_count, synced_at FROM sync_state WHERE queue = ?")
     .get(queue) as { queue: string; job_count: number; synced_at: number } | null;
@@ -609,10 +631,11 @@ export function getSyncState(queue: string): SyncState | null {
 }
 
 export function upsertSyncState(
+  ctx: Context,
   queue: string,
   input: { jobCount: number; syncedAt: number },
 ): void {
-  const database = getSqliteDb();
+  const database = ctx.db;
   database
     .prepare(`
     INSERT INTO sync_state (queue, job_count, synced_at)
@@ -634,8 +657,8 @@ export function upsertSyncState(
  * leftover `main.sync_staging` from a previous version that created it on
  * disk, so upgrades don't trip over a stale table.
  */
-export function createSyncStaging(): void {
-  const database = getSqliteDb();
+export function createSyncStaging(ctx: Context): void {
+  const database = ctx.db;
   database.exec(`
     DROP TABLE IF EXISTS main.sync_staging;
     DROP TABLE IF EXISTS temp.sync_staging;
@@ -653,11 +676,12 @@ export function createSyncStaging(): void {
  * Called repeatedly during paginated getRanges() fetching.
  */
 export function insertStagingBatch(
+  ctx: Context,
   queue: string,
   jobs: Array<{ id: string; state: string }>,
 ): void {
   if (jobs.length === 0) return;
-  const database = getSqliteDb();
+  const database = ctx.db;
   const stmt = database.prepare(
     "INSERT OR IGNORE INTO sync_staging (id, queue, state) VALUES (?, ?, ?)",
   );
@@ -679,8 +703,8 @@ export function insertStagingBatch(
  * the reconciler will throw on a non-empty result rather than silently
  * undelete the row.
  */
-export function findResurrectedIdsByStagingDiff(queue: string): string[] {
-  const database = getSqliteDb();
+export function findResurrectedIdsByStagingDiff(ctx: Context, queue: string): string[] {
+  const database = ctx.db;
   const rows = database
     .prepare(`
     SELECT s.id FROM sync_staging s
@@ -700,8 +724,11 @@ export function findResurrectedIdsByStagingDiff(queue: string): string[] {
  * so the LEFT JOIN already excludes them from the "new" set — they show up
  * via findResurrectedIdsByStagingDiff instead.
  */
-export function findNewIdsByStagingDiff(queue: string): Array<{ id: string; state: string }> {
-  const database = getSqliteDb();
+export function findNewIdsByStagingDiff(
+  ctx: Context,
+  queue: string,
+): Array<{ id: string; state: string }> {
+  const database = ctx.db;
   return database
     .prepare(`
     SELECT s.id, s.state FROM sync_staging s
@@ -717,8 +744,11 @@ export function findNewIdsByStagingDiff(queue: string): Array<{ id: string; stat
  * resurrection path (or stay soft-deleted) instead of getting their state
  * silently overwritten.
  */
-export function findChangedIdsByStagingDiff(queue: string): Array<{ id: string; state: string }> {
-  const database = getSqliteDb();
+export function findChangedIdsByStagingDiff(
+  ctx: Context,
+  queue: string,
+): Array<{ id: string; state: string }> {
+  const database = ctx.db;
   return database
     .prepare(`
     SELECT s.id, s.state FROM sync_staging s
@@ -738,8 +768,8 @@ export function findChangedIdsByStagingDiff(queue: string): Array<{ id: string; 
  * use the (queue, id) primary key on both sides and avoid materializing the
  * staging subquery for every row in `jobs`. This matters at 5M+ scale.
  */
-export function findStaleIdsByStagingDiff(queue: string): string[] {
-  const database = getSqliteDb();
+export function findStaleIdsByStagingDiff(ctx: Context, queue: string): string[] {
+  const database = ctx.db;
   const rows = database
     .prepare(`
     SELECT j.id FROM jobs j
@@ -759,9 +789,14 @@ export function findStaleIdsByStagingDiff(queue: string): string[] {
  * cache no longer appears in Redis. Compaction (compactRemovedJobs) does the
  * physical removal once the retention window elapses.
  */
-export function softDeleteJobsByIds(queue: string, ids: string[], now: number): number {
+export function softDeleteJobsByIds(
+  ctx: Context,
+  queue: string,
+  ids: string[],
+  now: number,
+): number {
   if (ids.length === 0) return 0;
-  const database = getSqliteDb();
+  const database = ctx.db;
   const BATCH_SIZE = 900;
 
   const run = database.transaction(() => {
@@ -785,8 +820,8 @@ export function softDeleteJobsByIds(queue: string, ids: string[], now: number): 
  * to the shadow table, which `result.changes` would conflate with the real
  * row deletions (same reason deleteJobsByIds doesn't trust changes()).
  */
-export function compactRemovedJobs(now: number, retentionMs: number): number {
-  const database = getSqliteDb();
+export function compactRemovedJobs(ctx: Context, now: number, retentionMs: number): number {
+  const database = ctx.db;
   const cutoff = now - retentionMs;
   // Single source of truth so the count and delete can't drift apart.
   const filter = "removed_at IS NOT NULL AND removed_at < ?";
@@ -807,9 +842,9 @@ export function compactRemovedJobs(now: number, retentionMs: number): number {
  * we don't use `result.changes` because FTS5 triggers inflate the count
  * (shadow table writes from `jobs_ad` are included in the changes tally).
  */
-export function deleteJobsByIds(queue: string, ids: string[]): number {
+export function deleteJobsByIds(ctx: Context, queue: string, ids: string[]): number {
   if (ids.length === 0) return 0;
-  const database = getSqliteDb();
+  const database = ctx.db;
   const BATCH_SIZE = 900;
 
   const run = database.transaction(() => {
@@ -828,7 +863,6 @@ export function deleteJobsByIds(queue: string, ids: string[]): number {
 /**
  * Drop the staging table. Called at the end of each sync cycle.
  */
-export function dropSyncStaging(): void {
-  const database = getSqliteDb();
-  database.exec("DROP TABLE IF EXISTS sync_staging");
+export function dropSyncStaging(ctx: Context): void {
+  ctx.db.exec("DROP TABLE IF EXISTS sync_staging");
 }

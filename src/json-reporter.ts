@@ -1,14 +1,14 @@
-import { connectRedis, disconnectRedis } from "./data/redis.js";
 import { discoverQueueNames, getQueueStats, closeAllQueues, deleteQueue } from "./data/queues.js";
 import { getAllJobs, getJobDetail, retryFailedJobs, VALID_JOB_STATUSES } from "./data/jobs.js";
 import type { JsonJobStatus, RetryResult } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
 import { writeError } from "./errors.js";
-import { createSqliteDb, closeSqliteDb, upsertJobs } from "./data/sqlite.js";
+import { upsertJobs } from "./data/sqlite.js";
 import { markPolledWrites } from "./data/sync.js";
 import type { Subcommand } from "./cli.js";
 import type { Config } from "./config.js";
 import { setConfig } from "./config.js";
+import { createContext, type Context } from "./context.js";
 import {
   formatQueuesOverview,
   formatJobsList,
@@ -32,9 +32,9 @@ function createResponse<T>(data: T): { timestamp: string } & T {
 
 // ── Queues overview (default) ───────────────────────────────────────────
 
-async function fetchQueuesOverview() {
-  const queueNames = await discoverQueueNames();
-  const queues = await Promise.all(queueNames.map((name) => getQueueStats(name)));
+async function fetchQueuesOverview(ctx: Context) {
+  const queueNames = await discoverQueueNames(ctx);
+  const queues = await Promise.all(queueNames.map((name) => getQueueStats(ctx, name)));
 
   const jobCounts = queues.reduce(
     (acc, q) => ({
@@ -57,8 +57,8 @@ async function fetchQueuesOverview() {
   });
 }
 
-async function fetchQueuesDelete(queueName: string, dryRun: boolean) {
-  const result = await deleteQueue(queueName, dryRun);
+async function fetchQueuesDelete(ctx: Context, queueName: string, dryRun: boolean) {
+  const result = await deleteQueue(ctx, queueName, dryRun);
 
   return createResponse({
     queue: queueName,
@@ -76,14 +76,20 @@ async function fetchQueuesDelete(queueName: string, dryRun: boolean) {
 
 // ── Jobs list ───────────────────────────────────────────────────────────
 
-async function fetchJobsList(queueName: string, jobState?: JsonJobStatus, maxResults?: number) {
-  const { jobs, total } = await getAllJobs(queueName, jobState, maxResults, true);
+async function fetchJobsList(
+  ctx: Context,
+  queueName: string,
+  jobState?: JsonJobStatus,
+  maxResults?: number,
+) {
+  const { jobs, total } = await getAllJobs(ctx, queueName, jobState, maxResults, true);
 
   // Side effect: populate SQLite cache with fetched jobs (best-effort).
   // markPolledWrites tells the background sync not to overwrite this fresh
   // state with a stale staging snapshot.
   try {
     upsertJobs(
+      ctx,
       queueName,
       jobs.map((j) => ({
         id: j.id,
@@ -135,6 +141,7 @@ export function computeRetryExitCode(result: JobsRetryOutput): number {
 }
 
 async function fetchJobsRetry(
+  ctx: Context,
   queueName: string,
   jobState: string,
   since: string | undefined,
@@ -142,7 +149,7 @@ async function fetchJobsRetry(
   pageSize: number | undefined,
   dryRun: boolean,
 ): Promise<JobsRetryOutput> {
-  const result = await retryFailedJobs(queueName, { since, name, pageSize, dryRun });
+  const result = await retryFailedJobs(ctx, queueName, { since, name, pageSize, dryRun });
 
   const filter: JobsRetryOutput["filter"] = { jobState };
   if (since !== undefined) filter.since = since;
@@ -164,13 +171,13 @@ async function fetchJobsRetry(
 
 // ── Job detail ──────────────────────────────────────────────────────────
 
-async function fetchJobDetail(queueName: string, jobId: string) {
-  const job = await getJobDetail(queueName, jobId);
+async function fetchJobDetail(ctx: Context, queueName: string, jobId: string) {
+  const job = await getJobDetail(ctx, queueName, jobId);
 
   if (!job) {
     writeError(`Job '${jobId}' not found in queue '${queueName}'`, "RUNTIME_ERROR");
     try {
-      await cleanup();
+      await cleanup(ctx);
     } catch {
       // Ignore cleanup errors
     }
@@ -185,8 +192,8 @@ async function fetchJobDetail(queueName: string, jobId: string) {
 
 // ── Schedulers list ─────────────────────────────────────────────────────
 
-async function fetchSchedulersList(queueName: string, maxResults?: number) {
-  const { schedulers, total } = await getAllJobSchedulers(queueName, maxResults);
+async function fetchSchedulersList(ctx: Context, queueName: string, maxResults?: number) {
+  const { schedulers, total } = await getAllJobSchedulers(ctx, queueName, maxResults);
 
   return createResponse({
     queue: queueName,
@@ -197,13 +204,13 @@ async function fetchSchedulersList(queueName: string, maxResults?: number) {
 
 // ── Scheduler detail ────────────────────────────────────────────────────
 
-async function fetchSchedulerDetail(queueName: string, schedulerKey: string) {
-  const scheduler = await getJobSchedulerDetail(queueName, schedulerKey);
+async function fetchSchedulerDetail(ctx: Context, queueName: string, schedulerKey: string) {
+  const scheduler = await getJobSchedulerDetail(ctx, queueName, schedulerKey);
 
   if (!scheduler) {
     writeError(`Scheduler '${schedulerKey}' not found in queue '${queueName}'`, "RUNTIME_ERROR");
     try {
-      await cleanup();
+      await cleanup(ctx);
     } catch {
       // Ignore cleanup errors
     }
@@ -248,34 +255,35 @@ function promptConfirmation(message: string): Promise<boolean> {
 
 // ── Cleanup helper ──────────────────────────────────────────────────────
 
-async function cleanup(): Promise<void> {
-  await closeAllQueues();
-  await disconnectRedis();
-  closeSqliteDb();
+async function cleanup(ctx: Context): Promise<void> {
+  await closeAllQueues(ctx);
+  await ctx.redis.quit().catch(() => {});
+  ctx.db.close();
 }
 
 // ── Route and execute ───────────────────────────────────────────────────
 
-async function routeAndFetch(subcommand: Subcommand): Promise<unknown> {
+async function routeAndFetch(ctx: Context, subcommand: Subcommand): Promise<unknown> {
   switch (subcommand.kind) {
     case "queues-list":
-      return fetchQueuesOverview();
+      return fetchQueuesOverview(ctx);
 
     case "queues-delete":
-      return fetchQueuesDelete(subcommand.queue, subcommand.dryRun ?? false);
+      return fetchQueuesDelete(ctx, subcommand.queue, subcommand.dryRun ?? false);
 
     case "jobs-list": {
       const validState = validateJobState(subcommand.jobState);
-      return fetchJobsList(subcommand.queue, validState, subcommand.pageSize);
+      return fetchJobsList(ctx, subcommand.queue, validState, subcommand.pageSize);
     }
 
     case "jobs-get":
-      return fetchJobDetail(subcommand.queue, subcommand.jobId);
+      return fetchJobDetail(ctx, subcommand.queue, subcommand.jobId);
 
     case "jobs-retry": {
       const validState = validateJobState(subcommand.jobState);
       if (!validState) throw new Error("jobs retry requires --job-state");
       return fetchJobsRetry(
+        ctx,
         subcommand.queue,
         validState,
         subcommand.since,
@@ -286,10 +294,10 @@ async function routeAndFetch(subcommand: Subcommand): Promise<unknown> {
     }
 
     case "schedulers-list":
-      return fetchSchedulersList(subcommand.queue, subcommand.pageSize);
+      return fetchSchedulersList(ctx, subcommand.queue, subcommand.pageSize);
 
     case "schedulers-get":
-      return fetchSchedulerDetail(subcommand.queue, subcommand.schedulerId);
+      return fetchSchedulerDetail(ctx, subcommand.queue, subcommand.schedulerId);
 
     default: {
       const _exhaustive: never = subcommand;
@@ -337,7 +345,10 @@ export async function runJsonMode(
   dryRun: boolean = false,
   yes: boolean = false,
 ): Promise<void> {
+  // Keep the singleton populated for any helper that still reads getConfig().
+  // (#22 will remove the singleton and this call with it.)
   setConfig(config);
+  const ctx = createContext(config);
 
   if (subcommand.kind === "queues-delete" && !yes && !dryRun) {
     if (process.stdin.isTTY) {
@@ -346,7 +357,7 @@ export async function runJsonMode(
       );
       if (!confirmed) {
         process.stderr.write("Cancelled.\n");
-        await cleanup();
+        await cleanup(ctx);
         process.exit(1);
       }
     } else {
@@ -360,7 +371,7 @@ export async function runJsonMode(
   }
 
   try {
-    await connectRedis();
+    await ctx.redis.connect();
   } catch (error) {
     writeError(
       "Redis connection failed",
@@ -370,12 +381,9 @@ export async function runJsonMode(
     process.exit(1);
   }
 
-  // Initialize SQLite (always on — core infrastructure)
-  createSqliteDb();
-
   let exitCode = 0;
   try {
-    const result = await routeAndFetch(subcommand);
+    const result = await routeAndFetch(ctx, subcommand);
     const output = formatOutput(result, subcommand, humanFriendly);
     process.stdout.write(output + "\n");
 
@@ -392,13 +400,13 @@ export async function runJsonMode(
       error instanceof Error ? error.message : String(error),
     );
     try {
-      await cleanup();
+      await cleanup(ctx);
     } catch {
       // Ignore cleanup errors — the original error has already been reported
     }
     process.exit(1);
   }
 
-  await cleanup();
+  await cleanup(ctx);
   process.exit(exitCode);
 }

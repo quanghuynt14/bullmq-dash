@@ -3,11 +3,10 @@ import { stateManager } from "./state.js";
 import { pollingManager } from "./polling.js";
 import { getJobDetail, deleteJob } from "./data/jobs.js";
 import { getJobSchedulerDetail } from "./data/schedulers.js";
-import { disconnectRedis } from "./data/redis.js";
 import { closeAllQueues } from "./data/queues.js";
 import { getConfig } from "./config.js";
-import { createSqliteDb, closeSqliteDb } from "./data/sqlite.js";
 import { fullSync } from "./data/sync.js";
+import { createContext, type Context } from "./context.js";
 
 // UI imports
 import { createLayout, updateHeaderStatus, type LayoutElements } from "./ui/layout.js";
@@ -65,6 +64,7 @@ export class App {
   private elements: AppElements | null = null;
   private unsubscribeState: (() => void) | null = null;
   private syncIntervalId: ReturnType<typeof setInterval> | null = null;
+  private ctx: Context | null = null;
 
   async start(): Promise<void> {
     // Create renderer
@@ -86,14 +86,15 @@ export class App {
       this.render();
     });
 
-    // Initialize SQLite (always on — core infrastructure)
-    createSqliteDb();
+    // Initialize Context (config + Redis + SQLite + queue cache).
+    this.ctx = createContext(getConfig());
+    const ctx = this.ctx;
 
     // Start polling
-    pollingManager.start();
+    pollingManager.start(ctx);
 
     const runFullSync = () => {
-      fullSync().catch((error) => {
+      fullSync(ctx).catch((error) => {
         console.error("SQLite full sync failed:", error);
       });
     };
@@ -309,7 +310,7 @@ export class App {
     if (!selectedJob || !selectedQueue) return;
 
     try {
-      const detail = await getJobDetail(selectedQueue.name, selectedJob.id);
+      const detail = await getJobDetail(this.ctx!, selectedQueue.name, selectedJob.id);
       if (detail) {
         stateManager.openJobDetail(detail);
       }
@@ -325,7 +326,11 @@ export class App {
     if (!selectedScheduler || !selectedQueue) return;
 
     try {
-      const detail = await getJobSchedulerDetail(selectedQueue.name, selectedScheduler.key);
+      const detail = await getJobSchedulerDetail(
+        this.ctx!,
+        selectedQueue.name,
+        selectedScheduler.key,
+      );
       if (detail) {
         stateManager.openSchedulerDetail(detail);
       }
@@ -342,7 +347,11 @@ export class App {
     if (!schedulerDetail?.nextJob || !selectedQueue) return;
 
     try {
-      const jobDetail = await getJobDetail(selectedQueue.name, schedulerDetail.nextJob.id);
+      const jobDetail = await getJobDetail(
+        this.ctx!,
+        selectedQueue.name,
+        schedulerDetail.nextJob.id,
+      );
       if (jobDetail) {
         // Close scheduler detail and open job detail
         stateManager.closeSchedulerDetail();
@@ -372,7 +381,7 @@ export class App {
     }
 
     try {
-      await deleteJob(selectedQueue.name, jobId);
+      await deleteJob(this.ctx!, selectedQueue.name, jobId);
       stateManager.hideDeleteConfirm();
       stateManager.closeJobDetail();
       await pollingManager.refresh();
@@ -515,12 +524,13 @@ export class App {
       this.unsubscribeState();
     }
 
-    // Close connections
-    await closeAllQueues();
-    await disconnectRedis();
-
-    // Close SQLite
-    closeSqliteDb();
+    // Close connections owned by the Context.
+    if (this.ctx) {
+      await closeAllQueues(this.ctx);
+      await this.ctx.redis.quit().catch(() => {});
+      this.ctx.db.close();
+      this.ctx = null;
+    }
 
     // Destroy renderer
     if (this.renderer) {
