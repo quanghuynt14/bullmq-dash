@@ -1,4 +1,5 @@
 import type { Job, JobType } from "bullmq";
+import type { Context } from "../context.js";
 import { getQueue } from "./queues.js";
 import { DEFAULT_RETRY_PAGE_SIZE, MAX_RETRY_PAGE_SIZE, parseDuration } from "./duration.js";
 import { queryJobs, type JobRow } from "./sqlite.js";
@@ -81,12 +82,13 @@ interface TaggedJob {
  * Used by subcommand mode for bulk export.
  */
 export async function getAllJobs(
+  ctx: Context,
   queueName: string,
   status?: JsonJobStatus,
   maxResults: number = DEFAULT_MAX_RESULTS,
   includeData: boolean = false,
 ): Promise<{ jobs: JobSummary[]; total: number }> {
-  const queue = getQueue(queueName);
+  const queue = getQueue(ctx, queueName);
   const end = maxResults - 1;
 
   let tagged: TaggedJob[];
@@ -186,9 +188,10 @@ export async function getAllJobs(
  * safe for queues with millions of jobs.
  */
 export async function* getAllJobIds(
+  ctx: Context,
   queueName: string,
 ): AsyncGenerator<Array<{ id: string; state: string }>> {
-  const queue = getQueue(queueName);
+  const queue = getQueue(ctx, queueName);
 
   for (const type of SYNC_JOB_TYPES) {
     let offset = 0;
@@ -220,13 +223,14 @@ export async function* getAllJobIds(
  * Get jobs by status with pagination
  */
 export async function getJobs(
+  ctx: Context,
   queueName: string,
   status: JobListView,
   page: number = 1,
   pageSize: number = PAGE_SIZE,
   includeData: boolean = false,
 ): Promise<JobsResult> {
-  const queue = getQueue(queueName);
+  const queue = getQueue(ctx, queueName);
   const start = (page - 1) * pageSize;
   const end = start + pageSize - 1;
 
@@ -373,12 +377,13 @@ function storeStateFilter(status: JobListView): string | string[] | undefined {
  * Get jobs by status with pagination from the queue-data store.
  */
 export async function getJobsFromStore(
+  ctx: Context,
   queueName: string,
   status: JobListView,
   page: number = 1,
   pageSize: number = PAGE_SIZE,
 ): Promise<JobsResult> {
-  const result = queryJobs({
+  const result = queryJobs(ctx, {
     queue: queueName,
     state: storeStateFilter(status),
     sort: "timestamp",
@@ -399,8 +404,12 @@ export async function getJobsFromStore(
 /**
  * Get detailed information for a single job
  */
-export async function getJobDetail(queueName: string, jobId: string): Promise<JobDetail | null> {
-  const queue = getQueue(queueName);
+export async function getJobDetail(
+  ctx: Context,
+  queueName: string,
+  jobId: string,
+): Promise<JobDetail | null> {
+  const queue = getQueue(ctx, queueName);
   const job = await queue.getJob(jobId);
 
   if (!job) {
@@ -431,8 +440,12 @@ export async function getJobDetail(queueName: string, jobId: string): Promise<Jo
 /**
  * Delete a job from a queue
  */
-export async function deleteJob(queueName: string, jobId: string): Promise<boolean> {
-  const queue = getQueue(queueName);
+export async function deleteJob(
+  ctx: Context,
+  queueName: string,
+  jobId: string,
+): Promise<boolean> {
+  const queue = getQueue(ctx, queueName);
   const job = await queue.getJob(jobId);
 
   if (!job) {
@@ -463,6 +476,7 @@ export interface RetryResult {
  * decide exit code based on `errors.length > 0`.
  */
 export async function retryFailedJobs(
+  ctx: Context,
   queueName: string,
   options: {
     since?: string;
@@ -485,7 +499,7 @@ export async function retryFailedJobs(
     cutoffMs = Date.now() - durationMs;
   }
 
-  const queue = getQueue(queueName);
+  const queue = getQueue(ctx, queueName);
 
   const [failedJobs, counts] = await Promise.all([
     queue.getFailed(0, pageSize - 1),

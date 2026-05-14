@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
 // Shape of the fake Job objects the mocked queue returns.
 interface FakeJob {
@@ -22,7 +22,7 @@ const mockState: MockState = {
 };
 
 mock.module("./queues.js", () => ({
-  getQueue: (_name: string) => ({
+  getQueue: (_ctx: unknown, _name: string) => ({
     getFailed: async (start: number, end: number) => {
       // Match BullMQ's getFailed(0, end) contract: inclusive end index.
       return mockState.failedJobs.slice(start, end + 1);
@@ -33,6 +33,11 @@ mock.module("./queues.js", () => ({
 
 // Import AFTER mocks are registered.
 import { retryFailedJobs } from "./jobs.js";
+import type { Context } from "../context.js";
+
+// retryFailedJobs only touches ctx through getQueue, which is mocked above.
+// A stub is enough; we don't need a real Redis or SQLite handle here.
+const ctx = {} as Context;
 
 function makeJob(
   id: string | undefined,
@@ -60,6 +65,13 @@ afterEach(() => {
   mockState.failedJobs = [];
 });
 
+// `mock.module` is process-global in Bun; without restore, the stub for
+// `./queues.js` leaks into later test files. Belt-and-braces even though no
+// other current file depends on `./queues.js` being un-stubbed.
+afterAll(() => {
+  mock.restore();
+});
+
 describe("retryFailedJobs — dry-run branch", () => {
   it("reports matched without invoking retry() on any job", async () => {
     let retryCalls = 0;
@@ -74,7 +86,7 @@ describe("retryFailedJobs — dry-run branch", () => {
     mockState.failedJobs = jobs;
     mockState.totalFailedCount = 2;
 
-    const result = await retryFailedJobs("q", { dryRun: true });
+    const result = await retryFailedJobs(ctx, "q", { dryRun: true });
 
     expect(retryCalls).toBe(0);
     expect(result.matched).toBe(2);
@@ -89,7 +101,7 @@ describe("retryFailedJobs — dry-run branch", () => {
     mockState.failedJobs = Array.from({ length: 10 }, (_, i) => makeJob(`j${i}`));
     mockState.totalFailedCount = 10;
 
-    const result = await retryFailedJobs("q", { dryRun: true });
+    const result = await retryFailedJobs(ctx, "q", { dryRun: true });
 
     expect(result.sampleJobIds).toEqual(["j0", "j1", "j2", "j3", "j4"]);
   });
@@ -104,7 +116,7 @@ describe("retryFailedJobs — filters", () => {
     ];
     mockState.totalFailedCount = 2;
 
-    const result = await retryFailedJobs("q", { since: "1h", dryRun: true });
+    const result = await retryFailedJobs(ctx, "q", { since: "1h", dryRun: true });
 
     expect(result.matched).toBe(1);
     expect(result.sampleJobIds).toEqual(["fresh"]);
@@ -117,7 +129,7 @@ describe("retryFailedJobs — filters", () => {
     ];
     mockState.totalFailedCount = 1;
 
-    const result = await retryFailedJobs("q", { since: "1h", dryRun: true });
+    const result = await retryFailedJobs(ctx, "q", { since: "1h", dryRun: true });
 
     expect(result.matched).toBe(1);
   });
@@ -126,7 +138,7 @@ describe("retryFailedJobs — filters", () => {
     mockState.failedJobs = [makeJob("orphan")]; // both timestamps undefined -> treated as 0
     mockState.totalFailedCount = 1;
 
-    const result = await retryFailedJobs("q", { since: "1h", dryRun: true });
+    const result = await retryFailedJobs(ctx, "q", { since: "1h", dryRun: true });
 
     expect(result.matched).toBe(0);
   });
@@ -139,7 +151,7 @@ describe("retryFailedJobs — filters", () => {
     ];
     mockState.totalFailedCount = 3;
 
-    const result = await retryFailedJobs("q", { name: "welcome-email", dryRun: true });
+    const result = await retryFailedJobs(ctx, "q", { name: "welcome-email", dryRun: true });
 
     expect(result.matched).toBe(2);
     expect(result.sampleJobIds).toEqual(["a", "c"]);
@@ -154,7 +166,7 @@ describe("retryFailedJobs — filters", () => {
     ];
     mockState.totalFailedCount = 3;
 
-    const result = await retryFailedJobs("q", { since: "1h", name: "x", dryRun: true });
+    const result = await retryFailedJobs(ctx, "q", { since: "1h", name: "x", dryRun: true });
 
     expect(result.matched).toBe(1);
     expect(result.sampleJobIds).toEqual(["a"]);
@@ -174,7 +186,7 @@ describe("retryFailedJobs — live branch", () => {
     ];
     mockState.totalFailedCount = 2;
 
-    const result = await retryFailedJobs("q", {});
+    const result = await retryFailedJobs(ctx, "q", {});
 
     expect(calls).toEqual([
       { id: "a", state: "failed" },
@@ -194,7 +206,7 @@ describe("retryFailedJobs — live branch", () => {
     ];
     mockState.totalFailedCount = 3;
 
-    const result = await retryFailedJobs("q", {});
+    const result = await retryFailedJobs(ctx, "q", {});
 
     expect(result.matched).toBe(3);
     expect(result.retried).toBe(2);
@@ -209,7 +221,7 @@ describe("retryFailedJobs — live branch", () => {
     ];
     mockState.totalFailedCount = 1;
 
-    const result = await retryFailedJobs("q", {});
+    const result = await retryFailedJobs(ctx, "q", {});
 
     expect(result.errors).toEqual([{ jobId: "unknown", error: "boom" }]);
   });
@@ -220,7 +232,7 @@ describe("retryFailedJobs — truncation flag", () => {
     mockState.failedJobs = Array.from({ length: 5 }, (_, i) => makeJob(`j${i}`));
     mockState.totalFailedCount = 5000;
 
-    const result = await retryFailedJobs("q", { pageSize: 5, dryRun: true });
+    const result = await retryFailedJobs(ctx, "q", { pageSize: 5, dryRun: true });
 
     expect(result.truncated).toBe(true);
   });
@@ -229,7 +241,7 @@ describe("retryFailedJobs — truncation flag", () => {
     mockState.failedJobs = Array.from({ length: 3 }, (_, i) => makeJob(`j${i}`));
     mockState.totalFailedCount = 3;
 
-    const result = await retryFailedJobs("q", { dryRun: true });
+    const result = await retryFailedJobs(ctx, "q", { dryRun: true });
 
     expect(result.truncated).toBe(false);
   });
@@ -240,7 +252,7 @@ describe("retryFailedJobs — validation", () => {
     mockState.failedJobs = [];
     mockState.totalFailedCount = 0;
 
-    await expect(retryFailedJobs("q", { since: "bogus" })).rejects.toThrow("Invalid --since value");
+    await expect(retryFailedJobs(ctx, "q", { since: "bogus" })).rejects.toThrow("Invalid --since value");
   });
 
   it("clamps pageSize above the max", async () => {
@@ -260,7 +272,7 @@ describe("retryFailedJobs — validation", () => {
     // Re-import after remock. (bun:test hoists module mocks — this re-mock takes
     // effect for calls made after it registers.)
     const { retryFailedJobs: rf } = await import("./jobs.js");
-    await rf("q", { pageSize: 1_000_000, dryRun: true });
+    await rf(ctx, "q", { pageSize: 1_000_000, dryRun: true });
 
     // End index is pageSize - 1, so 10000 - 1 = 9999 after the clamp.
     expect(requestedEnd).toBe(9999);

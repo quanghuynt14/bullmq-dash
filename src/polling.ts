@@ -15,7 +15,7 @@
  *
  * On disconnect, both render from SQLite via the disconnected fallback.
  */
-import { getConfig } from "./config.js";
+import type { Context } from "./context.js";
 import { getAllQueueStats, type QueueStats } from "./data/queues.js";
 import {
   getJobs,
@@ -88,11 +88,24 @@ class PollingManager {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private isRunning = false;
   private isPolling = false;
+  private ctx: Context | null = null;
 
-  start(): void {
+  /**
+   * Single chokepoint for non-null ctx access from private methods. Throws
+   * with a clear message if a refresh fires after `stop()` cleared ctx
+   * (reachable via async key handlers in TUI mode).
+   */
+  private requireCtx(): Context {
+    if (!this.ctx) {
+      throw new Error("PollingManager.start(ctx) must be called before refresh*/poll");
+    }
+    return this.ctx;
+  }
+
+  start(ctx: Context): void {
     if (this.isRunning) return;
 
-    const config = getConfig();
+    this.ctx = ctx;
     this.isRunning = true;
 
     // Initial fetch
@@ -101,7 +114,7 @@ class PollingManager {
     // Start polling interval
     this.intervalId = setInterval(() => {
       this.poll();
-    }, config.pollInterval);
+    }, ctx.config.pollInterval);
   }
 
   stop(): void {
@@ -110,12 +123,17 @@ class PollingManager {
       this.intervalId = null;
     }
     this.isRunning = false;
+    this.ctx = null;
   }
 
   async poll(): Promise<void> {
     // Prevent concurrent polls
     if (this.isPolling) return;
+    // Bail silently if a poll tick fires after stop() — happens once on the
+    // interval timer between stop() and the clearInterval taking effect.
+    if (!this.ctx) return;
     this.isPolling = true;
+    const ctx = this.ctx;
 
     const wasConnected = stateManager.getState().connected;
 
@@ -125,9 +143,9 @@ class PollingManager {
       // Observe queue stats from Redis, then read the TUI model from SQLite.
       // Redis is the writer/source of observations; the queue-data store is
       // the read path used to render state.
-      const observedQueues = await getAllQueueStats();
-      upsertQueueStats(observedQueues);
-      const queues = queryQueueStats();
+      const observedQueues = await getAllQueueStats(ctx);
+      upsertQueueStats(ctx, observedQueues);
+      const queues = queryQueueStats(ctx);
       const rates = updateMetricsTracker(queues);
       const globalMetrics = calculateGlobalMetricsFromQueueStats(queues, rates);
 
@@ -153,6 +171,7 @@ class PollingManager {
           this.persistObservedSchedulers(selectedQueue.name, observed.schedulers);
 
           const storeResult = querySchedulers(
+            ctx,
             selectedQueue.name,
             currentState.schedulersPage,
             SCHEDULER_PAGE_SIZE,
@@ -194,8 +213,9 @@ class PollingManager {
    * state so the UI still shows the error banner.
    */
   private async applyDisconnectedFallback(errorMessage: string): Promise<void> {
+    const ctx = this.requireCtx();
     try {
-      const queues = queryQueueStats();
+      const queues = queryQueueStats(ctx);
       const currentState = stateManager.getState();
       const clampedIndex = clampQueueIndex(queues, currentState.selectedQueueIndex);
       const selectedQueue = queues[clampedIndex];
@@ -203,6 +223,7 @@ class PollingManager {
       let viewState: Partial<AppState>;
       if (selectedQueue && currentState.jobsStatus === "schedulers") {
         const storeResult = querySchedulers(
+          ctx,
           selectedQueue.name,
           currentState.schedulersPage,
           SCHEDULER_PAGE_SIZE,
@@ -210,6 +231,7 @@ class PollingManager {
         viewState = schedulersViewState(storeResult.schedulers, storeResult.total);
       } else if (selectedQueue) {
         const jobsResult = await getJobsFromStore(
+          ctx,
           selectedQueue.name,
           currentState.jobsStatus,
           currentState.jobsPage,
@@ -257,7 +279,7 @@ class PollingManager {
     status: JobListView,
     page: number,
   ): Promise<JobsResult> {
-    return getJobs(queueName, status, page, undefined, true);
+    return getJobs(this.requireCtx(), queueName, status, page, undefined, true);
   }
 
   /**
@@ -267,7 +289,7 @@ class PollingManager {
    */
   private persistObservedJobs(queueName: string, jobs: JobSummary[]): void {
     try {
-      upsertJobs(queueName, jobs);
+      upsertJobs(this.requireCtx(), queueName, jobs);
       markPolledWrites(
         queueName,
         jobs.map((j) => j.id),
@@ -300,16 +322,16 @@ class PollingManager {
   private async fetchAllSchedulers(
     queueName: string,
   ): Promise<{ schedulers: JobSchedulerSummary[]; total: number }> {
-    const firstBatch = await getAllJobSchedulers(queueName);
+    const firstBatch = await getAllJobSchedulers(this.requireCtx(), queueName);
     if (firstBatch.schedulers.length >= firstBatch.total) {
       return firstBatch;
     }
-    return getAllJobSchedulers(queueName, firstBatch.total);
+    return getAllJobSchedulers(this.requireCtx(), queueName, firstBatch.total);
   }
 
   private persistObservedSchedulers(queueName: string, schedulers: JobSchedulerSummary[]): void {
     try {
-      upsertSchedulers(queueName, schedulers);
+      upsertSchedulers(this.requireCtx(), queueName, schedulers);
     } catch (error) {
       // Best-effort, same as persistObservedJobs — warn for visibility.
       console.warn(
@@ -355,7 +377,7 @@ class PollingManager {
 
       const jobsResult =
         observedJobsResult ??
-        (await getJobsFromStore(selectedQueue.name, state.jobsStatus, state.jobsPage));
+        (await getJobsFromStore(this.requireCtx(), selectedQueue.name, state.jobsStatus, state.jobsPage));
 
       stateManager.setState({
         jobs: jobsResult.jobs,
@@ -394,6 +416,7 @@ class PollingManager {
     }
 
     const storeResult = querySchedulers(
+      this.requireCtx(),
       selectedQueue.name,
       state.schedulersPage,
       SCHEDULER_PAGE_SIZE,
