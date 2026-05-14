@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { unlinkSync } from "node:fs";
 
 // Mutable state the mocks read from. Tests reset this in beforeEach.
@@ -96,6 +96,13 @@ afterEach(async () => {
       // ignore
     }
   }
+});
+
+// `mock.module` is process-global in Bun; without restore, the stubs for
+// `./jobs.js` and `./queues.js` leak into later test files. Belt-and-braces
+// even though no other current file depends on those modules being un-stubbed.
+afterAll(() => {
+  mock.restore();
 });
 
 describe("syncQueue", () => {

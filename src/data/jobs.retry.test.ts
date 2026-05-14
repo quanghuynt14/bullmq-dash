@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
 // Shape of the fake Job objects the mocked queue returns.
 interface FakeJob {
@@ -63,6 +63,13 @@ beforeEach(() => {
 afterEach(() => {
   // Reset between tests — failedJobs is reassigned in beforeEach so this is belt-and-braces.
   mockState.failedJobs = [];
+});
+
+// `mock.module` is process-global in Bun; without restore, the stub for
+// `./queues.js` leaks into later test files. Belt-and-braces even though no
+// other current file depends on `./queues.js` being un-stubbed.
+afterAll(() => {
+  mock.restore();
 });
 
 describe("retryFailedJobs — dry-run branch", () => {

@@ -90,6 +90,19 @@ export class App {
     this.ctx = createContext(getConfig());
     const ctx = this.ctx;
 
+    // Explicit eager connect — matches `runJsonMode`'s startup shape so both
+    // entry points agree on "the connection is opened on startup, not lazily
+    // on the first BullMQ call." TUI swallows failures (the disconnect banner
+    // surfaces them via the next poll cycle); headless exits 3.
+    try {
+      await ctx.redis.connect();
+    } catch (error) {
+      console.error(
+        "Redis connection failed at startup:",
+        error instanceof Error ? error.message : error,
+      );
+    }
+
     // Start polling
     pollingManager.start(ctx);
 
