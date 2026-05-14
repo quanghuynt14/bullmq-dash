@@ -6,7 +6,8 @@ import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js
 import { writeError } from "./errors.js";
 import { createSqliteDb, closeSqliteDb, upsertJobs } from "./data/sqlite.js";
 import { markPolledWrites } from "./data/sync.js";
-import type { Config, Subcommand } from "./config.js";
+import type { Subcommand } from "./cli.js";
+import type { Config } from "./config.js";
 import { setConfig } from "./config.js";
 import {
   formatQueuesOverview,

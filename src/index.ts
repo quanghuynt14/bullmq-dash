@@ -5,10 +5,8 @@ import {
   showVersion,
   hasRedisHostConfig,
   shouldLoadProfile,
-  loadConfig,
-  createConfigFromPrompt,
-  setConfig,
-} from "./config.js";
+} from "./cli.js";
+import { loadConfig, createConfigFromPrompt, setConfig } from "./config.js";
 import { loadProfile } from "./profiles.js";
 import { runConfigPrompt } from "./ui/config-prompt.js";
 import { runJsonMode } from "./json-reporter.js";
