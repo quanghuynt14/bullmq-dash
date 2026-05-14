@@ -4,9 +4,10 @@ import type { Context } from "../context.js";
 // Queue names cache with TTL.
 // Module-level rather than per-context: it's a short-lived (5s) observation
 // of a Redis-side fact (the set of queues for this prefix), not derived from
-// context-specific state. Sharing across contexts in the same process is
-// fine; tests that need isolation create distinct prefixes.
+// context-specific state. Keyed by prefix so two contexts pointed at different
+// prefixes in the same process don't serve each other's cached names.
 let queueNamesCache: {
+  prefix: string;
   names: string[];
   timestamp: number;
 } | null = null;
@@ -62,8 +63,12 @@ export async function discoverQueueNames(ctx: Context): Promise<string[]> {
 
   const now = Date.now();
 
-  // Return cached names if fresh
-  if (queueNamesCache && now - queueNamesCache.timestamp < QUEUE_NAMES_CACHE_TTL) {
+  // Return cached names if fresh AND for the same prefix.
+  if (
+    queueNamesCache &&
+    queueNamesCache.prefix === ctx.config.prefix &&
+    now - queueNamesCache.timestamp < QUEUE_NAMES_CACHE_TTL
+  ) {
     return queueNamesCache.names;
   }
 
@@ -99,6 +104,7 @@ export async function discoverQueueNames(ctx: Context): Promise<string[]> {
   const sortedNames = Array.from(queueNames).toSorted();
 
   queueNamesCache = {
+    prefix: ctx.config.prefix,
     names: sortedNames,
     timestamp: now,
   };

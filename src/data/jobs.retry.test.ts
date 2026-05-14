@@ -22,7 +22,7 @@ const mockState: MockState = {
 };
 
 mock.module("./queues.js", () => ({
-  getQueue: (_name: string) => ({
+  getQueue: (_ctx: unknown, _name: string) => ({
     getFailed: async (start: number, end: number) => {
       // Match BullMQ's getFailed(0, end) contract: inclusive end index.
       return mockState.failedJobs.slice(start, end + 1);

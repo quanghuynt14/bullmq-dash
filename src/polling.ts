@@ -90,6 +90,18 @@ class PollingManager {
   private isPolling = false;
   private ctx: Context | null = null;
 
+  /**
+   * Single chokepoint for non-null ctx access from private methods. Throws
+   * with a clear message if a refresh fires after `stop()` cleared ctx
+   * (reachable via async key handlers in TUI mode).
+   */
+  private requireCtx(): Context {
+    if (!this.ctx) {
+      throw new Error("PollingManager.start(ctx) must be called before refresh*/poll");
+    }
+    return this.ctx;
+  }
+
   start(ctx: Context): void {
     if (this.isRunning) return;
 
@@ -117,6 +129,8 @@ class PollingManager {
   async poll(): Promise<void> {
     // Prevent concurrent polls
     if (this.isPolling) return;
+    // Bail silently if a poll tick fires after stop() — happens once on the
+    // interval timer between stop() and the clearInterval taking effect.
     if (!this.ctx) return;
     this.isPolling = true;
     const ctx = this.ctx;
@@ -199,8 +213,7 @@ class PollingManager {
    * state so the UI still shows the error banner.
    */
   private async applyDisconnectedFallback(errorMessage: string): Promise<void> {
-    const ctx = this.ctx;
-    if (!ctx) return;
+    const ctx = this.requireCtx();
     try {
       const queues = queryQueueStats(ctx);
       const currentState = stateManager.getState();
@@ -266,7 +279,7 @@ class PollingManager {
     status: JobListView,
     page: number,
   ): Promise<JobsResult> {
-    return getJobs(this.ctx!, queueName, status, page, undefined, true);
+    return getJobs(this.requireCtx(), queueName, status, page, undefined, true);
   }
 
   /**
@@ -276,7 +289,7 @@ class PollingManager {
    */
   private persistObservedJobs(queueName: string, jobs: JobSummary[]): void {
     try {
-      upsertJobs(this.ctx!, queueName, jobs);
+      upsertJobs(this.requireCtx(), queueName, jobs);
       markPolledWrites(
         queueName,
         jobs.map((j) => j.id),
@@ -309,16 +322,16 @@ class PollingManager {
   private async fetchAllSchedulers(
     queueName: string,
   ): Promise<{ schedulers: JobSchedulerSummary[]; total: number }> {
-    const firstBatch = await getAllJobSchedulers(this.ctx!, queueName);
+    const firstBatch = await getAllJobSchedulers(this.requireCtx(), queueName);
     if (firstBatch.schedulers.length >= firstBatch.total) {
       return firstBatch;
     }
-    return getAllJobSchedulers(this.ctx!, queueName, firstBatch.total);
+    return getAllJobSchedulers(this.requireCtx(), queueName, firstBatch.total);
   }
 
   private persistObservedSchedulers(queueName: string, schedulers: JobSchedulerSummary[]): void {
     try {
-      upsertSchedulers(this.ctx!, queueName, schedulers);
+      upsertSchedulers(this.requireCtx(), queueName, schedulers);
     } catch (error) {
       // Best-effort, same as persistObservedJobs — warn for visibility.
       console.warn(
@@ -364,7 +377,7 @@ class PollingManager {
 
       const jobsResult =
         observedJobsResult ??
-        (await getJobsFromStore(this.ctx!, selectedQueue.name, state.jobsStatus, state.jobsPage));
+        (await getJobsFromStore(this.requireCtx(), selectedQueue.name, state.jobsStatus, state.jobsPage));
 
       stateManager.setState({
         jobs: jobsResult.jobs,
@@ -403,7 +416,7 @@ class PollingManager {
     }
 
     const storeResult = querySchedulers(
-      this.ctx!,
+      this.requireCtx(),
       selectedQueue.name,
       state.schedulersPage,
       SCHEDULER_PAGE_SIZE,

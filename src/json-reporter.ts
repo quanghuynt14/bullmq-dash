@@ -345,8 +345,8 @@ export async function runJsonMode(
   dryRun: boolean = false,
   yes: boolean = false,
 ): Promise<void> {
-  // Keep the singleton populated for any helper that still reads getConfig().
-  // (#22 will remove the singleton and this call with it.)
+  // TODO(#22): drop alongside getConfig. Until then, keep the singleton
+  // populated for any helper that still reads getConfig().
   setConfig(config);
   const ctx = createContext(config);
 

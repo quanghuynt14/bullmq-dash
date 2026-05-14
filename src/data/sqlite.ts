@@ -113,9 +113,11 @@ CREATE TABLE IF NOT EXISTS sync_state (
 /**
  * Open (and migrate) a SQLite handle for bullmq-dash.
  *
- * Pure factory: callers own the returned `Database`. Used directly by
- * `createContext` in `src/context.ts`; the module-level `db` is a
- * compatibility shim consumed by the still-singleton `getSqliteDb()`.
+ * Callers (specifically `createContext` in `src/context.ts`) own the returned
+ * handle. As a transitional side effect, this also assigns the returned
+ * handle to the module-level `db` so the legacy `getSqliteDb()` / `closeSqliteDb()`
+ * shims keep working until #22 deletes them. New code should not rely on that —
+ * read from `ctx.db` instead.
  */
 export function createSqliteDb(config: Config, dbPath?: string): Database {
   const path = dbPath ?? `/tmp/bullmq-dash-${config.redis.host}-${config.redis.port}.db`;
@@ -652,7 +654,7 @@ export function upsertSyncState(
  * Called at the start of each sync cycle, dropped at the end.
  *
  * Uses a TEMP table so it never touches disk, is automatically scoped to the
- * current connection (we use a single shared connection — see getSqliteDb),
+ * current connection (we use a single shared connection — `ctx.db`),
  * and is cleaned up if the process exits unexpectedly. We also drop any
  * leftover `main.sync_staging` from a previous version that created it on
  * disk, so upgrades don't trip over a stale table.

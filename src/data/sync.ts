@@ -30,7 +30,7 @@ export interface SyncResult {
  * Module-level guard: only one sync may run at a time.
  *
  * The shared `sync_staging` TEMP table is per-connection and we use a single
- * shared SQLite connection (see getSqliteDb), so two concurrent syncs would
+ * shared SQLite connection (`ctx.db`), so two concurrent syncs would
  * stomp on each other's staging rows. We fail fast rather than corrupt data.
  *
  * `syncLockAcquiredAt` lets us steal a stuck lock if the holding sync hung
@@ -199,7 +199,7 @@ export async function syncQueue(ctx: Context, queueName: string): Promise<SyncRe
   // is provably not reflected in staging (polling pulls from Redis live;
   // staging is a snapshot taken starting now). Conservatively skip those.
   const syncStart = Date.now();
-  // Snapshot the connection so we can detect a closeSqliteDb() mid-sync and
+  // Snapshot the connection so we can detect a ctx.db swap (or close) mid-sync and
   // abort with a clear error instead of a confusing "no such table" from
   // operating on a fresh connection that never saw CREATE TEMP sync_staging.
   const syncDb: Database = ctx.db;
