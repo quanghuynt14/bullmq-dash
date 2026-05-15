@@ -31,6 +31,15 @@ bun run format:check     # Check formatting
 # Run production
 bun run start            # bun dist/index.js
 
+# Security release / Socket gates
+bun run security:verify-package      # Verify source/entrypoint import and npm tarball policy
+bun run security:verify-source-control # Verify .env/.envrc/.npmrc are ignored and not tracked
+bun run security:verify-lockfile     # Verify Bun lockfile and frozen CI installs
+bun run security:verify-workflows    # Verify pinned actions, Socket CLI, and publish workflow policy
+bun run security:score               # Gate the published package.json version against the accepted-alert set
+bun run security:audit-0.2.7         # Audit the original immutable Socket target (historical)
+bun run security:release             # All of the above in publish order
+
 # Headless / AI agent mode (subcommands output JSON to stdout)
 bullmq-dash queues list --redis-url redis://localhost
 bullmq-dash jobs list email --redis-url redis://localhost
@@ -41,6 +50,12 @@ bullmq-dash --tui --redis-url redis://localhost
 ```
 
 **Tests:** Uses Bun's built-in test runner (`bun test`).
+
+**Socket package score:** `socket package score npm bullmq-dash@<version>
+--markdown` scores the package already published to npm, not the local
+worktree. The CLI can exit `0` while reporting alert rows; use
+`bun run security:score` after publishing to gate the version against the
+accepted-alert allowlist (`scripts/socket-score.ts:ACCEPTED_ALERT_TYPES`).
 
 ## Non-Interactive / Headless Mode (AI Agent Usage)
 
@@ -87,14 +102,14 @@ bullmq-dash jobs list email --redis-url redis://localhost --page-size 50
 
 ### Command Options
 
-| Flag                  | Type    | Applies to                     | Description                                                                                                                                                                                                                                               |
-| --------------------- | ------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--job-state <state>` | string  | `jobs list`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed`                                                                                                                                                                                           |
-| `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000, must be >= 1)                                                                                                                                                                                                       |
-| `--human-friendly`    | boolean | all subcommands                | Human-readable table output (default: JSON)                                                                                                                                                                                                               |
-| `--profile <name>`    | string  | all commands                   | Use a named profile from the config file                                                                                                                                                                                                                  |
-| `--config <path>`     | string  | all commands                   | Path to config file (default: `~/.config/bullmq-dash/config.json`)                                                                                                                                                                                        |
-| `--redis-url <url>`   | string  | all commands                   | Full Redis URL (`redis://[user:pass@]host[:port][/db]`, or `rediss://` for TLS). The single way to specify a Redis connection — discrete `--redis-host` / `--redis-port` / `--redis-password` / `--redis-db` flags were removed in the URL-only redesign. |
+| Flag                  | Type    | Applies to                     | Description                                                                                                                                                                                                                                   |
+| --------------------- | ------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--job-state <state>` | string  | `jobs list`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed`                                                                                                                                                                               |
+| `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000, must be >= 1)                                                                                                                                                                                           |
+| `--human-friendly`    | boolean | all subcommands                | Human-readable table output (default: JSON)                                                                                                                                                                                                   |
+| `--profile <name>`    | string  | all commands                   | Use a named profile from the config file                                                                                                                                                                                                      |
+| `--config <path>`     | string  | all commands                   | Path to config file (default: `~/.config/bullmq-dash/config.json`)                                                                                                                                                                            |
+| `--redis-url <url>`   | string  | all commands                   | Full Redis URL (`redis://host[:port][/db]`, or `rediss://` for TLS). The single way to specify a Redis connection — discrete `--redis-host` / `--redis-port` / `--redis-password` / `--redis-db` flags were removed in the URL-only redesign. |
 
 ### Connection Profiles
 
@@ -335,7 +350,7 @@ bullmq-dash schedulers list email --redis-url redis://localhost | jq '.scheduler
 src/
 ├── index.ts          # Entry point - minimal bootstrap
 ├── app.ts            # Main App class with lifecycle
-├── config.ts         # Zod-validated config from CLI args
+├── config.ts         # CLI args, command parsing, and manual config validation
 ├── errors.ts         # Structured JSON error output to stderr
 ├── formatters.ts     # Human-friendly table/text formatters
 ├── json-reporter.ts  # Headless subcommand data fetching + output
@@ -371,7 +386,7 @@ import type { QueueStats } from "../data/queues.js";
 
 ```typescript
 import { Queue } from "bullmq";
-import { z } from "zod";
+import { RedisConnection } from "bullmq";
 ```
 
 3. **Use `type` keyword for type-only imports:**
@@ -403,7 +418,7 @@ import { createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/cor
 - **Strict mode enabled** - no implicit any, strict null checks
 - **Target:** ES2023
 - **Module:** ESNext with bundler resolution
-- Use `z.infer<typeof schema>` for Zod-derived types
+- Keep runtime config/profile validation explicit and dependency-free
 - Prefer union types over enums: `type FocusedPane = 'queues' | 'jobs'`
 - Use nullish coalescing: `queues[index] ?? null`
 
@@ -424,14 +439,20 @@ try {
 }
 ```
 
-2. **Zod validation with safeParse:**
+2. **Config validation with structured errors:**
 
 ```typescript
-const result = configSchema.safeParse(raw);
-if (!result.success) {
-  console.error("Configuration error:", result.error.flatten());
-  process.exit(1);
+const result = validateConfig(raw);
+if (result.success) {
+  return result.data;
 }
+
+writeError({
+  error: "Configuration error",
+  code: "CONFIG_ERROR",
+  details: result.errors.join("; "),
+});
+process.exit(1);
 ```
 
 3. **Empty catch for non-critical UI operations:**
@@ -530,9 +551,7 @@ Uses Catppuccin Mocha palette. Key colors:
 | --------------- | --------------------- |
 | `@opentui/core` | Terminal UI framework |
 | `bullmq`        | Queue library         |
-| `ioredis`       | Redis client          |
-| `zod`           | Schema validation     |
-| `tsup`          | Build tool            |
+| Bun bundler     | Build tool            |
 
 ## Design System
 
