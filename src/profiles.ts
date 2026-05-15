@@ -1,42 +1,109 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
 import { writeError } from "./errors.js";
 
-// ── Schema ──────────────────────────────────────────────────────────────
+// ── Profile shape ───────────────────────────────────────────────────────
 //
 // Profiles only carry a Redis URL — discrete host/port/etc. fields were removed
 // in the URL-only redesign so there's exactly one way to describe a connection.
-const profileSchema = z
-  .object({
-    redis: z
-      .object({
-        url: z.string(),
-      })
-      .strict()
-      .optional(),
-    pollInterval: z.coerce.number().int().positive().optional(),
-    prefix: z.string().optional(),
-    queues: z.array(z.string()).optional(),
-    /**
-     * Soft-delete retention window in milliseconds. Jobs reconciliation
-     * stamped as removed are physically purged once this window elapses.
-     * Falls back to the application default (7 days) when omitted.
-     */
-    retentionMs: z.coerce.number().int().positive().optional(),
-  })
-  .strict();
+export interface Profile {
+  redis?: { url: string };
+  pollInterval?: number;
+  prefix?: string;
+  queues?: string[];
+  /**
+   * Soft-delete retention window in milliseconds. Jobs reconciliation stamped
+   * as removed are physically purged once this window elapses. Falls back to
+   * the application default (7 days) when omitted.
+   */
+  retentionMs?: number;
+}
 
-const profilesFileSchema = z
-  .object({
-    defaultProfile: z.string().optional(),
-    profiles: z.record(z.string(), profileSchema).default({}),
-  })
-  .strict();
+export interface ProfilesFile {
+  defaultProfile?: string;
+  profiles: Record<string, Profile>;
+}
 
-export type Profile = z.infer<typeof profileSchema>;
-export type ProfilesFile = z.infer<typeof profilesFileSchema>;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function coerceOptionalPositiveInt(value: unknown): number | undefined | null {
+  if (value === undefined) return undefined;
+  const numberValue = Number(value);
+  if (!Number.isInteger(numberValue) || numberValue <= 0) return null;
+  return numberValue;
+}
+
+function validateProfile(value: unknown, path: string): Profile | string {
+  if (!isRecord(value)) return `${path} must be an object`;
+
+  const allowed = new Set(["redis", "pollInterval", "prefix", "queues", "retentionMs"]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) return `${path}.${key} is not supported`;
+  }
+
+  const profile: Profile = {};
+
+  if (value.redis !== undefined) {
+    if (!isRecord(value.redis)) return `${path}.redis must be an object`;
+    const redisKeys = Object.keys(value.redis);
+    const unknownRedisKey = redisKeys.find((key) => key !== "url");
+    if (unknownRedisKey) return `${path}.redis.${unknownRedisKey} is not supported`;
+    if (typeof value.redis.url !== "string") return `${path}.redis.url must be a string`;
+    profile.redis = { url: value.redis.url };
+  }
+
+  const pollInterval = coerceOptionalPositiveInt(value.pollInterval);
+  if (pollInterval === null) return `${path}.pollInterval must be a positive integer`;
+  if (pollInterval !== undefined) profile.pollInterval = pollInterval;
+
+  if (value.prefix !== undefined) {
+    if (typeof value.prefix !== "string") return `${path}.prefix must be a string`;
+    profile.prefix = value.prefix;
+  }
+
+  if (value.queues !== undefined) {
+    if (!Array.isArray(value.queues) || value.queues.some((queue) => typeof queue !== "string")) {
+      return `${path}.queues must be an array of strings`;
+    }
+    profile.queues = value.queues;
+  }
+
+  const retentionMs = coerceOptionalPositiveInt(value.retentionMs);
+  if (retentionMs === null) return `${path}.retentionMs must be a positive integer`;
+  if (retentionMs !== undefined) profile.retentionMs = retentionMs;
+
+  return profile;
+}
+
+function validateProfilesFile(value: unknown): ProfilesFile | string {
+  if (!isRecord(value)) return "config file must be an object";
+
+  const allowed = new Set(["defaultProfile", "profiles"]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) return `${key} is not supported`;
+  }
+
+  const file: ProfilesFile = { profiles: {} };
+
+  if (value.defaultProfile !== undefined) {
+    if (typeof value.defaultProfile !== "string") return "defaultProfile must be a string";
+    file.defaultProfile = value.defaultProfile;
+  }
+
+  if (value.profiles === undefined) return file;
+  if (!isRecord(value.profiles)) return "profiles must be an object";
+
+  for (const [name, profileValue] of Object.entries(value.profiles)) {
+    const profile = validateProfile(profileValue, `profiles.${name}`);
+    if (typeof profile === "string") return profile;
+    file.profiles[name] = profile;
+  }
+
+  return file;
+}
 
 // ── Path resolution ─────────────────────────────────────────────────────
 
@@ -159,17 +226,13 @@ export function loadProfile(opts: LoadProfileOptions = {}): ResolvedProfile | nu
     process.exit(2);
   }
 
-  const parsed = profilesFileSchema.safeParse(raw);
-  if (!parsed.success) {
-    writeError(
-      `Invalid config file: ${path}`,
-      "CONFIG_ERROR",
-      JSON.stringify(parsed.error.flatten()),
-    );
+  const parsed = validateProfilesFile(raw);
+  if (typeof parsed === "string") {
+    writeError(`Invalid config file: ${path}`, "CONFIG_ERROR", parsed);
     process.exit(2);
   }
 
-  const file = parsed.data;
+  const file = parsed;
   const name = opts.profileName ?? file.defaultProfile;
 
   if (!name) return null;
