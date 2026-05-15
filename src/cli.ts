@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
 import { parseArgs } from "util";
 import { writeError } from "./errors.js";
 import { parseDuration, MAX_RETRY_PAGE_SIZE } from "./data/duration.js";
 import { parseRedisUrl, type ResolvedProfile } from "./profiles.js";
+import packageJson from "../package.json" with { type: "json" };
 
 // ── Subcommand types ────────────────────────────────────────────────────
 
@@ -39,7 +39,9 @@ export interface CliArgs {
   configPath?: string;
 }
 
-let packageVersion: string | null = null;
+declare const BUILD_PACKAGE_VERSION: string | undefined;
+const PACKAGE_VERSION =
+  typeof BUILD_PACKAGE_VERSION === "string" ? BUILD_PACKAGE_VERSION : packageJson.version;
 
 const HELP_TEXT = `
 bullmq-dash - Terminal UI dashboard for BullMQ queue monitoring
@@ -726,25 +728,7 @@ export function showVersion(): void {
 }
 
 export function getVersionText(): string {
-  return `bullmq-dash v${getPackageVersion()}`;
-}
-
-function getPackageVersion(): string {
-  if (packageVersion) {
-    return packageVersion;
-  }
-
-  const packageJsonUrl = new URL("../package.json", import.meta.url);
-  const packageJson = JSON.parse(readFileSync(packageJsonUrl, "utf-8")) as {
-    version?: unknown;
-  };
-
-  if (typeof packageJson.version !== "string" || packageJson.version.trim() === "") {
-    throw new Error("Invalid package.json version");
-  }
-
-  packageVersion = packageJson.version;
-  return packageVersion;
+  return `bullmq-dash v${PACKAGE_VERSION}`;
 }
 
 export function parseQueueNames(value: string | undefined): string[] | undefined {
