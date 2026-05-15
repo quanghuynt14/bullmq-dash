@@ -146,7 +146,9 @@ describe("renderScoreGateSummary", () => {
     expect(rendered.stderr).toContain(
       "Socket reports unexpected alert types: criticalCVE. Review whether they're inherent to a new dependency (and should join the accepted list) or signal a real regression.",
     );
-    expect(rendered.stderr).toContain("npm/bullmq-dash@0.3.0 failed the Socket package score gate.");
+    expect(rendered.stderr).toContain(
+      "npm/bullmq-dash@0.3.0 failed the Socket package score gate.",
+    );
   });
 
   it("exits zero when only accepted alert types are present", () => {

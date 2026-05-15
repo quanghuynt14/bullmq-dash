@@ -74,7 +74,9 @@ export function buildScoreGateSummary(packageSpec: string, score: SocketScore): 
   const socketPurl = typeof score.data?.purl === "string" ? score.data.purl : "unknown";
   const socketOk = score.ok === true;
 
-  const alertTypes = [...new Set(alerts.map((alert) => String(alert.name ?? "unknown")))].toSorted();
+  const alertTypes = [
+    ...new Set(alerts.map((alert) => String(alert.name ?? "unknown"))),
+  ].toSorted();
   const acceptedAlertTypes = alertTypes.filter((name) => ACCEPTED_ALERT_TYPES.has(name));
   const unexpectedAlertTypes = alertTypes.filter((name) => !ACCEPTED_ALERT_TYPES.has(name));
   const unexpectedAlerts = alerts
