@@ -1,11 +1,29 @@
 import { describe, expect, it } from "bun:test";
 import {
+  ACCEPTED_ALERT_TYPES,
   buildScoreGateSummary,
   getPackageSpec,
   isUnavailablePackageScoreError,
   renderScoreGateSummary,
 } from "./socket-score.js";
 import type { SocketScore } from "./audit-socket-target.js";
+
+// Pins the allowlist so a future PR can't silently broaden it. If you're
+// adding a new entry, update this list and document the justification in
+// socket-score.ts beside the corresponding set.
+describe("ACCEPTED_ALERT_TYPES", () => {
+  it("matches the documented inherent-capability set exactly", () => {
+    expect([...ACCEPTED_ALERT_TYPES].toSorted()).toEqual([
+      "envVars",
+      "filesystemAccess",
+      "hasNativeCode",
+      "minifiedFile",
+      "networkAccess",
+      "recentlyPublished",
+      "urlStrings",
+    ]);
+  });
+});
 
 describe("getPackageSpec", () => {
   it("returns name@version from a valid package manifest", () => {
@@ -39,7 +57,7 @@ describe("buildScoreGateSummary", () => {
           ],
         },
         transitively: {
-          alerts: [{ severity: "high", name: "obfuscatedFile", example: "npm/ioredis@5.10.1" }],
+          alerts: [{ severity: "middle", name: "hasNativeCode", example: "npm/bullmq@5.76.8" }],
         },
       },
     };
@@ -50,12 +68,34 @@ describe("buildScoreGateSummary", () => {
     expect(summary.alertCount).toBe(4);
     expect(summary.acceptedAlertTypes).toEqual([
       "filesystemAccess",
+      "hasNativeCode",
       "networkAccess",
-      "obfuscatedFile",
       "recentlyPublished",
     ]);
     expect(summary.unexpectedAlertTypes).toEqual([]);
     expect(summary.unexpectedAlerts).toEqual([]);
+  });
+
+  it("fails when a risk-signal alert (e.g. obfuscatedFile) appears", () => {
+    const score: SocketScore = {
+      ok: true,
+      data: {
+        purl: "pkg:npm/bullmq-dash@0.3.0",
+        self: {
+          alerts: [{ severity: "middle", name: "networkAccess", example: "npm/bullmq-dash@0.3.0" }],
+        },
+        transitively: {
+          alerts: [{ severity: "high", name: "obfuscatedFile", example: "npm/somepkg@1.0.0" }],
+        },
+      },
+    };
+
+    const summary = buildScoreGateSummary("bullmq-dash@0.3.0", score);
+
+    expect(summary.clean).toBe(false);
+    expect(summary.acceptedAlertTypes).toEqual(["networkAccess"]);
+    expect(summary.unexpectedAlertTypes).toEqual(["obfuscatedFile"]);
+    expect(summary.unexpectedAlerts).toEqual(["high obfuscatedFile (npm/somepkg@1.0.0)"]);
   });
 
   it("fails when an unrecognized alert type appears (real regression vs the accepted set)", () => {
@@ -78,6 +118,29 @@ describe("buildScoreGateSummary", () => {
     expect(summary.acceptedAlertTypes).toEqual(["networkAccess"]);
     expect(summary.unexpectedAlertTypes).toEqual(["criticalCVE"]);
     expect(summary.unexpectedAlerts).toEqual(["high criticalCVE (npm/somepkg@1.0.0)"]);
+  });
+
+  it("passes when recentlyPublished is the only alert (transient 72h window)", () => {
+    // The whole point of the regression-detector framing: a fresh publish
+    // legitimately trips recentlyPublished, and the gate must pass without
+    // intervention. If this test ever breaks, the gate would block every
+    // release for the first 72 hours after publish — not what we want.
+    const summary = buildScoreGateSummary("bullmq-dash@0.3.0", {
+      ok: true,
+      data: {
+        purl: "pkg:npm/bullmq-dash@0.3.0",
+        self: {
+          alerts: [
+            { severity: "low", name: "recentlyPublished", example: "npm/bullmq-dash@0.3.0" },
+          ],
+        },
+        transitively: { alerts: [] },
+      },
+    });
+
+    expect(summary.clean).toBe(true);
+    expect(summary.acceptedAlertTypes).toEqual(["recentlyPublished"]);
+    expect(summary.unexpectedAlertTypes).toEqual([]);
   });
 
   it("passes a clean score with no alerts at all", () => {

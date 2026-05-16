@@ -14,29 +14,43 @@ interface PackageManifest {
 
 const PACKAGE_VERSION_LOOKUP_TIMEOUT_MS = 10_000;
 
-// bullmq-dash is a Redis monitoring tool: it legitimately needs network
-// access, URL strings, filesystem reads, and env var interpolation, and its
-// dependency graph (bullmq, @opentui/core, and their transitives) brings
-// alerts inherent to those libraries. Socket scores will always flag these.
-// The gate's job is to catch *new* alert types, not block on the inherent set.
-// recentlyPublished is transient — Socket clears it after the 72h new-publish
-// window.
-export const ACCEPTED_ALERT_TYPES: ReadonlySet<string> = new Set([
-  "debugAccess",
+// EX_TEMPFAIL — signals "retry me, the answer might change" to the publish
+// workflow's retry loop. Reserved for transient lookup failures (Socket
+// hasn't indexed the version yet, fetch failed, request timed out). Real
+// gate failures (unexpected alert types, wrong purl, !ok) exit 1 so they
+// surface immediately without burning the retry budget.
+export const EXIT_TEMPFAIL = 75;
+
+// Inherent-capability alerts: bullmq-dash is a Redis monitoring tool, so
+// network access, URL strings, filesystem reads, and env var interpolation
+// are part of what it does on purpose. Socket scores will always flag these.
+// hasNativeCode / minifiedFile come from the bullmq + @opentui/core graph
+// and are inherent to those libraries' build shapes. recentlyPublished is
+// transient — Socket clears it after the 72h new-publish window.
+const ACCEPTED_CAPABILITY_ALERTS: ReadonlySet<string> = new Set([
   "envVars",
   "filesystemAccess",
-  "gptAnomaly",
   "hasNativeCode",
   "minifiedFile",
   "networkAccess",
-  "newAuthor",
-  "nonpermissiveLicense",
-  "obfuscatedFile",
   "recentlyPublished",
-  "shellAccess",
-  "unmaintained",
   "urlStrings",
-  "usesEval",
+]);
+
+// Risk-signal alerts: a newly seen `newAuthor`, `unmaintained`,
+// `nonpermissiveLicense`, `gptAnomaly`, `obfuscatedFile`, `usesEval`,
+// `shellAccess`, or `debugAccess` is exactly the kind of supply-chain
+// regression this gate exists to surface. Don't blanket-accept them —
+// when one trips, investigate the offending transitive, document it
+// here with a one-line justification, and add it explicitly if it's
+// genuinely inherent to a new dependency.
+const ACCEPTED_RISK_ALERTS: ReadonlySet<string> = new Set<string>([
+  // (intentionally empty — populate per-incident with citation)
+]);
+
+export const ACCEPTED_ALERT_TYPES: ReadonlySet<string> = new Set<string>([
+  ...ACCEPTED_CAPABILITY_ALERTS,
+  ...ACCEPTED_RISK_ALERTS,
 ]);
 
 export interface ScoreGateSummary {
@@ -213,7 +227,7 @@ async function main(): Promise<void> {
         `Socket could not score npm/${packageSpec}. Package scores are only available after ` +
           "that exact name and version exists in the npm registry, and the score request must complete successfully.",
       );
-      process.exit(1);
+      process.exit(EXIT_TEMPFAIL);
     }
 
     throw error;

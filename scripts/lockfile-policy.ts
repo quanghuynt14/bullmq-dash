@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BUN_PACKAGE_MANAGER } from "./publish-policy.js";
+import { getExecutableCommands, splitShellSegments } from "./workflow-yaml.js";
 
 export interface LockfilePolicyInput {
   packageJson: string;
@@ -23,49 +24,18 @@ const competingLockfiles = [
   "yarn.lock",
 ];
 
-function getExecutableCommandText(line: string): string | null {
-  const trimmed = line.trim();
-  if (trimmed === "" || trimmed.startsWith("#")) {
-    return null;
-  }
-
-  const runMatch = trimmed.match(/^(?:-\s*)?run:\s*(.*)$/);
-  if (runMatch) {
-    const command = (runMatch[1] ?? "").trim();
-    if (/^[|>]/.test(command)) {
-      return null;
-    }
-    return command;
-  }
-
-  if (/^(?:-\s*)?[A-Za-z0-9_-]+:\s*/.test(trimmed)) {
-    return null;
-  }
-
-  return trimmed;
-}
-
-function getExecutableCommands(content: string): Array<{ line: number; command: string }> {
-  const commands: Array<{ line: number; command: string }> = [];
-  for (const [index, line] of content.split("\n").entries()) {
-    const command = getExecutableCommandText(line);
-    if (!command) continue;
-    if (/^echo\b/.test(command)) continue;
-    commands.push({ line: index + 1, command });
-  }
-
-  return commands;
-}
-
 function getBunInstallSegments(command: string): string[] {
-  return command
-    .split(/\s*(?:&&|\|\||[;|])\s*/)
-    .map((segment) => segment.trim())
-    .filter((segment) => /^bun install\b/.test(segment));
+  return splitShellSegments(command).filter((segment) => /^bun install\b/.test(segment));
 }
 
+// Frozen-lockfile only requires the flag to be present anywhere in the
+// `bun install` invocation — `bun install --production --frozen-lockfile`
+// and `bun install --frozen-lockfile --ignore-scripts` both qualify. We
+// match `\b--frozen-lockfile\b` rather than anchoring to a fixed position
+// so flag reordering doesn't silently demote the install to mutable.
 function isFrozenBunInstall(segment: string): boolean {
-  return /^bun install --frozen-lockfile\b/.test(segment);
+  if (!/^bun install\b/.test(segment)) return false;
+  return /\s--frozen-lockfile\b/.test(segment);
 }
 
 function parsePackageJson(packageJson: string): Record<string, unknown> | null {

@@ -158,6 +158,17 @@ async function prepack(): Promise<void> {
 
   writeFileSync(backupPath, `${JSON.stringify(pkg, null, 2)}\n`);
 
+  // If npm (the parent) crashes after this script exits but before postpack
+  // fires, the stripped manifest is left on disk. Catch the common interrupt
+  // signals so Ctrl-C / SIGTERM restores before exiting. The fallback recovery
+  // is `bun scripts/publish-manifest.ts restore`, documented in SECURITY.md.
+  const restoreOnSignal = (signal: NodeJS.Signals) => {
+    restoreManifest();
+    process.exit(128 + (signal === "SIGINT" ? 2 : 15));
+  };
+  process.on("SIGINT", restoreOnSignal);
+  process.on("SIGTERM", restoreOnSignal);
+
   // Keep "files": npm reads it from this temporary manifest to decide what
   // goes into the tarball. Removing it widens the package to repo/docs files.
   delete pkg.devDependencies;

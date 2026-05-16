@@ -117,12 +117,16 @@ describe("assertSourceManifest", () => {
     );
   });
 
-  it("rejects a prepublishOnly verifier that omits the direct runtime score audit", () => {
+  // The gate is strict equality against PREPUBLISH_ONLY_SCRIPT, so any deviation
+  // — reordered verifiers, an extra step, a dropped step, a typo — must throw.
+  // These cases all probe the strict-equality contract rather than asserting
+  // granular ordering the gate doesn't actually have.
+  it("rejects a prepublishOnly verifier that drops one of the expected steps", () => {
     const manifest = validManifest();
     manifest.scripts = {
       ...(manifest.scripts as Record<string, string>),
       prepublishOnly:
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-update-audit && bun run security:runtime-candidate-score-audit && bun run security:verify-package-self-capabilities && bun run security:verify-package",
+        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows",
     };
 
     expect(() => assertSourceManifest(manifest)).toThrow(
@@ -130,12 +134,11 @@ describe("assertSourceManifest", () => {
     );
   });
 
-  it("rejects a prepublishOnly verifier that omits the package-self capability gate", () => {
+  it("rejects a prepublishOnly verifier that adds an extra step", () => {
     const manifest = validManifest();
     manifest.scripts = {
       ...(manifest.scripts as Record<string, string>),
-      prepublishOnly:
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-update-audit && bun run security:runtime-candidate-score-audit && bun run security:runtime-direct-score-audit && bun run security:verify-package",
+      prepublishOnly: `${PREPUBLISH_ONLY_SCRIPT} && bun run security:score`,
     };
 
     expect(() => assertSourceManifest(manifest)).toThrow(
@@ -143,12 +146,12 @@ describe("assertSourceManifest", () => {
     );
   });
 
-  it("rejects a prepublishOnly verifier that omits the runtime update audit", () => {
+  it("rejects a prepublishOnly verifier that reorders the expected steps", () => {
     const manifest = validManifest();
     manifest.scripts = {
       ...(manifest.scripts as Record<string, string>),
       prepublishOnly:
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-candidate-score-audit && bun run security:verify-package-self-capabilities && bun run security:runtime-direct-score-audit && bun run security:verify-package",
+        "bun run security:verify-lockfile && bun run security:verify-source-control && bun run security:verify-workflows && bun run security:verify-package",
     };
 
     expect(() => assertSourceManifest(manifest)).toThrow(
@@ -156,51 +159,11 @@ describe("assertSourceManifest", () => {
     );
   });
 
-  it("rejects a prepublishOnly verifier that runs direct scoring before candidate scoring", () => {
+  it("rejects a missing security:release gate", () => {
     const manifest = validManifest();
     manifest.scripts = {
-      ...(manifest.scripts as Record<string, string>),
-      prepublishOnly:
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-update-audit && bun run security:runtime-direct-score-audit && bun run security:runtime-candidate-score-audit && bun run security:verify-package-self-capabilities && bun run security:verify-package",
-    };
-
-    expect(() => assertSourceManifest(manifest)).toThrow(
-      "Refusing to publish: package.json prepublishOnly security verifier is missing or unexpected.",
-    );
-  });
-
-  it("rejects a prepublishOnly verifier that runs update auditing after candidate scoring", () => {
-    const manifest = validManifest();
-    manifest.scripts = {
-      ...(manifest.scripts as Record<string, string>),
-      prepublishOnly:
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-candidate-score-audit && bun run security:runtime-update-audit && bun run security:verify-package-self-capabilities && bun run security:runtime-direct-score-audit && bun run security:verify-package",
-    };
-
-    expect(() => assertSourceManifest(manifest)).toThrow(
-      "Refusing to publish: package.json prepublishOnly security verifier is missing or unexpected.",
-    );
-  });
-
-  it("rejects a prepublishOnly verifier that omits the runtime candidate score audit", () => {
-    const manifest = validManifest();
-    manifest.scripts = {
-      ...(manifest.scripts as Record<string, string>),
-      prepublishOnly:
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-update-audit && bun run security:runtime-direct-score-audit && bun run security:verify-package",
-    };
-
-    expect(() => assertSourceManifest(manifest)).toThrow(
-      "Refusing to publish: package.json prepublishOnly security verifier is missing or unexpected.",
-    );
-  });
-
-  it("rejects a release gate that omits the runtime update audit", () => {
-    const manifest = validManifest();
-    manifest.scripts = {
-      ...(manifest.scripts as Record<string, string>),
-      "security:release":
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package-self-capabilities && bun run security:verify-package && bun run security:score",
+      prepack: PREPACK_SCRIPT,
+      prepublishOnly: PREPUBLISH_ONLY_SCRIPT,
     };
 
     expect(() => assertSourceManifest(manifest)).toThrow(
@@ -208,12 +171,12 @@ describe("assertSourceManifest", () => {
     );
   });
 
-  it("rejects a release gate that omits the direct runtime score audit", () => {
+  it("rejects a security:release gate that drops one of the expected steps", () => {
     const manifest = validManifest();
     manifest.scripts = {
       ...(manifest.scripts as Record<string, string>),
       "security:release":
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-update-audit && bun run security:verify-package-self-capabilities && bun run security:verify-package && bun run security:score",
+        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package",
     };
 
     expect(() => assertSourceManifest(manifest)).toThrow(
@@ -221,38 +184,11 @@ describe("assertSourceManifest", () => {
     );
   });
 
-  it("rejects a release gate that omits the package-self capability gate", () => {
+  it("rejects a security:release gate that reorders the expected steps", () => {
     const manifest = validManifest();
     manifest.scripts = {
       ...(manifest.scripts as Record<string, string>),
-      "security:release":
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-update-audit && bun run security:runtime-candidate-score-audit && bun run security:runtime-direct-score-audit && bun run security:verify-package && bun run security:score",
-    };
-
-    expect(() => assertSourceManifest(manifest)).toThrow(
-      "Refusing to publish: package.json security:release gate is missing or unexpected.",
-    );
-  });
-
-  it("rejects a release gate that omits the runtime candidate score audit", () => {
-    const manifest = validManifest();
-    manifest.scripts = {
-      ...(manifest.scripts as Record<string, string>),
-      "security:release":
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-update-audit && bun run security:verify-package-self-capabilities && bun run security:runtime-direct-score-audit && bun run security:verify-package && bun run security:score",
-    };
-
-    expect(() => assertSourceManifest(manifest)).toThrow(
-      "Refusing to publish: package.json security:release gate is missing or unexpected.",
-    );
-  });
-
-  it("rejects a release gate that runs direct scoring before candidate scoring", () => {
-    const manifest = validManifest();
-    manifest.scripts = {
-      ...(manifest.scripts as Record<string, string>),
-      "security:release":
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:runtime-update-audit && bun run security:runtime-direct-score-audit && bun run security:runtime-candidate-score-audit && bun run security:verify-package-self-capabilities && bun run security:verify-package && bun run security:score",
+      "security:release": `bun run security:score && ${PREPUBLISH_ONLY_SCRIPT}`,
     };
 
     expect(() => assertSourceManifest(manifest)).toThrow(

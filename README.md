@@ -253,7 +253,8 @@ checks the source manifest, rejects direct source or packed-entrypoint imports
 of `ioredis` or `zod`, rejects dynamic-code or shell primitives in source or
 `dist/index.js`, rejects credentialed Redis URL examples in packed text,
 enforces packed-tarball size and entry-count limits, and verifies the stripped
-publish manifest.
+publish manifest. Note: `ioredis` remains a transitive dependency through
+`bullmq`; the policy blocks _direct_ imports only.
 
 `bun run security:score` runs the Socket package score against the version in
 `package.json` (must already be published to npm). It compares the alert set

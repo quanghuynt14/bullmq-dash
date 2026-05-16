@@ -47,6 +47,69 @@ describe("getWorkflowPolicyViolations", () => {
     ).toEqual([]);
   });
 
+  it("rejects when the publish workflow is missing entirely", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+      }),
+    ).toEqual([
+      {
+        path: ".github/workflows/publish.yml",
+        line: 1,
+        message: "publish workflow must exist (.github/workflows/publish.yml)",
+      },
+    ]);
+  });
+
+  it("accepts npm publish with swapped --provenance / --access public order", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": validPublish.replace(
+          "npm publish --provenance --access public",
+          "npm publish --access public --provenance",
+        ),
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects publish workflows where bun install runs without --ignore-scripts", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": `${validPublish}      - run: bun install --frozen-lockfile\n`,
+      }),
+    ).toEqual([
+      {
+        path: ".github/workflows/publish.yml",
+        line: 19,
+        message:
+          "publish workflow must run bun install with --ignore-scripts to block transitive postinstall scripts",
+      },
+    ]);
+  });
+
+  it("accepts publish workflows where bun install includes --ignore-scripts", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": `${validPublish}      - run: bun install --frozen-lockfile --ignore-scripts\n`,
+      }),
+    ).toEqual([]);
+  });
+
+  it("allows bun install --ignore-scripts even though the flag is banned on npm", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": validPublish.replace(
+          "      - run: npm publish --provenance --access public",
+          "      - run: bun install --frozen-lockfile --ignore-scripts\n      - run: npm publish --provenance --access public",
+        ),
+      }),
+    ).toEqual([]);
+  });
+
   it("extracts the publish-pinned Socket CLI version", () => {
     expect(getPinnedSocketCliVersion(validPublish)).toBe("1.1.94");
   });
@@ -65,6 +128,7 @@ jobs:
       - run: bun run security:verify-source-control
       - run: bun run security:verify-workflows
 `,
+        ".github/workflows/publish.yml": validPublish,
       }),
     ).toEqual([
       {
@@ -89,11 +153,85 @@ steps:
   - run: bun run security:verify-source-control
   - run: bun run security:verify-workflows
 `,
+        ".github/workflows/publish.yml": validPublish,
       }),
     ).toEqual([
       {
         path: ".github/workflows/ci.yml",
         line: 2,
+        message: "pull_request_target is not allowed in release or CI workflows",
+      },
+    ]);
+  });
+
+  it("rejects pull_request_target inline-array triggers", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": `on:
+  pull_request_target: [opened, synchronize]
+permissions:
+  contents: read
+jobs: {}
+steps:
+  - run: bun run security:verify-lockfile
+  - run: bun run security:verify-package
+  - run: bun run security:verify-source-control
+  - run: bun run security:verify-workflows
+`,
+        ".github/workflows/publish.yml": validPublish,
+      }),
+    ).toEqual([
+      {
+        path: ".github/workflows/ci.yml",
+        line: 2,
+        message: "pull_request_target is not allowed in release or CI workflows",
+      },
+    ]);
+  });
+
+  it("rejects pull_request_target as a scalar trigger on the on: line", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": `on: pull_request_target
+permissions:
+  contents: read
+jobs: {}
+steps:
+  - run: bun run security:verify-lockfile
+  - run: bun run security:verify-package
+  - run: bun run security:verify-source-control
+  - run: bun run security:verify-workflows
+`,
+        ".github/workflows/publish.yml": validPublish,
+      }),
+    ).toEqual([
+      {
+        path: ".github/workflows/ci.yml",
+        line: 1,
+        message: "pull_request_target is not allowed in release or CI workflows",
+      },
+    ]);
+  });
+
+  it("rejects pull_request_target inside an inline trigger array on the on: line", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": `on: [push, pull_request_target]
+permissions:
+  contents: read
+jobs: {}
+steps:
+  - run: bun run security:verify-lockfile
+  - run: bun run security:verify-package
+  - run: bun run security:verify-source-control
+  - run: bun run security:verify-workflows
+`,
+        ".github/workflows/publish.yml": validPublish,
+      }),
+    ).toEqual([
+      {
+        path: ".github/workflows/ci.yml",
+        line: 1,
         message: "pull_request_target is not allowed in release or CI workflows",
       },
     ]);
@@ -113,6 +251,57 @@ jobs:
       - run: bun run security:verify-source-control
       - run: bun run security:verify-workflows
 `,
+        ".github/workflows/publish.yml": validPublish,
+      }),
+    ).toEqual([
+      {
+        path: ".github/workflows/ci.yml",
+        line: 6,
+        message: "github.event context must not be interpolated into workflow commands",
+      },
+    ]);
+  });
+
+  it("rejects github.event interpolation with no inner whitespace", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": `permissions:
+  contents: read
+jobs:
+  test:
+    steps:
+      - run: echo "\${{github.event.issue.title}}"
+      - run: bun run security:verify-lockfile
+      - run: bun run security:verify-package
+      - run: bun run security:verify-source-control
+      - run: bun run security:verify-workflows
+`,
+        ".github/workflows/publish.yml": validPublish,
+      }),
+    ).toEqual([
+      {
+        path: ".github/workflows/ci.yml",
+        line: 6,
+        message: "github.event context must not be interpolated into workflow commands",
+      },
+    ]);
+  });
+
+  it("rejects uppercase GITHUB.EVENT interpolation", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": `permissions:
+  contents: read
+jobs:
+  test:
+    steps:
+      - run: echo "\${{ GITHUB.EVENT.issue.title }}"
+      - run: bun run security:verify-lockfile
+      - run: bun run security:verify-package
+      - run: bun run security:verify-source-control
+      - run: bun run security:verify-workflows
+`,
+        ".github/workflows/publish.yml": validPublish,
       }),
     ).toEqual([
       {
@@ -319,11 +508,6 @@ jobs:
         path: ".github/workflows/publish.yml",
         line: 16,
         message: "publish workflow must not disable npm lifecycle scripts",
-      },
-      {
-        path: ".github/workflows/publish.yml",
-        line: 16,
-        message: "publish workflow must publish with npm provenance enabled",
       },
     ]);
   });

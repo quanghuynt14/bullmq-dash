@@ -1,11 +1,5 @@
-import { RedisConnection } from "bullmq";
+import { RedisConnection, type RedisClient } from "bullmq";
 import { getConfig } from "../config.js";
-
-interface RedisClient {
-  scan(cursor: string | number, ...args: Array<string | number>): Promise<[string, string[]]>;
-  del(...keys: string[]): Promise<number>;
-  ping(): Promise<string>;
-}
 
 let redisConnection: RedisConnection | null = null;
 let redisClientPromise: Promise<RedisClient> | null = null;
@@ -28,7 +22,15 @@ export async function getRedisClient(): Promise<RedisClient> {
         return Math.min(times * 200, 2000);
       },
     });
-    redisClientPromise = redisConnection.client as unknown as Promise<RedisClient>;
+    // Clear the cache on rejection so a transient bootstrap failure
+    // (bad URL, version-check error, etc.) doesn't pin the cached
+    // promise to the rejected state for the rest of the process — the
+    // next getRedisClient() call will retry from a clean slate.
+    redisClientPromise = redisConnection.client.catch((err) => {
+      redisClientPromise = null;
+      redisConnection = null;
+      throw err;
+    });
   }
   return redisClientPromise;
 }

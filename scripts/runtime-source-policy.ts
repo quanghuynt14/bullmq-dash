@@ -2,14 +2,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { REMOVED_DIRECT_DEPENDENCIES } from "./publish-policy.js";
 
-export interface RuntimeCapabilityEvidence {
-  redisNetwork: boolean;
-  profileEnvironment: boolean;
-  profileFileRead: boolean;
-  redisUrlParsing: boolean;
-}
-
-const forbiddenRuntimePrimitivePatterns: Array<{ label: string; pattern: RegExp }> = [
+// Shared with packed-entrypoint-policy.ts so adding e.g. `WebAssembly.compile`
+// or `node:worker_threads` here automatically tightens both gates.
+export const FORBIDDEN_RUNTIME_PRIMITIVES: Array<{ label: string; pattern: RegExp }> = [
   { label: "eval", pattern: /\beval\s*\(/ },
   { label: "Function constructor", pattern: /\b(?:new\s+)?Function\s*\(/ },
   { label: "vm import", pattern: /["'](?:node:)?vm["']/ },
@@ -29,8 +24,12 @@ function getTypeScriptFiles(directory: string): string[] {
 
 export function containsRemovedDependencyReference(source: string): boolean {
   const removedDependencyPattern = REMOVED_DIRECT_DEPENDENCIES.join("|");
+  // Accept any of the three string-literal quotes — including backticks, so
+  // `import(\`ioredis\`)` and `require(\`zod\`)` don't slip past the gate.
+  const quote = `["'\\\`]`;
+  const nonQuote = `[^"'\\\`]`;
   const forbiddenReference = new RegExp(
-    `from\\s+["'](${removedDependencyPattern})(?:/[^"']*)?["']|import\\s+["'](${removedDependencyPattern})(?:/[^"']*)?["']|import\\(["'](${removedDependencyPattern})(?:/[^"']*)?["']\\)|require\\(["'](${removedDependencyPattern})(?:/[^"']*)?["']\\)`,
+    `from\\s+${quote}(${removedDependencyPattern})(?:/${nonQuote}*)?${quote}|import\\s+${quote}(${removedDependencyPattern})(?:/${nonQuote}*)?${quote}|import\\(${quote}(${removedDependencyPattern})(?:/${nonQuote}*)?${quote}\\)|require\\(${quote}(${removedDependencyPattern})(?:/${nonQuote}*)?${quote}\\)`,
   );
 
   return forbiddenReference.test(source);
@@ -55,53 +54,10 @@ export function getRuntimeSourcePolicyViolations(directory: string = "src"): str
 export function getRuntimePrimitivePolicyViolations(directory: string = "src"): string[] {
   return getTypeScriptFiles(directory).flatMap((path) => {
     const source = readFileSync(path, "utf8");
-    return forbiddenRuntimePrimitivePatterns
-      .filter(({ pattern }) => pattern.test(source))
-      .map(({ label }) => `${relative(process.cwd(), path)}: ${label}`);
-  });
-}
-
-export function getRuntimeCapabilityEvidence(
-  files: Record<string, string> = {
-    "src/index.ts": readFileSync("src/index.ts", "utf8"),
-  },
-): RuntimeCapabilityEvidence {
-  const source = Object.values(files).join("\n");
-
-  return {
-    redisNetwork: /\bnew\s+RedisConnection\s*\(/.test(source) || /\bnew\s+Queue\s*\(/.test(source),
-    profileEnvironment: /\bprocess\.env\b/.test(source),
-    profileFileRead: /\b(?:readFileSync|existsSync)\s*\(/.test(source),
-    redisUrlParsing: /\bnew\s+URL\s*\(/.test(source) || /\bredis(?:s)?:\/\//.test(source),
-  };
-}
-
-export function formatRuntimeCapabilityEvidence(evidence: RuntimeCapabilityEvidence): string {
-  const capabilities = [
-    evidence.redisNetwork ? "Redis network access" : null,
-    evidence.profileEnvironment ? "profile environment interpolation" : null,
-    evidence.profileFileRead ? "profile config file reads" : null,
-    evidence.redisUrlParsing ? "Redis URL parsing" : null,
-  ].filter((capability): capability is string => capability !== null);
-
-  return capabilities.length > 0
-    ? capabilities.join(", ")
-    : "no Redis network/config env/file/URL runtime capabilities";
-}
-
-export function assertRuntimeCapabilityEvidence(evidence = getRuntimeCapabilityEvidence()): void {
-  const present = formatRuntimeCapabilityEvidence(evidence);
-
-  if (
-    evidence.redisNetwork ||
-    evidence.profileEnvironment ||
-    evidence.profileFileRead ||
-    evidence.redisUrlParsing
-  ) {
-    throw new Error(
-      `Runtime capability policy found non-clean base package capabilities: ${present}`,
+    return FORBIDDEN_RUNTIME_PRIMITIVES.filter(({ pattern }) => pattern.test(source)).map(
+      ({ label }) => `${relative(process.cwd(), path)}: ${label}`,
     );
-  }
+  });
 }
 
 export function assertRuntimeSourcePolicy(directory: string = "src"): void {

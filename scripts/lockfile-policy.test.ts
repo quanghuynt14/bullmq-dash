@@ -150,4 +150,20 @@ describe("getLockfilePolicyViolations", () => {
       }),
     ).toEqual([]);
   });
+
+  it("accepts frozen installs with extra flags before --frozen-lockfile", () => {
+    expect(
+      getLockfilePolicyViolations({
+        packageJson: validPackageJson,
+        rootFiles: ["package.json", "bun.lock"],
+        workflowFiles: {
+          ".github/workflows/ci.yml":
+            "steps:\n  - run: bun install --production --frozen-lockfile\n",
+          ".github/workflows/publish.yml":
+            "steps:\n  - run: bun install --frozen-lockfile --ignore-scripts\n",
+        },
+        trackedFiles: ["package.json", "bun.lock"],
+      }),
+    ).toEqual([]);
+  });
 });

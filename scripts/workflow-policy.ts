@@ -1,6 +1,11 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SOCKET_CLI_VERSION } from "./audit-socket-target.js";
+import {
+  getExecutableCommandText,
+  getExecutableCommands,
+  splitShellSegments,
+} from "./workflow-yaml.js";
 
 export interface WorkflowPolicyViolation {
   path: string;
@@ -30,7 +35,14 @@ export function getWorkflowPolicyViolations(
         }
       }
 
-      if (/^\s*(?:-\s*)?pull_request_target\s*:?\s*$/.test(line)) {
+      // Catch `pull_request_target:` (block-key form) and `- pull_request_target`
+      // (block-sequence form). The inline-array form `on: [pull_request_target]`
+      // is caught by the second regex below — it isn't anchored to start-of-line
+      // so it covers `on: pull_request_target` and `on: [push, pull_request_target]`.
+      if (
+        /^\s*(?:-\s*)?pull_request_target\b/.test(line) ||
+        /^\s*on:\s*.*\bpull_request_target\b/.test(line)
+      ) {
         violations.push({
           path,
           line: lineNumber,
@@ -38,7 +50,9 @@ export function getWorkflowPolicyViolations(
         });
       }
 
-      if (line.includes("${{ github.event.")) {
+      // GHA contexts are case-insensitive and tolerate ${{github.event.…}}
+      // (no inner whitespace), so match both forms.
+      if (/\$\{\{\s*github\.event\b/i.test(line)) {
         violations.push({
           path,
           line: lineNumber,
@@ -46,7 +60,7 @@ export function getWorkflowPolicyViolations(
         });
       }
 
-      if (line.includes("${{ secrets.") && !isAllowedSecretEnvLine(path, line)) {
+      if (/\$\{\{\s*secrets\./i.test(line) && !isAllowedSecretEnvLine(path, line)) {
         violations.push({
           path,
           line: lineNumber,
@@ -54,10 +68,17 @@ export function getWorkflowPolicyViolations(
         });
       }
 
+      // `npm_config_ignore_scripts` env-var globally suppresses prepack /
+      // postpack / prepublishOnly during `npm publish`, so it is banned
+      // outright in publish.yml regardless of context (run command or env
+      // block). The matching `--ignore-scripts` *flag* is handled below
+      // with command-level analysis so we can allow it on `bun install`
+      // (where it blocks transitive postinstall) while still rejecting it
+      // on `npm publish` (where it would suppress our own prepack).
       if (
         path === ".github/workflows/publish.yml" &&
         !line.trim().startsWith("#") &&
-        (/\bignore-scripts\b/i.test(line) || /\bnpm_config_ignore_scripts\b/i.test(line))
+        /\bnpm_config_ignore_scripts\b/i.test(line)
       ) {
         violations.push({
           path,
@@ -66,10 +87,59 @@ export function getWorkflowPolicyViolations(
         });
       }
     }
+
+    violations.push(...getCommandLevelIgnoreScriptsViolations(path, content));
   }
 
   violations.push(...getWorkflowReleasePolicyViolations(files));
 
+  return violations;
+}
+
+// Two structural checks (instead of the old blanket `\bignore-scripts\b`
+// regex):
+//
+// 1. `npm publish --ignore-scripts` is banned. The publish workflow's
+//    prepack writes the stripped manifest; suppressing it would publish
+//    the source manifest as-is and break the policy.
+// 2. In publish.yml, every `bun install` invocation must include
+//    `--ignore-scripts`. The publish job carries `id-token: write` and
+//    NPM_TOKEN, so a transitive postinstall would run with the privileges
+//    to mint a provenance attestation. The project's own build runs
+//    explicitly via prepack (`await import("../build.ts")`), so install-
+//    time lifecycle scripts are unnecessary here.
+function getCommandLevelIgnoreScriptsViolations(
+  path: string,
+  content: string,
+): WorkflowPolicyViolation[] {
+  const violations: WorkflowPolicyViolation[] = [];
+  if (path !== ".github/workflows/publish.yml") return violations;
+
+  for (const { line, command } of getExecutableCommands(content)) {
+    for (const segment of splitShellSegments(command)) {
+      // Any `npm` command that touches ignore-scripts in the publish job
+      // suppresses prepack / postpack / prepublishOnly — either inline
+      // (`npm publish --ignore-scripts`), through config (`npm config set
+      // ignore-scripts true`), or by setting an alias. Bun's install flag
+      // is explicitly excluded by the leading-`npm` anchor below.
+      if (/^npm\b/.test(segment) && /\bignore-scripts\b/i.test(segment)) {
+        violations.push({
+          path,
+          line,
+          message: "publish workflow must not disable npm lifecycle scripts",
+        });
+      }
+
+      if (/^bun install\b/.test(segment) && !/\s--ignore-scripts\b/.test(segment)) {
+        violations.push({
+          path,
+          line,
+          message:
+            "publish workflow must run bun install with --ignore-scripts to block transitive postinstall scripts",
+        });
+      }
+    }
+  }
   return violations;
 }
 
@@ -78,9 +148,12 @@ function isAllowedSecretEnvLine(path: string, line: string): boolean {
     return false;
   }
 
+  // Indent only has to be deeper than a top-level key (≥4 spaces); the exact
+  // depth depends on how the publish step is nested. Hardcoding 10 spaces
+  // would silently break the policy on a YAML restructure.
   return (
-    /^\s{10}NODE_AUTH_TOKEN:\s*\$\{\{\s*secrets\.NPM_TOKEN\s*\}\}\s*$/.test(line) ||
-    /^\s{10}SOCKET_CLI_API_TOKEN:\s*\$\{\{\s*secrets\.SOCKET_CLI_API_TOKEN\s*\}\}\s*$/.test(line)
+    /^\s{4,}NODE_AUTH_TOKEN:\s*\$\{\{\s*secrets\.NPM_TOKEN\s*\}\}\s*$/.test(line) ||
+    /^\s{4,}SOCKET_CLI_API_TOKEN:\s*\$\{\{\s*secrets\.SOCKET_CLI_API_TOKEN\s*\}\}\s*$/.test(line)
   );
 }
 
@@ -130,26 +203,20 @@ function hasPackageVerifierStep(content: string): boolean {
   return findExecutableCommandLine(content, /\bbun run security:verify-package\b/) > 0;
 }
 
-function getExecutableCommandText(line: string): string | null {
-  const trimmed = line.trim();
-  if (trimmed === "" || trimmed.startsWith("#")) {
-    return null;
+// `npm publish` with provenance can be written several semantically
+// equivalent ways: `npm publish --provenance --access public`,
+// `npm publish --access public --provenance`, with extra whitespace, or
+// with additional flags. Match structurally on the command shape rather
+// than a fixed arg order so a future reformat doesn't appear to remove
+// provenance.
+function findPublishWithProvenanceLine(content: string): number {
+  for (const { line, command } of getExecutableCommands(content)) {
+    if (!/^npm publish\b/.test(command)) continue;
+    if (!/\s--provenance\b/.test(command)) continue;
+    if (!/\s--access\s+public\b/.test(command)) continue;
+    return line;
   }
-
-  const runMatch = trimmed.match(/^(?:-\s*)?run:\s*(.*)$/);
-  if (runMatch) {
-    const command = (runMatch[1] ?? "").trim();
-    if (/^[|>]/.test(command)) {
-      return null;
-    }
-    return command;
-  }
-
-  if (/^(?:-\s*)?[A-Za-z0-9_-]+:\s*/.test(trimmed)) {
-    return null;
-  }
-
-  return trimmed;
+  return 0;
 }
 
 function findExecutableCommandLine(content: string, pattern: RegExp, afterLine = 0): number {
@@ -261,6 +328,16 @@ function getWorkflowReleasePolicyViolations(
   }
 
   if (!publish) {
+    // Treat a missing publish workflow as a policy violation rather than
+    // silently passing. The publish surface is the most security-sensitive
+    // path in the repo — if it's not on disk, the rest of these checks
+    // cannot run, and a "deleted by accident" publish workflow would not
+    // be caught by any other gate.
+    violations.push({
+      path: publishPath,
+      line: 1,
+      message: "publish workflow must exist (.github/workflows/publish.yml)",
+    });
     return violations;
   }
 
@@ -314,10 +391,7 @@ function getWorkflowReleasePolicyViolations(
     });
   }
 
-  const publishCommandLine = findExecutableCommandLine(
-    publish,
-    /^npm publish --provenance --access public\s*$/,
-  );
+  const publishCommandLine = findPublishWithProvenanceLine(publish);
   const sourceControlVerifierLine = findExecutableCommandLine(
     publish,
     /\bbun run security:verify-source-control\b/,

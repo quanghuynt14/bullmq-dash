@@ -3,11 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  assertRuntimeCapabilityEvidence,
   assertNoRemovedDependencyReferences,
   containsRemovedDependencyReference,
-  formatRuntimeCapabilityEvidence,
-  getRuntimeCapabilityEvidence,
   getRuntimePrimitivePolicyViolations,
   getRuntimeSourcePolicyViolations,
 } from "./runtime-source-policy.js";
@@ -59,6 +56,22 @@ describe("getRuntimeSourcePolicyViolations", () => {
       },
     );
   });
+
+  it("rejects template-literal forms of dynamic import and require", () => {
+    withTempSource(
+      {
+        "dynamic-template.ts": "await import(`zod`);\n",
+        "require-template.ts": "const Redis = require(`ioredis/built/Redis`);\n",
+      },
+      (directory) => {
+        const violations = getRuntimeSourcePolicyViolations(directory);
+
+        expect(violations).toHaveLength(2);
+        expect(violations.some((path) => path.endsWith("dynamic-template.ts"))).toBe(true);
+        expect(violations.some((path) => path.endsWith("require-template.ts"))).toBe(true);
+      },
+    );
+  });
 });
 
 describe("getRuntimePrimitivePolicyViolations", () => {
@@ -96,50 +109,6 @@ describe("getRuntimePrimitivePolicyViolations", () => {
           true,
         );
       },
-    );
-  });
-});
-
-describe("getRuntimeCapabilityEvidence", () => {
-  it("maps expected Socket capability alerts to runtime behavior", () => {
-    const evidence = getRuntimeCapabilityEvidence({
-      "src/index.ts":
-        'const env = process.env;\nconst raw = readFileSync(path, "utf-8");\nconst url = new URL(input);\n',
-      "src/data/redis.ts": 'const redis = new RedisConnection({ host: "localhost" });\n',
-    });
-
-    expect(evidence).toEqual({
-      redisNetwork: true,
-      profileEnvironment: true,
-      profileFileRead: true,
-      redisUrlParsing: true,
-    });
-    expect(formatRuntimeCapabilityEvidence(evidence)).toBe(
-      "Redis network access, profile environment interpolation, profile config file reads, Redis URL parsing",
-    );
-  });
-
-  it("accepts no Redis runtime capabilities for the clean base package", () => {
-    expect(() =>
-      assertRuntimeCapabilityEvidence({
-        redisNetwork: false,
-        profileEnvironment: false,
-        profileFileRead: false,
-        redisUrlParsing: false,
-      }),
-    ).not.toThrow();
-  });
-
-  it("rejects capabilities in the clean base package", () => {
-    expect(() =>
-      assertRuntimeCapabilityEvidence({
-        redisNetwork: true,
-        profileEnvironment: true,
-        profileFileRead: true,
-        redisUrlParsing: true,
-      }),
-    ).toThrow(
-      "Runtime capability policy found non-clean base package capabilities: Redis network access, profile environment interpolation, profile config file reads, Redis URL parsing",
     );
   });
 });

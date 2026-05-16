@@ -36,73 +36,96 @@ function coerceOptionalPositiveInt(value: unknown): number | undefined | null {
   return numberValue;
 }
 
-function validateProfile(value: unknown, path: string): Profile | string {
-  if (!isRecord(value)) return `${path} must be an object`;
+const PROFILE_ALLOWED_KEYS = ["redis", "pollInterval", "prefix", "queues", "retentionMs"] as const;
+const PROFILES_FILE_ALLOWED_KEYS = ["defaultProfile", "profiles"] as const;
 
-  const allowed = new Set(["redis", "pollInterval", "prefix", "queues", "retentionMs"]);
+function unknownKeyMessage(path: string, key: string, allowed: readonly string[]): string {
+  return `unknown key '${key}' in ${path} (allowed: ${allowed.join(", ")})`;
+}
+
+function validateProfile(value: unknown, path: string, errors: string[]): Profile | null {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be an object`);
+    return null;
+  }
+
   for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) return `${path}.${key} is not supported`;
+    if (!(PROFILE_ALLOWED_KEYS as readonly string[]).includes(key)) {
+      errors.push(unknownKeyMessage(path, key, PROFILE_ALLOWED_KEYS));
+    }
   }
 
   const profile: Profile = {};
 
   if (value.redis !== undefined) {
-    if (!isRecord(value.redis)) return `${path}.redis must be an object`;
-    const redisKeys = Object.keys(value.redis);
-    const unknownRedisKey = redisKeys.find((key) => key !== "url");
-    if (unknownRedisKey) return `${path}.redis.${unknownRedisKey} is not supported`;
-    if (typeof value.redis.url !== "string") return `${path}.redis.url must be a string`;
-    profile.redis = { url: value.redis.url };
+    if (!isRecord(value.redis)) {
+      errors.push(`${path}.redis must be an object`);
+    } else {
+      for (const key of Object.keys(value.redis)) {
+        if (key !== "url") errors.push(unknownKeyMessage(`${path}.redis`, key, ["url"]));
+      }
+      if (typeof value.redis.url !== "string") {
+        errors.push(`${path}.redis.url must be a string`);
+      } else {
+        profile.redis = { url: value.redis.url };
+      }
+    }
   }
 
   const pollInterval = coerceOptionalPositiveInt(value.pollInterval);
-  if (pollInterval === null) return `${path}.pollInterval must be a positive integer`;
-  if (pollInterval !== undefined) profile.pollInterval = pollInterval;
+  if (pollInterval === null) errors.push(`${path}.pollInterval must be a positive integer`);
+  else if (pollInterval !== undefined) profile.pollInterval = pollInterval;
 
   if (value.prefix !== undefined) {
-    if (typeof value.prefix !== "string") return `${path}.prefix must be a string`;
-    profile.prefix = value.prefix;
+    if (typeof value.prefix !== "string") errors.push(`${path}.prefix must be a string`);
+    else profile.prefix = value.prefix;
   }
 
   if (value.queues !== undefined) {
     if (!Array.isArray(value.queues) || value.queues.some((queue) => typeof queue !== "string")) {
-      return `${path}.queues must be an array of strings`;
+      errors.push(`${path}.queues must be an array of strings`);
+    } else {
+      profile.queues = value.queues;
     }
-    profile.queues = value.queues;
   }
 
   const retentionMs = coerceOptionalPositiveInt(value.retentionMs);
-  if (retentionMs === null) return `${path}.retentionMs must be a positive integer`;
-  if (retentionMs !== undefined) profile.retentionMs = retentionMs;
+  if (retentionMs === null) errors.push(`${path}.retentionMs must be a positive integer`);
+  else if (retentionMs !== undefined) profile.retentionMs = retentionMs;
 
   return profile;
 }
 
-function validateProfilesFile(value: unknown): ProfilesFile | string {
-  if (!isRecord(value)) return "config file must be an object";
+function validateProfilesFile(value: unknown): ProfilesFile | string[] {
+  const errors: string[] = [];
 
-  const allowed = new Set(["defaultProfile", "profiles"]);
+  if (!isRecord(value)) return ["config file must be an object"];
+
   for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) return `${key} is not supported`;
+    if (!(PROFILES_FILE_ALLOWED_KEYS as readonly string[]).includes(key)) {
+      errors.push(unknownKeyMessage("config file", key, PROFILES_FILE_ALLOWED_KEYS));
+    }
   }
 
   const file: ProfilesFile = { profiles: {} };
 
   if (value.defaultProfile !== undefined) {
-    if (typeof value.defaultProfile !== "string") return "defaultProfile must be a string";
-    file.defaultProfile = value.defaultProfile;
+    if (typeof value.defaultProfile !== "string") errors.push("defaultProfile must be a string");
+    else file.defaultProfile = value.defaultProfile;
   }
 
-  if (value.profiles === undefined) return file;
-  if (!isRecord(value.profiles)) return "profiles must be an object";
-
-  for (const [name, profileValue] of Object.entries(value.profiles)) {
-    const profile = validateProfile(profileValue, `profiles.${name}`);
-    if (typeof profile === "string") return profile;
-    file.profiles[name] = profile;
+  if (value.profiles !== undefined) {
+    if (!isRecord(value.profiles)) {
+      errors.push("profiles must be an object");
+    } else {
+      for (const [name, profileValue] of Object.entries(value.profiles)) {
+        const profile = validateProfile(profileValue, `profiles.${name}`, errors);
+        if (profile) file.profiles[name] = profile;
+      }
+    }
   }
 
-  return file;
+  return errors.length > 0 ? errors : file;
 }
 
 // ── Path resolution ─────────────────────────────────────────────────────
@@ -227,8 +250,8 @@ export function loadProfile(opts: LoadProfileOptions = {}): ResolvedProfile | nu
   }
 
   const parsed = validateProfilesFile(raw);
-  if (typeof parsed === "string") {
-    writeError(`Invalid config file: ${path}`, "CONFIG_ERROR", parsed);
+  if (Array.isArray(parsed)) {
+    writeError(`Invalid config file: ${path}`, "CONFIG_ERROR", parsed.join("; "));
     process.exit(2);
   }
 

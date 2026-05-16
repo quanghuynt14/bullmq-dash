@@ -86,3 +86,43 @@ exits nonzero so the artifact's permanent state is not mistaken for "clean."
   the tarball back to the GitHub Actions build that produced it.
 - Bun is pinned via `packageManager`; CI and publish workflows install with
   `--frozen-lockfile`.
+
+## Branch Protection
+
+`.github/CODEOWNERS` routes review of the gate suite (workflows,
+verifier scripts, `package.json`, `bun.lock`, `SECURITY.md`) to the
+maintainer. CODEOWNERS is advisory unless the `master` branch
+protection rule enforces it. The required settings on `master` are:
+
+- Require a pull request before merging.
+- Require review from Code Owners.
+- Dismiss stale pull request approvals when new commits are pushed.
+- Require status checks to pass before merging, and include:
+  - `Typecheck`, `Lint`, `Check formatting`, `Test`
+  - `Verify source-control policy`, `Verify lockfile policy`,
+    `Verify workflow policy`, `Verify package contents`
+- Restrict who can push to matching branches (maintainer only).
+- Restrict who can create matching tags (maintainer only) — the publish
+  workflow triggers on `release: types: [published]`, so an attacker
+  with write access who can create a release from an arbitrary commit
+  can publish that commit to npm.
+
+Without these settings the gate suite is bypassable by a single PR.
+
+## Publish Recovery
+
+`bun scripts/publish-manifest.ts prepack` writes a stripped publish
+manifest and saves the source manifest at `.package.json.prepack-backup`
+(gitignored). `postpack` and `postpublish` restore it; the script's
+SIGINT/SIGTERM handlers restore on Ctrl-C / SIGTERM. If `npm publish`
+crashes between `prepack` and `postpack` (host killed, OOM, an uncatchable
+parent failure), the working tree is left with the stripped manifest in
+place. To recover:
+
+```bash
+bun scripts/publish-manifest.ts restore
+```
+
+That re-asserts the source-manifest policy after restoring, so a
+corrupted backup fails loudly rather than silently overwriting
+`package.json`.
