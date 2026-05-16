@@ -51,6 +51,12 @@ export function getExecutableCommands(content: string): ExecutableCommand[] {
 // `||`, `;`, `|`. Returns trimmed segments with empties dropped. Used to
 // detect chained installs like `bun install --frozen-lockfile && bun install`
 // where the second segment slips past the headline.
+//
+// Limitation: does not honour quoting, so a separator inside a string
+// literal (`echo "a && b"`) is treated as a real separator and would
+// over-segment. No current workflow command trips this; if one is added,
+// either rewrite the command to avoid embedded separators or upgrade
+// this splitter to a quote-aware tokenizer.
 export function splitShellSegments(command: string): string[] {
   return command
     .split(/\s*(?:&&|\|\||[;|])\s*/)

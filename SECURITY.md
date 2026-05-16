@@ -56,15 +56,21 @@ That command runs, in order:
 
 The accepted-alert set is defined in
 [`scripts/socket-score.ts`](scripts/socket-score.ts) as `ACCEPTED_ALERT_TYPES`.
-It currently includes the capabilities a Redis monitoring tool legitimately
-needs (`networkAccess`, `urlStrings`, `filesystemAccess`, `envVars`), Socket's
-transient `recentlyPublished` window, and the transitive alert types present
-in the `bullmq` and `@opentui/core` dependency graphs (`debugAccess`,
-`gptAnomaly`, `hasNativeCode`, `minifiedFile`, `newAuthor`,
+It currently includes only inherent-capability alerts: the capabilities a
+Redis monitoring tool legitimately needs (`networkAccess`, `urlStrings`,
+`filesystemAccess`, `envVars`), Socket's transient `recentlyPublished`
+window, and the build-shape alerts inherent to the published graph
+(`hasNativeCode`, `minifiedFile`).
+
+Risk-signal alert types (`debugAccess`, `gptAnomaly`, `newAuthor`,
 `nonpermissiveLicense`, `obfuscatedFile`, `shellAccess`, `unmaintained`,
-`usesEval`). When a dependency update introduces a new alert type, the gate
-will surface it for review — and either the dependency change is reverted, or
-the new alert type is reviewed and (if acceptable) added to the allowlist.
+`usesEval`) are intentionally not pre-accepted — even when they appear in
+the `bullmq` or `@opentui/core` transitive graph. When one fires, investigate
+the offending transitive, then either revert the dependency change or add
+the alert type to `ACCEPTED_RISK_ALERTS` in `scripts/socket-score.ts` with
+a one-line citation. Expect the gate to fire on first publish, and on any
+dependency update that introduces a new alert type, until each actually-
+observed alert has been triaged this way.
 
 ## Historical Audit
 

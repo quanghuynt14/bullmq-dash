@@ -16,18 +16,19 @@ const requiredGitignoreEntries = [
 
 function isForbiddenTrackedPath(path: string): boolean {
   const parts = path.split("/");
-  const name = path.split("/").at(-1) ?? path;
+  const name = parts.at(-1) ?? path;
 
+  // `parts.includes(X)` already covers both "X is the file at any depth"
+  // and "X is a directory segment", so no separate `name === X` check is
+  // needed for these literal names.
   if (parts.includes("dist")) return true;
   if (parts.includes(".env")) return true;
   if (parts.includes(".envrc")) return true;
   if (parts.includes(".npmrc")) return true;
   if (parts.includes(".package.json.prepack-backup")) return true;
-  if (name === ".npmrc") return true;
-  if (name === ".package.json.prepack-backup") return true;
   if (path.endsWith(".tgz")) return true;
-  if (name === ".env") return true;
-  if (name === ".envrc") return true;
+  // `.env.<anything>` except a few documented suffixes (e.g. `.env.example`)
+  // — the parts-includes check above only matches the exact `.env` name.
   if (name.startsWith(".env.") && !/\.(?:example|sample|template)$/.test(name)) return true;
   return false;
 }

@@ -130,12 +130,13 @@ function assertPackageMetadata(pkg: Record<string, unknown>): void {
     throw new Error("Packed package.json bin.bullmq-dash must be dist/index.js");
   }
 
+  const files = pkg.files;
   if (
-    !Array.isArray(pkg.files) ||
-    pkg.files.length !== PACKAGE_FILES.length ||
-    pkg.files[0] !== PACKAGE_FILES[0]
+    !Array.isArray(files) ||
+    files.length !== PACKAGE_FILES.length ||
+    !PACKAGE_FILES.every((expected, index) => files[index] === expected)
   ) {
-    throw new Error("Packed package.json files must contain only dist");
+    throw new Error(`Packed package.json files must contain only ${PACKAGE_FILES.join(", ")}`);
   }
 
   if (pkg.license !== PACKAGE_LICENSE) {
