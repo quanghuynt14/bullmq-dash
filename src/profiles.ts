@@ -1,42 +1,132 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
 import { writeError } from "./errors.js";
 
-// ── Schema ──────────────────────────────────────────────────────────────
+// ── Profile shape ───────────────────────────────────────────────────────
 //
 // Profiles only carry a Redis URL — discrete host/port/etc. fields were removed
 // in the URL-only redesign so there's exactly one way to describe a connection.
-const profileSchema = z
-  .object({
-    redis: z
-      .object({
-        url: z.string(),
-      })
-      .strict()
-      .optional(),
-    pollInterval: z.coerce.number().int().positive().optional(),
-    prefix: z.string().optional(),
-    queues: z.array(z.string()).optional(),
-    /**
-     * Soft-delete retention window in milliseconds. Jobs reconciliation
-     * stamped as removed are physically purged once this window elapses.
-     * Falls back to the application default (7 days) when omitted.
-     */
-    retentionMs: z.coerce.number().int().positive().optional(),
-  })
-  .strict();
+export interface Profile {
+  redis?: { url: string };
+  pollInterval?: number;
+  prefix?: string;
+  queues?: string[];
+  /**
+   * Soft-delete retention window in milliseconds. Jobs reconciliation stamped
+   * as removed are physically purged once this window elapses. Falls back to
+   * the application default (7 days) when omitted.
+   */
+  retentionMs?: number;
+}
 
-const profilesFileSchema = z
-  .object({
-    defaultProfile: z.string().optional(),
-    profiles: z.record(z.string(), profileSchema).default({}),
-  })
-  .strict();
+export interface ProfilesFile {
+  defaultProfile?: string;
+  profiles: Record<string, Profile>;
+}
 
-export type Profile = z.infer<typeof profileSchema>;
-export type ProfilesFile = z.infer<typeof profilesFileSchema>;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function coerceOptionalPositiveInt(value: unknown): number | undefined | null {
+  if (value === undefined) return undefined;
+  const numberValue = Number(value);
+  if (!Number.isInteger(numberValue) || numberValue <= 0) return null;
+  return numberValue;
+}
+
+const PROFILE_ALLOWED_KEYS = ["redis", "pollInterval", "prefix", "queues", "retentionMs"] as const;
+const PROFILES_FILE_ALLOWED_KEYS = ["defaultProfile", "profiles"] as const;
+
+function unknownKeyMessage(path: string, key: string, allowed: readonly string[]): string {
+  return `unknown key '${key}' in ${path} (allowed: ${allowed.join(", ")})`;
+}
+
+function validateProfile(value: unknown, path: string, errors: string[]): Profile | null {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be an object`);
+    return null;
+  }
+
+  for (const key of Object.keys(value)) {
+    if (!(PROFILE_ALLOWED_KEYS as readonly string[]).includes(key)) {
+      errors.push(unknownKeyMessage(path, key, PROFILE_ALLOWED_KEYS));
+    }
+  }
+
+  const profile: Profile = {};
+
+  if (value.redis !== undefined) {
+    if (!isRecord(value.redis)) {
+      errors.push(`${path}.redis must be an object`);
+    } else {
+      for (const key of Object.keys(value.redis)) {
+        if (key !== "url") errors.push(unknownKeyMessage(`${path}.redis`, key, ["url"]));
+      }
+      if (typeof value.redis.url !== "string") {
+        errors.push(`${path}.redis.url must be a string`);
+      } else {
+        profile.redis = { url: value.redis.url };
+      }
+    }
+  }
+
+  const pollInterval = coerceOptionalPositiveInt(value.pollInterval);
+  if (pollInterval === null) errors.push(`${path}.pollInterval must be a positive integer`);
+  else if (pollInterval !== undefined) profile.pollInterval = pollInterval;
+
+  if (value.prefix !== undefined) {
+    if (typeof value.prefix !== "string") errors.push(`${path}.prefix must be a string`);
+    else profile.prefix = value.prefix;
+  }
+
+  if (value.queues !== undefined) {
+    if (!Array.isArray(value.queues) || value.queues.some((queue) => typeof queue !== "string")) {
+      errors.push(`${path}.queues must be an array of strings`);
+    } else {
+      profile.queues = value.queues;
+    }
+  }
+
+  const retentionMs = coerceOptionalPositiveInt(value.retentionMs);
+  if (retentionMs === null) errors.push(`${path}.retentionMs must be a positive integer`);
+  else if (retentionMs !== undefined) profile.retentionMs = retentionMs;
+
+  return profile;
+}
+
+function validateProfilesFile(value: unknown): ProfilesFile | string[] {
+  const errors: string[] = [];
+
+  if (!isRecord(value)) return ["config file must be an object"];
+
+  for (const key of Object.keys(value)) {
+    if (!(PROFILES_FILE_ALLOWED_KEYS as readonly string[]).includes(key)) {
+      errors.push(unknownKeyMessage("config file", key, PROFILES_FILE_ALLOWED_KEYS));
+    }
+  }
+
+  const file: ProfilesFile = { profiles: {} };
+
+  if (value.defaultProfile !== undefined) {
+    if (typeof value.defaultProfile !== "string") errors.push("defaultProfile must be a string");
+    else file.defaultProfile = value.defaultProfile;
+  }
+
+  if (value.profiles !== undefined) {
+    if (!isRecord(value.profiles)) {
+      errors.push("profiles must be an object");
+    } else {
+      for (const [name, profileValue] of Object.entries(value.profiles)) {
+        const profile = validateProfile(profileValue, `profiles.${name}`, errors);
+        if (profile) file.profiles[name] = profile;
+      }
+    }
+  }
+
+  return errors.length > 0 ? errors : file;
+}
 
 // ── Path resolution ─────────────────────────────────────────────────────
 
@@ -159,17 +249,13 @@ export function loadProfile(opts: LoadProfileOptions = {}): ResolvedProfile | nu
     process.exit(2);
   }
 
-  const parsed = profilesFileSchema.safeParse(raw);
-  if (!parsed.success) {
-    writeError(
-      `Invalid config file: ${path}`,
-      "CONFIG_ERROR",
-      JSON.stringify(parsed.error.flatten()),
-    );
+  const parsed = validateProfilesFile(raw);
+  if (Array.isArray(parsed)) {
+    writeError(`Invalid config file: ${path}`, "CONFIG_ERROR", parsed.join("; "));
     process.exit(2);
   }
 
-  const file = parsed.data;
+  const file = parsed;
   const name = opts.profileName ?? file.defaultProfile;
 
   if (!name) return null;

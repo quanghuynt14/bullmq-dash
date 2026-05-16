@@ -1,0 +1,14 @@
+# Code owners for the supply-chain gate suite.
+#
+# Changes to verifier scripts, CI/release workflows, the published manifest,
+# or the security policy require maintainer review. The gates are self-
+# referential — branch protection plus this file is what stops a "refactor"
+# PR from quietly widening the accepted-alert allowlist or disabling a check.
+
+/.github/workflows/                @quanghuynt14
+/.github/dependabot.yml            @quanghuynt14
+/.github/CODEOWNERS                @quanghuynt14
+/scripts/                          @quanghuynt14
+/package.json                      @quanghuynt14
+/bun.lock                          @quanghuynt14
+/SECURITY.md                       @quanghuynt14

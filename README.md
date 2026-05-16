@@ -15,7 +15,7 @@ Terminal UI dashboard for [BullMQ](https://bullmq.io/)
 
 ## Requirements
 
-- [Bun](https://bun.sh/) >= 1.0.0
+- [Bun](https://bun.sh/) >= 1.3.0
 - Redis server with BullMQ queues
 
 ## Installation
@@ -38,7 +38,7 @@ npx bullmq-dash
 bullmq-dash --tui
 
 # Connect with a URL
-bullmq-dash --tui --redis-url redis://localhost:6379
+bullmq-dash --tui --redis-url <redis-url>
 ```
 
 ### CLI Options
@@ -50,8 +50,8 @@ Options:
   --profile <name>         Use a named profile from the config file
   --config <path>          Path to config file
                            (default: ~/.config/bullmq-dash/config.json)
-  --redis-url <url>        Full connection URL: redis://[user:pass@]host[:port][/db]
-                           (rediss:// for TLS)
+  --redis-url <url>        Full Redis connection URL
+                           (TLS URLs are supported)
   --poll-interval <ms>     Polling interval in milliseconds (default: 3000)
   --queues <names>         Comma-separated queue names to monitor
   -v, --version            Show version
@@ -69,20 +69,20 @@ were retired so there is one obvious way to point bullmq-dash at a server.
 bullmq-dash --tui
 
 # Connect via a URL
-bullmq-dash --tui --redis-url redis://localhost:6379
-bullmq-dash --tui --redis-url redis://user:pass@redis.example.com:6379/0
+bullmq-dash --tui --redis-url <local-redis-url>
+bullmq-dash --tui --redis-url <remote-redis-url>
 
-# Use TLS (rediss://) and percent-encode special chars in passwords
-bullmq-dash --tui --redis-url rediss://default:p%40ss@redis.upstash.io:6379
+# Use TLS
+bullmq-dash --tui --redis-url <tls-redis-url>
 
 # Connect via a named profile from the config file
 bullmq-dash --tui --profile prod
 
 # Monitor specific queues only
-bullmq-dash --tui --redis-url redis://localhost --queues email,notifications,payments
+bullmq-dash --tui --redis-url <redis-url> --queues email,notifications,payments
 
 # Custom polling interval (5 seconds)
-bullmq-dash --tui --redis-url redis://localhost --poll-interval 5000
+bullmq-dash --tui --redis-url <redis-url> --poll-interval 5000
 ```
 
 ## Connection Profiles
@@ -95,7 +95,7 @@ and reference it with `--profile`:
 {
   "defaultProfile": "local",
   "profiles": {
-    "local": { "redis": { "url": "redis://localhost:6379" } },
+    "local": { "redis": { "url": "<local-redis-url>" } },
     "prod": {
       "redis": { "url": "${REDIS_PROD_URL}" },
       "queues": ["payments", "notifications"]
@@ -105,7 +105,7 @@ and reference it with `--profile`:
 }
 ```
 
-Each profile carries a single `redis.url`. The `${VAR}` form interpolates an environment variable as the **whole value** (partial substitution is intentionally not supported), which pairs nicely with managed providers (Upstash, Heroku Redis, Render, Railway, Fly) that hand you a single `REDIS_URL` env var. For inline auth, percent-encode any special characters in the password.
+Each profile carries a single `redis.url`. The `${VAR}` form interpolates an environment variable as the **whole value** (partial substitution is intentionally not supported), which pairs nicely with managed providers (Upstash, Heroku Redis, Render, Railway, Fly) that hand you a single `REDIS_URL` env var. Prefer environment-backed profile values for authenticated Redis URLs.
 
 ```bash
 # Connect using the default profile (defaultProfile field above)
@@ -116,7 +116,7 @@ bullmq-dash --tui --profile prod
 bullmq-dash queues list --profile prod
 
 # A direct --redis-url overrides whatever the profile would have selected
-bullmq-dash queues list --profile prod --redis-url redis://localhost:6380
+bullmq-dash queues list --profile prod --redis-url <redis-url>
 ```
 
 **Resolution order** (highest precedence first):
@@ -221,15 +221,89 @@ bun run build
 
 # Run production build
 bun run start
+
+# Audit the immutable 0.2.7 Socket target (historical evidence)
+bun run security:audit-0.2.7
+
+# Score the configured package version after it is published
+bun run security:score
+
+# Verify forbidden local-only files are ignored and not tracked
+bun run security:verify-source-control
+
+# Verify Bun package manager pinning, bun.lock tracking, and frozen installs
+bun run security:verify-lockfile
+
+# Verify CI/publish workflows pin actions, lock down releases, and score after publish
+bun run security:verify-workflows
+
+# Verify source import policy, npm tarball contents, and stripped publish manifest
+bun run security:verify-package
+
+# Run release security checks in order
+bun run security:release
 ```
+
+`bun run security:audit-0.2.7` audits the originally published security target
+(`bullmq-dash@0.2.7`). Because npm versions are immutable, this is historical
+evidence only — it reports the alerts on that artifact but cannot fix them.
+
+`bun run security:verify-package` packs the release tarball end-to-end. It
+checks the source manifest, rejects direct source or packed-entrypoint imports
+of `ioredis` or `zod`, rejects dynamic-code or shell primitives in source or
+`dist/index.js`, rejects credentialed Redis URL examples in packed text,
+enforces packed-tarball size and entry-count limits, and verifies the stripped
+publish manifest. Note: `ioredis` remains a transitive dependency through
+`bullmq`; the policy blocks _direct_ imports only.
+
+`bun run security:score` runs the Socket package score against the version in
+`package.json` (must already be published to npm). It compares the alert set
+against an accepted-alert allowlist that includes the capabilities a Redis
+monitoring tool legitimately needs (`networkAccess`, `urlStrings`,
+`filesystemAccess`, `envVars`), Socket's transient `recentlyPublished` window,
+and the transitive alert types present in the `bullmq` and `@opentui/core`
+graphs. The gate exits nonzero only when an alert type appears outside that set,
+which surfaces real regressions from dependency updates without paging on every
+publish.
+
+`bun run security:verify-workflows` rejects mutable GitHub Action refs,
+`pull_request_target` triggers, and direct `${{ github.event.* }}` interpolation
+in workflow commands. It also verifies CI and publish workflows run the
+source-control, lockfile, workflow, and package policy verifiers, CI uses
+read-only permissions, and the npm publish workflow scopes secrets to approved
+step env entries, is release-only, runs the source-control, lockfile, workflow,
+and package verifiers before publishing, uses least privilege, keeps npm
+lifecycle scripts enabled, publishes with provenance, installs the Socket CLI by
+the configured exact version `1.1.94`, and runs the post-publish Socket score
+gate.
+
+`bun run security:verify-source-control` rejects tracked `.env` / `.envrc` /
+`.npmrc` files, build output, publish manifest backups, and generated package
+archives, and verifies that the ignore policy covers those local-only files.
+
+`bun run security:verify-lockfile` rejects missing or untracked `bun.lock`,
+competing package manager lockfiles, a mismatched `packageManager` pin, and CI
+or publish workflows that install dependencies without `--frozen-lockfile`.
+
+`bun run security:score` reads the package name and version from `package.json`.
+Socket package scores are registry lookups, so the exact version must already be
+published before this command can score it. The command checks npm registry
+existence first, then exits nonzero if the version is unpublished or if Socket
+reports any package or transitive alerts for that version. If Socket reports
+`recentlyPublished`, the command still fails and tells you to rerun the gate
+after Socket's new-publish window clears. See
+[`docs/security-release.md`](docs/security-release.md) for the release checklist
+and why already-published versions cannot be changed by local fixes. See
+[`docs/adr/0003-socket-clean-release-boundary.md`](docs/adr/0003-socket-clean-release-boundary.md)
+for why the current Redis dashboard architecture must remain blocked until a
+same-package rewrite, package split, or accepted Socket policy proves
+`bullmq-dash@0.3.0` clean.
 
 ## Tech Stack
 
 - **Runtime**: [Bun](https://bun.sh/)
 - **TUI Framework**: [@opentui/core](https://github.com/pinkpixel-co/opentui)
 - **Queue Library**: [BullMQ](https://bullmq.io/)
-- **Redis Client**: [ioredis](https://github.com/redis/ioredis)
-- **Config Validation**: [Zod](https://zod.dev/)
 - **Build Tool**: Bun bundler
 
 ## Color Theme

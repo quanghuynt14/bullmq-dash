@@ -69,7 +69,7 @@ export async function discoverQueueNames(): Promise<string[]> {
     return queueNamesCache.names;
   }
 
-  const redis = getRedisClient();
+  const redis = await getRedisClient();
   const queueNames = new Set<string>();
   const prefix = config.prefix + ":";
 
@@ -199,7 +199,7 @@ export async function deleteQueue(
     await queue.obliterate({ force: true });
 
     const config = getConfig();
-    const redis = getRedisClient();
+    const redis = await getRedisClient();
     const escapedQueueName = queueName.replace(/[[*?]/g, "\\$&");
     const repeatKeyPattern = `${config.prefix}:${escapedQueueName}:*`;
 

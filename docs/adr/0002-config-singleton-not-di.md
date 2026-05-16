@@ -17,7 +17,7 @@ Replace the family of `get*()` singletons with a single `Context` object built a
 ```ts
 type Context = {
   config: Config;
-  redis: Redis;             // ioredis client for discovery + raw ops
+  redis: Redis;             // Redis client for discovery + raw ops
   db: Database;             // bun:sqlite handle
   queueCache: Map<string, Queue>;
 };
