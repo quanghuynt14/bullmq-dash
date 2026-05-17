@@ -100,6 +100,7 @@ async function fetchJobsList(
       })),
     );
     markPolledWrites(
+      ctx,
       queueName,
       jobs.map((j) => j.id),
     );
@@ -378,6 +379,11 @@ export async function runJsonMode(
       "REDIS_ERROR",
       error instanceof Error ? error.message : String(error),
     );
+    try {
+      await cleanup(ctx);
+    } catch {
+      // Ignore cleanup errors — the original error has already been reported
+    }
     process.exit(1);
   }
 

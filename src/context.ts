@@ -8,16 +8,30 @@ import { createSqliteDb } from "./data/sqlite.js";
  *
  * Built once at startup (`createContext(config)`) and passed as the first
  * argument to every function in `src/data/*.ts`. Replaces the family of
- * module-level singletons (`getConfig`, `getRedisClient`, `getSqliteDb`,
- * the queue cache in `queues.ts`) — see ADR-0002.
+ * module-level singletons that used to live in `config.ts`, `data/redis.ts`,
+ * `data/sqlite.ts`, and `data/queues.ts` — see ADR-0002. The whole point of
+ * the bundle is that *every* process-scoped piece of state lives here, so
+ * two contexts in the same process don't share caches, locks, or handles.
  */
 export interface Context {
-  config: Config;
-  redis: ContextRedisClient;
-  db: Database;
-  queueCache: Map<string, Queue>;
+  readonly config: Config;
+  readonly redis: ContextRedisClient;
+  readonly db: Database;
+  readonly queueCache: Map<string, Queue>;
+  /** Cached queue-name discovery (TTL'd in queues.ts). Reassigned, not readonly. */
+  queueNamesCache: { names: string[]; timestamp: number } | null;
+  /** Per-context sync lock — see sync.ts. */
+  readonly syncLock: SyncLockState;
+  /** `${queue}:${id}` → Date.now() of polling's last write. See sync.ts. */
+  readonly recentlyPolledWrites: Map<string, number>;
 }
 
+export interface SyncLockState {
+  inProgress: boolean;
+  acquiredAt: number | null;
+}
+
+/** Minimum Redis surface the data layer needs. */
 export interface ContextRedisClient {
   readonly status: string;
   connect(): Promise<void>;
@@ -31,6 +45,13 @@ interface RedisCommands {
   del(...keys: string[]): Promise<number>;
 }
 
+/**
+ * BullMQ's `RedisClient` is `Redis | Cluster` and hides scan/del on its public
+ * type. Intersect with `RedisCommands` to surface them; `interface extends`
+ * doesn't work here because TS doesn't allow extending a union.
+ */
+type FullRedisClient = RedisClient & RedisCommands;
+
 export interface CreateContextOptions {
   /** Override the default SQLite path (used by tests). */
   dbPath?: string;
@@ -38,9 +59,9 @@ export interface CreateContextOptions {
 
 function createRedisClient(config: Config): ContextRedisClient {
   let connection: RedisConnection | null = null;
-  let clientPromise: Promise<RedisClient> | null = null;
+  let clientPromise: Promise<FullRedisClient> | null = null;
 
-  const getClient = (): Promise<RedisClient> => {
+  const getClient = (): Promise<FullRedisClient> => {
     if (!clientPromise) {
       connection = new RedisConnection(
         {
@@ -63,7 +84,7 @@ function createRedisClient(config: Config): ContextRedisClient {
       connection.on("error", () => {
         // Callers observe connection failures through the returned promises.
       });
-      clientPromise = connection.client.catch((err) => {
+      clientPromise = (connection.client as Promise<FullRedisClient>).catch((err) => {
         clientPromise = null;
         connection = null;
         throw err;
@@ -86,11 +107,11 @@ function createRedisClient(config: Config): ContextRedisClient {
       clientPromise = null;
     },
     async scan(cursor: string, ...args: Array<string | number>): Promise<[string, string[]]> {
-      const client = (await getClient()) as unknown as RedisCommands;
+      const client = await getClient();
       return client.scan(cursor, ...args);
     },
     async del(...keys: string[]): Promise<number> {
-      const client = (await getClient()) as unknown as RedisCommands;
+      const client = await getClient();
       return client.del(...keys);
     },
   };
@@ -105,5 +126,8 @@ export function createContext(config: Config, opts: CreateContextOptions = {}): 
     redis,
     db,
     queueCache: new Map(),
+    queueNamesCache: null,
+    syncLock: { inProgress: false, acquiredAt: null },
+    recentlyPolledWrites: new Map(),
   };
 }

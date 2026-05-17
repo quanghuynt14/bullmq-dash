@@ -66,6 +66,17 @@ export class App {
   private syncIntervalId: ReturnType<typeof setInterval> | null = null;
   private ctx: Context | null = null;
 
+  /**
+   * Single chokepoint for non-null ctx from instance methods. Throws if a key
+   * handler fires after `cleanup()` cleared ctx (possible during shutdown).
+   */
+  private requireCtx(): Context {
+    if (!this.ctx) {
+      throw new Error("App.start() must be called before this operation");
+    }
+    return this.ctx;
+  }
+
   async start(): Promise<void> {
     // Create renderer
     this.renderer = await createCliRenderer({
@@ -323,7 +334,7 @@ export class App {
     if (!selectedJob || !selectedQueue) return;
 
     try {
-      const detail = await getJobDetail(this.ctx!, selectedQueue.name, selectedJob.id);
+      const detail = await getJobDetail(this.requireCtx(), selectedQueue.name, selectedJob.id);
       if (detail) {
         stateManager.openJobDetail(detail);
       }
@@ -340,7 +351,7 @@ export class App {
 
     try {
       const detail = await getJobSchedulerDetail(
-        this.ctx!,
+        this.requireCtx(),
         selectedQueue.name,
         selectedScheduler.key,
       );
@@ -361,7 +372,7 @@ export class App {
 
     try {
       const jobDetail = await getJobDetail(
-        this.ctx!,
+        this.requireCtx(),
         selectedQueue.name,
         schedulerDetail.nextJob.id,
       );
@@ -394,7 +405,7 @@ export class App {
     }
 
     try {
-      await deleteJob(this.ctx!, selectedQueue.name, jobId);
+      await deleteJob(this.requireCtx(), selectedQueue.name, jobId);
       stateManager.hideDeleteConfirm();
       stateManager.closeJobDetail();
       await pollingManager.refresh();
@@ -441,14 +452,15 @@ export class App {
       pageJump,
     } = this.elements;
 
-    // Update header
-    const config = getConfig();
+    // Update header. Read from ctx (when available) so the header reflects
+    // the live connection's config, not the bootstrap singleton.
+    const headerConfig = this.ctx?.config ?? getConfig();
     updateHeaderStatus(
       layout.headerStatus,
       state.connected,
       state.error,
-      config.redis.host,
-      config.redis.port,
+      headerConfig.redis.host,
+      headerConfig.redis.port,
     );
 
     // Update global metrics

@@ -1,10 +1,8 @@
 import { Database } from "bun:sqlite";
-import { getConfig, type Config } from "../config.js";
+import type { Config } from "../config.js";
 import type { Context } from "../context.js";
 import type { QueueStats } from "./queues.js";
 import type { JobSchedulerSummary } from "./schedulers.js";
-
-let db: Database | null = null;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS jobs (
@@ -111,13 +109,9 @@ CREATE TABLE IF NOT EXISTS sync_state (
 `;
 
 /**
- * Open (and migrate) a SQLite handle for bullmq-dash.
- *
- * Callers (specifically `createContext` in `src/context.ts`) own the returned
- * handle. As a transitional side effect, this also assigns the returned
- * handle to the module-level `db` so the legacy `getSqliteDb()` / `closeSqliteDb()`
- * shims keep working until #22 deletes them. New code should not rely on that —
- * read from `ctx.db` instead.
+ * Open (and migrate) a SQLite handle for bullmq-dash. The caller (normally
+ * `createContext` in `src/context.ts`) owns the returned handle and is
+ * responsible for closing it.
  */
 export function createSqliteDb(config: Config, dbPath?: string): Database {
   const path = dbPath ?? `/tmp/bullmq-dash-${config.redis.host}-${config.redis.port}.db`;
@@ -132,22 +126,7 @@ export function createSqliteDb(config: Config, dbPath?: string): Database {
   handle.exec(SCHEDULERS_SCHEMA);
   handle.exec(FTS_SCHEMA);
   handle.exec(SYNC_STATE_SCHEMA);
-  db = handle;
   return handle;
-}
-
-export function getSqliteDb(): Database {
-  if (!db) {
-    return createSqliteDb(getConfig());
-  }
-  return db;
-}
-
-export function closeSqliteDb(): void {
-  if (db) {
-    db.close();
-    db = null;
-  }
 }
 
 export interface JobRow {

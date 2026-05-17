@@ -201,7 +201,7 @@ class PollingManager {
         resetMetricsTracker();
       }
 
-      await this.applyDisconnectedFallback(errorMessage);
+      await this.applyDisconnectedFallback(ctx, errorMessage);
     } finally {
       this.isPolling = false;
     }
@@ -211,9 +211,14 @@ class PollingManager {
    * Serve last-known state from SQLite when the live Redis observation fails.
    * If the SQLite read itself fails, fall back to a minimal connected=false
    * state so the UI still shows the error banner.
+   *
+   * Takes `ctx` as an argument (rather than reading `this.ctx`) so a `stop()`
+   * that fires between `poll()`'s redis observation and the catch handler
+   * can't surface as a confusing requireCtx error inside the disconnect
+   * path. `poll()` captures the ctx reference once at the top, so the
+   * cached connection is still valid here.
    */
-  private async applyDisconnectedFallback(errorMessage: string): Promise<void> {
-    const ctx = this.requireCtx();
+  private async applyDisconnectedFallback(ctx: Context, errorMessage: string): Promise<void> {
     try {
       const queues = queryQueueStats(ctx);
       const currentState = stateManager.getState();
@@ -288,9 +293,11 @@ class PollingManager {
    * here must not break polling — the next cycle will retry.
    */
   private persistObservedJobs(queueName: string, jobs: JobSummary[]): void {
+    const ctx = this.requireCtx();
     try {
-      upsertJobs(this.requireCtx(), queueName, jobs);
+      upsertJobs(ctx, queueName, jobs);
       markPolledWrites(
+        ctx,
         queueName,
         jobs.map((j) => j.id),
       );

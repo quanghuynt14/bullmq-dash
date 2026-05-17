@@ -1,17 +1,6 @@
 import { Queue } from "bullmq";
 import type { Context } from "../context.js";
 
-// Queue names cache with TTL.
-// Module-level rather than per-context: it's a short-lived (5s) observation
-// of a Redis-side fact (the set of queues for this prefix), not derived from
-// context-specific state. Keyed by prefix so two contexts pointed at different
-// prefixes in the same process don't serve each other's cached names.
-let queueNamesCache: {
-  prefix: string;
-  names: string[];
-  timestamp: number;
-} | null = null;
-
 const QUEUE_NAMES_CACHE_TTL = 5000; // 5 seconds
 const SCAN_COUNT = 1000;
 const DEL_BATCH_SIZE = 500;
@@ -63,13 +52,8 @@ export async function discoverQueueNames(ctx: Context): Promise<string[]> {
 
   const now = Date.now();
 
-  // Return cached names if fresh AND for the same prefix.
-  if (
-    queueNamesCache &&
-    queueNamesCache.prefix === ctx.config.prefix &&
-    now - queueNamesCache.timestamp < QUEUE_NAMES_CACHE_TTL
-  ) {
-    return queueNamesCache.names;
+  if (ctx.queueNamesCache && now - ctx.queueNamesCache.timestamp < QUEUE_NAMES_CACHE_TTL) {
+    return ctx.queueNamesCache.names;
   }
 
   const queueNames = new Set<string>();
@@ -103,8 +87,7 @@ export async function discoverQueueNames(ctx: Context): Promise<string[]> {
 
   const sortedNames = Array.from(queueNames).toSorted();
 
-  queueNamesCache = {
-    prefix: ctx.config.prefix,
+  ctx.queueNamesCache = {
     names: sortedNames,
     timestamp: now,
   };
@@ -165,7 +148,7 @@ export async function closeAllQueues(ctx: Context): Promise<void> {
   const closePromises = Array.from(ctx.queueCache.values()).map((queue) => queue.close());
   await Promise.all(closePromises);
   ctx.queueCache.clear();
-  queueNamesCache = null;
+  ctx.queueNamesCache = null;
 }
 
 export interface DeleteQueueResult {
@@ -230,8 +213,8 @@ export async function deleteQueue(
 
     await queue.close();
     ctx.queueCache.delete(queueName);
-    if (queueNamesCache) {
-      queueNamesCache.names = queueNamesCache.names.filter((n) => n !== queueName);
+    if (ctx.queueNamesCache) {
+      ctx.queueNamesCache.names = ctx.queueNamesCache.names.filter((n) => n !== queueName);
     }
   }
 

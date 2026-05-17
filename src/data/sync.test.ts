@@ -37,17 +37,11 @@ mock.module("./queues.js", () => ({
 }));
 
 // Import AFTER mocks are registered.
-import {
-  syncQueue,
-  fullSync,
-  markPolledWrites,
-  __resetRecentlyPolledForTests,
-  __resetSyncLockForTests,
-  __forceSyncLockForTests,
-} from "./sync.js";
+import { syncQueue, fullSync, markPolledWrites, __forceSyncLockForTests } from "./sync.js";
 import { getJobFromDb, softDeleteJobsByIds, upsertJobs, type JobRow } from "./sqlite.js";
 import { createContext, type Context } from "../context.js";
 import type { Config } from "../config.js";
+import type { Database } from "bun:sqlite";
 
 const TEST_DB_PATH = `${import.meta.dirname}/test-sync.db`;
 
@@ -71,8 +65,6 @@ beforeEach(() => {
   mockState.jobsError = null;
   mockState.discoverError = null;
   mockState.gate = null;
-  __resetRecentlyPolledForTests();
-  __resetSyncLockForTests();
   console.error = () => {};
 });
 
@@ -141,7 +133,7 @@ describe("syncQueue", () => {
   it("steals a stale lock held past the timeout", async () => {
     // Simulate a previous sync that hung: lock acquired 11 minutes ago.
     const elevenMinutesAgo = Date.now() - 11 * 60 * 1000;
-    __forceSyncLockForTests(elevenMinutesAgo);
+    __forceSyncLockForTests(ctx, elevenMinutesAgo);
 
     mockState.batches = [[{ id: "1", state: "active" }]];
 
@@ -152,7 +144,7 @@ describe("syncQueue", () => {
 
   it("does NOT steal a lock that was just acquired", async () => {
     // Simulate an actively-running sync: lock acquired moments ago.
-    __forceSyncLockForTests(Date.now() - 100);
+    __forceSyncLockForTests(ctx, Date.now() - 100);
 
     mockState.batches = [[{ id: "1", state: "active" }]];
 
@@ -193,7 +185,7 @@ describe("syncQueue", () => {
     // Simulate: polling just wrote state=completed with fresh data while
     // sync's staged Redis snapshot is stale.
     upsertJobs(ctx, "q", [{ id: "1", name: "job-a", state: "completed", timestamp: 5000 }]);
-    markPolledWrites("q", ["1"]);
+    markPolledWrites(ctx, "q", ["1"]);
 
     releaseGate();
     const result = await pending;
@@ -211,7 +203,7 @@ describe("syncQueue", () => {
   it("does not soft-delete jobs polling just inserted that staging missed", async () => {
     // Polling inserts a fresh job — sync's staging snapshot won't include it.
     upsertJobs(ctx, "q", [{ id: "99", name: "fresh", state: "active", timestamp: 9000 }]);
-    markPolledWrites("q", ["99"]);
+    markPolledWrites(ctx, "q", ["99"]);
 
     // Staging has a totally different set — under naive rules, "99" is stale.
     mockState.batches = [[{ id: "1", state: "active" }]];
@@ -320,10 +312,12 @@ describe("syncQueue", () => {
     // Simulate a shutdown path closing the connection mid-sync — swap ctx.db
     // for a fresh handle so syncQueue's assertSameConnection trips. We must
     // mutate the SAME ctx object the sync is holding, not rebind the local.
+    // Cast through a mutable view to bypass `readonly db` — the runtime guard
+    // is exactly what we're verifying here.
     const oldDb = ctx.db;
     const replacement = createContext(ctx.config, { dbPath: TEST_DB_PATH });
     oldDb.close();
-    ctx.db = replacement.db;
+    (ctx as { db: Database }).db = replacement.db;
     await replacement.redis.quit().catch(() => {});
     releaseGate();
 
@@ -341,7 +335,7 @@ describe("syncQueue", () => {
   it("still applies state change for jobs polling touched BEFORE sync started", async () => {
     // Polling wrote this job well before sync starts.
     upsertJobs(ctx, "q", [{ id: "1", name: "job-a", state: "active", timestamp: 1000 }]);
-    markPolledWrites("q", ["1"]);
+    markPolledWrites(ctx, "q", ["1"]);
 
     // Wait so the polled-timestamp falls before syncStart.
     // markPolledWrites uses Date.now(); ensure at least 1ms elapses.
