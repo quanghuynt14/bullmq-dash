@@ -1,25 +1,30 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { unlinkSync } from "node:fs";
-import { setConfig } from "../config.js";
 import { formatRelativeTime, formatTimestamp, getJobsFromStore } from "./jobs.js";
 import { parseDuration } from "./duration.js";
-import { closeSqliteDb, createSqliteDb, upsertJobs } from "./sqlite.js";
+import { upsertJobs } from "./sqlite.js";
+import { createContext, type Context } from "../context.js";
+import type { Config } from "../config.js";
 
 const TEST_DB_PATH = `${import.meta.dirname}/test-jobs.db`;
 
+const baseConfig: Config = {
+  redis: { host: "localhost", port: 6379, db: 0 },
+  pollInterval: 3000,
+  prefix: "bull",
+  retentionMs: 7 * 24 * 60 * 60 * 1000,
+};
+
 describe("getJobsFromStore", () => {
+  let ctx: Context;
+
   beforeEach(() => {
-    setConfig({
-      redis: { host: "localhost", port: 6379, db: 0 },
-      pollInterval: 3000,
-      prefix: "bull",
-      retentionMs: 7 * 24 * 60 * 60 * 1000,
-    });
-    createSqliteDb(TEST_DB_PATH);
+    ctx = createContext(baseConfig, { dbPath: TEST_DB_PATH });
   });
 
-  afterEach(() => {
-    closeSqliteDb();
+  afterEach(async () => {
+    ctx.db.close();
+    await ctx.redis.quit().catch(() => {});
     for (const suffix of ["", "-wal", "-shm"]) {
       try {
         unlinkSync(`${TEST_DB_PATH}${suffix}`);
@@ -30,12 +35,12 @@ describe("getJobsFromStore", () => {
   });
 
   it("reads paginated jobs from the queue-data store", async () => {
-    upsertJobs("email", [
+    upsertJobs(ctx, "email", [
       { id: "old", name: "old-job", state: "completed", timestamp: 1000 },
       { id: "new", name: "new-job", state: "active", timestamp: 2000 },
     ]);
 
-    const result = await getJobsFromStore("email", "latest", 1, 1);
+    const result = await getJobsFromStore(ctx, "email", "latest", 1, 1);
 
     expect(result).toEqual({
       jobs: [{ id: "new", name: "new-job", state: "active", timestamp: 2000 }],
@@ -47,27 +52,27 @@ describe("getJobsFromStore", () => {
   });
 
   it("maps the wait filter to waiting and prioritized jobs", async () => {
-    upsertJobs("email", [
+    upsertJobs(ctx, "email", [
       { id: "waiting", name: "waiting-job", state: "waiting", timestamp: 3000 },
       { id: "prioritized", name: "prioritized-job", state: "prioritized", timestamp: 2000 },
       { id: "active", name: "active-job", state: "active", timestamp: 1000 },
     ]);
 
-    const result = await getJobsFromStore("email", "wait", 1, 25);
+    const result = await getJobsFromStore(ctx, "email", "wait", 1, 25);
 
     expect(result.jobs.map((job) => job.id)).toEqual(["waiting", "prioritized"]);
     expect(result.total).toBe(2);
   });
 
   it("returns jobs from all states ordered by timestamp under the latest filter", async () => {
-    upsertJobs("email", [
+    upsertJobs(ctx, "email", [
       { id: "wait-old", name: "w", state: "waiting", timestamp: 1000 },
       { id: "done-mid", name: "c", state: "completed", timestamp: 2000 },
       { id: "fail-new", name: "f", state: "failed", timestamp: 3000 },
       { id: "act-newest", name: "a", state: "active", timestamp: 4000 },
     ]);
 
-    const result = await getJobsFromStore("email", "latest", 1, 25);
+    const result = await getJobsFromStore(ctx, "email", "latest", 1, 25);
 
     expect(result.jobs.map((job) => job.id)).toEqual([
       "act-newest",
@@ -79,7 +84,7 @@ describe("getJobsFromStore", () => {
   });
 
   it("rejects scheduler reads through the jobs store path", async () => {
-    await expect(getJobsFromStore("email", "schedulers", 1, 25)).rejects.toThrow(
+    await expect(getJobsFromStore(ctx, "email", "schedulers", 1, 25)).rejects.toThrow(
       /Cannot fetch schedulers/,
     );
   });

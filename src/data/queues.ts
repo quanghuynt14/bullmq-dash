@@ -1,15 +1,5 @@
 import { Queue } from "bullmq";
-import { getConfig } from "../config.js";
-import { getRedisClient } from "./redis.js";
-
-// Queue cache to reuse connections
-const queueCache = new Map<string, Queue>();
-
-// Queue names cache with TTL
-let queueNamesCache: {
-  names: string[];
-  timestamp: number;
-} | null = null;
+import type { Context } from "../context.js";
 
 const QUEUE_NAMES_CACHE_TTL = 5000; // 5 seconds
 const SCAN_COUNT = 1000;
@@ -30,58 +20,54 @@ export interface QueueStats {
 }
 
 /**
- * Get or create a BullMQ Queue instance
+ * Get or create a BullMQ Queue instance, memoised per-Context.
  */
-export function getQueue(queueName: string): Queue {
-  if (!queueCache.has(queueName)) {
-    const config = getConfig();
-    const queue = new Queue(queueName, {
-      prefix: config.prefix,
-      connection: {
-        host: config.redis.host,
-        port: config.redis.port,
-        username: config.redis.username,
-        password: config.redis.password,
-        db: config.redis.db,
-        ...(config.redis.tls ? { tls: {} } : {}),
-      },
-    });
-    queueCache.set(queueName, queue);
-  }
-  return queueCache.get(queueName)!;
+export function getQueue(ctx: Context, queueName: string): Queue {
+  const cached = ctx.queueCache.get(queueName);
+  if (cached) return cached;
+
+  const queue = new Queue(queueName, {
+    prefix: ctx.config.prefix,
+    connection: {
+      host: ctx.config.redis.host,
+      port: ctx.config.redis.port,
+      username: ctx.config.redis.username,
+      password: ctx.config.redis.password,
+      db: ctx.config.redis.db,
+      ...(ctx.config.redis.tls ? { tls: {} } : {}),
+    },
+  });
+  ctx.queueCache.set(queueName, queue);
+  return queue;
 }
 
 /**
  * Discover all queue names from Redis
  */
-export async function discoverQueueNames(): Promise<string[]> {
-  const config = getConfig();
-
+export async function discoverQueueNames(ctx: Context): Promise<string[]> {
   // Use configured queue names if provided
-  if (config.queueNames && config.queueNames.length > 0) {
-    return config.queueNames;
+  if (ctx.config.queueNames && ctx.config.queueNames.length > 0) {
+    return ctx.config.queueNames;
   }
 
   const now = Date.now();
 
-  // Return cached names if fresh
-  if (queueNamesCache && now - queueNamesCache.timestamp < QUEUE_NAMES_CACHE_TTL) {
-    return queueNamesCache.names;
+  if (ctx.queueNamesCache && now - ctx.queueNamesCache.timestamp < QUEUE_NAMES_CACHE_TTL) {
+    return ctx.queueNamesCache.names;
   }
 
-  const redis = await getRedisClient();
   const queueNames = new Set<string>();
-  const prefix = config.prefix + ":";
+  const prefix = ctx.config.prefix + ":";
 
   let cursor = "0";
   do {
     // Sequential by necessity: each SCAN call returns the cursor for the
     // next call. Can't parallelize a cursor-based Redis scan.
     // eslint-disable-next-line no-await-in-loop
-    const [nextCursor, keys] = await redis.scan(
+    const [nextCursor, keys] = await ctx.redis.scan(
       cursor,
       "MATCH",
-      `${config.prefix}:*`,
+      `${ctx.config.prefix}:*`,
       "COUNT",
       SCAN_COUNT,
     );
@@ -101,7 +87,7 @@ export async function discoverQueueNames(): Promise<string[]> {
 
   const sortedNames = Array.from(queueNames).toSorted();
 
-  queueNamesCache = {
+  ctx.queueNamesCache = {
     names: sortedNames,
     timestamp: now,
   };
@@ -112,8 +98,8 @@ export async function discoverQueueNames(): Promise<string[]> {
 /**
  * Get stats for a single queue
  */
-export async function getQueueStats(queueName: string): Promise<QueueStats> {
-  const queue = getQueue(queueName);
+export async function getQueueStats(ctx: Context, queueName: string): Promise<QueueStats> {
+  const queue = getQueue(ctx, queueName);
 
   const [counts, isPaused, schedulersCount] = await Promise.all([
     queue.getJobCounts(),
@@ -147,10 +133,10 @@ export async function getQueueStats(queueName: string): Promise<QueueStats> {
 /**
  * Get stats for all discovered queues
  */
-export async function getAllQueueStats(): Promise<QueueStats[]> {
-  const queueNames = await discoverQueueNames();
+export async function getAllQueueStats(ctx: Context): Promise<QueueStats[]> {
+  const queueNames = await discoverQueueNames(ctx);
 
-  const stats = await Promise.all(queueNames.map((name) => getQueueStats(name)));
+  const stats = await Promise.all(queueNames.map((name) => getQueueStats(ctx, name)));
 
   return stats;
 }
@@ -158,11 +144,11 @@ export async function getAllQueueStats(): Promise<QueueStats[]> {
 /**
  * Close all queue connections
  */
-export async function closeAllQueues(): Promise<void> {
-  const closePromises = Array.from(queueCache.values()).map((queue) => queue.close());
+export async function closeAllQueues(ctx: Context): Promise<void> {
+  const closePromises = Array.from(ctx.queueCache.values()).map((queue) => queue.close());
   await Promise.all(closePromises);
-  queueCache.clear();
-  queueNamesCache = null;
+  ctx.queueCache.clear();
+  ctx.queueNamesCache = null;
 }
 
 export interface DeleteQueueResult {
@@ -177,10 +163,11 @@ export interface DeleteQueueResult {
 }
 
 export async function deleteQueue(
+  ctx: Context,
   queueName: string,
   dryRun: boolean = false,
 ): Promise<DeleteQueueResult> {
-  const queue = getQueue(queueName);
+  const queue = getQueue(ctx, queueName);
 
   const counts = await queue.getJobCounts();
 
@@ -198,16 +185,14 @@ export async function deleteQueue(
   if (!dryRun) {
     await queue.obliterate({ force: true });
 
-    const config = getConfig();
-    const redis = await getRedisClient();
     const escapedQueueName = queueName.replace(/[[*?]/g, "\\$&");
-    const repeatKeyPattern = `${config.prefix}:${escapedQueueName}:*`;
+    const repeatKeyPattern = `${ctx.config.prefix}:${escapedQueueName}:*`;
 
     const allKeys: string[] = [];
     let cursor = "0";
     do {
       // eslint-disable-next-line no-await-in-loop
-      const [nextCursor, keys] = await redis.scan(
+      const [nextCursor, keys] = await ctx.redis.scan(
         cursor,
         "MATCH",
         repeatKeyPattern,
@@ -222,14 +207,14 @@ export async function deleteQueue(
       for (let i = 0; i < allKeys.length; i += DEL_BATCH_SIZE) {
         const batch = allKeys.slice(i, i + DEL_BATCH_SIZE);
         // eslint-disable-next-line no-await-in-loop
-        await redis.del(...batch);
+        await ctx.redis.del(...batch);
       }
     }
 
     await queue.close();
-    queueCache.delete(queueName);
-    if (queueNamesCache) {
-      queueNamesCache.names = queueNamesCache.names.filter((n) => n !== queueName);
+    ctx.queueCache.delete(queueName);
+    if (ctx.queueNamesCache) {
+      ctx.queueNamesCache.names = ctx.queueNamesCache.names.filter((n) => n !== queueName);
     }
   }
 

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getConfig } from "../config.js";
+import type { Context } from "../context.js";
 import { getAllJobIds } from "./jobs.js";
 import { discoverQueueNames } from "./queues.js";
 import {
@@ -11,7 +11,6 @@ import {
   findResurrectedIdsByStagingDiff,
   findStaleIdsByStagingDiff,
   dropSyncStaging,
-  getSqliteDb,
   softDeleteJobsByIds,
   upsertJobStubs,
   upsertSyncState,
@@ -28,19 +27,17 @@ export interface SyncResult {
 }
 
 /**
- * Module-level guard: only one sync may run at a time.
+ * Per-context guard: only one sync may run at a time *for a given context*.
  *
- * The shared `sync_staging` TEMP table is per-connection and we use a single
- * shared SQLite connection (see getSqliteDb), so two concurrent syncs would
- * stomp on each other's staging rows. We fail fast rather than corrupt data.
+ * The shared `sync_staging` TEMP table is per-connection (`ctx.db`), so two
+ * concurrent syncs on the same context would stomp on each other's staging
+ * rows. Different contexts have different DBs, so they're independent.
  *
- * `syncLockAcquiredAt` lets us steal a stuck lock if the holding sync hung
- * past SYNC_LOCK_TIMEOUT_MS (e.g., a never-resolving promise bypassed the
+ * `acquiredAt` lets us steal a stuck lock if the holding sync hung past
+ * SYNC_LOCK_TIMEOUT_MS (e.g., a never-resolving promise bypassed the
  * finally). Without this, one stuck sync would refuse every future sync for
- * the lifetime of the process with no way to recover.
+ * the lifetime of the context with no way to recover.
  */
-let syncInProgress = false;
-let syncLockAcquiredAt: number | null = null;
 const SYNC_LOCK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 class JobResurrectionError extends Error {
@@ -64,9 +61,10 @@ class FullSyncInvariantError extends Error {
   }
 }
 
-function tryAcquireSyncLock(): { ok: true } | { ok: false; heldForMs: number } {
-  if (syncInProgress && syncLockAcquiredAt !== null) {
-    const heldForMs = Date.now() - syncLockAcquiredAt;
+function tryAcquireSyncLock(ctx: Context): { ok: true } | { ok: false; heldForMs: number } {
+  const lock = ctx.syncLock;
+  if (lock.inProgress && lock.acquiredAt !== null) {
+    const heldForMs = Date.now() - lock.acquiredAt;
     if (heldForMs <= SYNC_LOCK_TIMEOUT_MS) {
       return { ok: false, heldForMs };
     }
@@ -74,47 +72,41 @@ function tryAcquireSyncLock(): { ok: true } | { ok: false; heldForMs: number } {
       `Sync lock held for ${heldForMs}ms (> ${SYNC_LOCK_TIMEOUT_MS}ms timeout) — stealing.`,
     );
   }
-  syncInProgress = true;
-  syncLockAcquiredAt = Date.now();
+  lock.inProgress = true;
+  lock.acquiredAt = Date.now();
   return { ok: true };
 }
 
-function releaseSyncLock(): void {
-  syncInProgress = false;
-  syncLockAcquiredAt = null;
-}
-
-/** Test-only helper: reset the sync lock between tests. */
-export function __resetSyncLockForTests(): void {
-  releaseSyncLock();
+function releaseSyncLock(ctx: Context): void {
+  ctx.syncLock.inProgress = false;
+  ctx.syncLock.acquiredAt = null;
 }
 
 /**
  * Test-only helper: force the sync lock into a "held since `acquiredAtMs`"
  * state so the next caller can exercise the stale-lock stealing path.
  */
-export function __forceSyncLockForTests(acquiredAtMs: number): void {
-  syncInProgress = true;
-  syncLockAcquiredAt = acquiredAtMs;
+export function __forceSyncLockForTests(ctx: Context, acquiredAtMs: number): void {
+  ctx.syncLock.inProgress = true;
+  ctx.syncLock.acquiredAt = acquiredAtMs;
 }
 
 /**
- * Tracks recent polling writes so background sync doesn't overwrite state
- * that polling (3s interval) refreshed while sync's staging snapshot (60s
- * interval) was stale.
+ * Tracks recent polling writes (per-context) so background sync doesn't
+ * overwrite state that polling (3s interval) refreshed while sync's staging
+ * snapshot (60s interval) was stale.
  *
  * Key: `${queue}:${id}`. Value: Date.now() of the polling write. Entries
  * live for RECENT_POLL_WINDOW_MS then get pruned opportunistically. The cap
  * prevents unbounded growth on very busy queues.
  */
-const recentlyPolledWrites = new Map<string, number>();
 const RECENT_POLL_WINDOW_MS = 120_000;
 const RECENT_POLL_MAX_ENTRIES = 50_000;
 
-function pruneRecentlyPolled(): void {
+function pruneRecentlyPolled(ctx: Context): void {
   const cutoff = Date.now() - RECENT_POLL_WINDOW_MS;
-  for (const [key, ts] of recentlyPolledWrites) {
-    if (ts < cutoff) recentlyPolledWrites.delete(key);
+  for (const [key, ts] of ctx.recentlyPolledWrites) {
+    if (ts < cutoff) ctx.recentlyPolledWrites.delete(key);
   }
 }
 
@@ -124,23 +116,18 @@ function pruneRecentlyPolled(): void {
  * either RECENT_POLL_WINDOW_MS elapses or the next polling write replaces the
  * timestamp.
  */
-export function markPolledWrites(queue: string, jobIds: readonly string[]): void {
+export function markPolledWrites(ctx: Context, queue: string, jobIds: readonly string[]): void {
   const now = Date.now();
   for (const id of jobIds) {
-    recentlyPolledWrites.set(`${queue}:${id}`, now);
+    ctx.recentlyPolledWrites.set(`${queue}:${id}`, now);
   }
-  if (recentlyPolledWrites.size > RECENT_POLL_MAX_ENTRIES) {
-    pruneRecentlyPolled();
+  if (ctx.recentlyPolledWrites.size > RECENT_POLL_MAX_ENTRIES) {
+    pruneRecentlyPolled(ctx);
   }
 }
 
-/** Test-only helper: reset the recently-polled map between tests. */
-export function __resetRecentlyPolledForTests(): void {
-  recentlyPolledWrites.clear();
-}
-
-function wasPolledSince(queue: string, jobId: string, threshold: number): boolean {
-  const ts = recentlyPolledWrites.get(`${queue}:${jobId}`);
+function wasPolledSince(ctx: Context, queue: string, jobId: string, threshold: number): boolean {
+  const ts = ctx.recentlyPolledWrites.get(`${queue}:${jobId}`);
   return ts !== undefined && ts >= threshold;
 }
 
@@ -165,10 +152,12 @@ function wasPolledSince(queue: string, jobId: string, threshold: number): boolea
  * Name, timestamp, and data_preview are populated lazily when jobs are
  * viewed in TUI or fetched via CLI — not during background sync.
  *
- * **Concurrency:** NOT parallel-safe. The `sync_staging` TEMP table is
- * shared across the single SQLite connection, so concurrent calls to
- * `syncQueue` (or `fullSync`) would interleave staging rows and corrupt
- * the diff. A module-level guard rejects overlapping calls.
+ * **Concurrency:** NOT parallel-safe within a single Context. The
+ * `sync_staging` TEMP table is per-connection (`ctx.db`), so concurrent
+ * calls to `syncQueue` (or `fullSync`) on the same context would interleave
+ * staging rows and corrupt the diff. A per-context guard (`ctx.syncLock`)
+ * rejects overlapping calls. Two contexts pointed at different DBs are
+ * independent and may sync in parallel.
  *
  * **Failure recovery:** there is no partial-progress checkpoint. If a sync
  * fails mid-way (Redis disconnect, SQLite error, process killed), the
@@ -179,8 +168,8 @@ function wasPolledSince(queue: string, jobId: string, threshold: number): boolea
  * already soft-deleted. This is an invariant violation, not an operational
  * sync failure, so it rejects instead of returning `SyncResult.error`.
  */
-export async function syncQueue(queueName: string): Promise<SyncResult> {
-  const lock = tryAcquireSyncLock();
+export async function syncQueue(ctx: Context, queueName: string): Promise<SyncResult> {
+  const lock = tryAcquireSyncLock(ctx);
   if (!lock.ok) {
     const message =
       `Refusing to sync queue "${queueName}": another sync is in progress ` +
@@ -200,23 +189,23 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
   // is provably not reflected in staging (polling pulls from Redis live;
   // staging is a snapshot taken starting now). Conservatively skip those.
   const syncStart = Date.now();
-  // Snapshot the connection so we can detect a closeSqliteDb() mid-sync and
+  // Snapshot the connection so we can detect a ctx.db swap (or close) mid-sync and
   // abort with a clear error instead of a confusing "no such table" from
   // operating on a fresh connection that never saw CREATE TEMP sync_staging.
-  const syncDb: Database = getSqliteDb();
+  const syncDb: Database = ctx.db;
   const assertSameConnection = () => {
-    if (getSqliteDb() !== syncDb) {
+    if (ctx.db !== syncDb) {
       throw new Error(`syncQueue("${queueName}") aborted: SQLite connection was closed mid-sync`);
     }
   };
   try {
-    createSyncStaging();
+    createSyncStaging(ctx);
 
     // Step 1: Paginate all IDs from Redis into staging
     let total = 0;
-    for await (const batch of getAllJobIds(queueName)) {
+    for await (const batch of getAllJobIds(ctx, queueName)) {
       assertSameConnection();
-      insertStagingBatch(queueName, batch);
+      insertStagingBatch(ctx, queueName, batch);
       total += batch.length;
     }
 
@@ -227,7 +216,7 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
     // violation, not a reinstatement. Throw loudly with the queue + the
     // offending ids so operators see the violation in logs and downstream
     // assumptions (history view, compaction) don't get silently corrupted.
-    const resurrected = findResurrectedIdsByStagingDiff(queueName);
+    const resurrected = findResurrectedIdsByStagingDiff(ctx, queueName);
     if (resurrected.length > 0) {
       throw new JobResurrectionError(queueName, resurrected);
     }
@@ -235,34 +224,34 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
     // Step 3: Find and insert new jobs as stubs.
     // findNewIdsByStagingDiff returns id + state, so we can hand the rows
     // straight to upsertJobStubs without a second round-trip.
-    const newStubs = findNewIdsByStagingDiff(queueName);
+    const newStubs = findNewIdsByStagingDiff(ctx, queueName);
     if (newStubs.length > 0) {
-      upsertJobStubs(queueName, newStubs);
+      upsertJobStubs(ctx, queueName, newStubs);
     }
 
     // Step 4: Find and update changed states — but skip jobs polling
     // refreshed after we started, because staging's state for them is stale.
-    const changed = findChangedIdsByStagingDiff(queueName).filter(
-      (row) => !wasPolledSince(queueName, row.id, syncStart),
+    const changed = findChangedIdsByStagingDiff(ctx, queueName).filter(
+      (row) => !wasPolledSince(ctx, queueName, row.id, syncStart),
     );
     if (changed.length > 0) {
-      upsertJobStubs(queueName, changed);
+      upsertJobStubs(ctx, queueName, changed);
     }
 
     // Step 5: Soft-delete stale jobs — same recently-polled exclusion. A job
     // polling inserted between syncStart and now isn't in staging (we built
     // staging from a Redis snapshot that predated the insert), so the anti-
     // join would misclassify it as stale and stamp it removed.
-    const staleIds = findStaleIdsByStagingDiff(queueName).filter(
-      (id) => !wasPolledSince(queueName, id, syncStart),
+    const staleIds = findStaleIdsByStagingDiff(ctx, queueName).filter(
+      (id) => !wasPolledSince(ctx, queueName, id, syncStart),
     );
     // Single `now` for the soft-delete stamp; reused for sync_state below so
     // a row stamped this cycle and `synced_at` line up exactly.
     const now = Date.now();
-    const softDeleted = softDeleteJobsByIds(queueName, staleIds, now);
+    const softDeleted = softDeleteJobsByIds(ctx, queueName, staleIds, now);
 
     // Step 6: Update sync state
-    upsertSyncState(queueName, {
+    upsertSyncState(ctx, queueName, {
       jobCount: total,
       syncedAt: now,
     });
@@ -293,14 +282,14 @@ export async function syncQueue(queueName: string): Promise<SyncResult> {
     // Skip dropSyncStaging if the connection was swapped — the old connection
     // is closed (DROP would throw), and the new connection's TEMP staging
     // never existed.
-    if (getSqliteDb() === syncDb) {
+    if (ctx.db === syncDb) {
       try {
-        dropSyncStaging();
+        dropSyncStaging(ctx);
       } catch (cleanupError) {
         console.error(`Failed to drop sync_staging for queue "${queueName}":`, cleanupError);
       }
     }
-    releaseSyncLock();
+    releaseSyncLock(ctx);
   }
 }
 
@@ -335,10 +324,10 @@ export interface FullSyncResult {
  * @throws FullSyncInvariantError after all queues finish (before compaction)
  * if any queue hit an invariant violation.
  */
-export async function fullSync(): Promise<FullSyncResult> {
+export async function fullSync(ctx: Context): Promise<FullSyncResult> {
   let queues: string[];
   try {
-    queues = await discoverQueueNames();
+    queues = await discoverQueueNames(ctx);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("SQLite full sync: queue discovery failed:", error);
@@ -361,7 +350,7 @@ export async function fullSync(): Promise<FullSyncResult> {
     // on the shared SQLite connection. Parallelizing would corrupt the diff.
     try {
       // eslint-disable-next-line no-await-in-loop
-      const result = await syncQueue(q);
+      const result = await syncQueue(ctx, q);
       if (result.error) {
         errors.push({ queue: q, error: result.error });
       } else {
@@ -386,7 +375,7 @@ export async function fullSync(): Promise<FullSyncResult> {
   // Only compact after invariant checks pass: deleting an expired resurrected
   // row would erase evidence and let the same Redis ID insert as brand-new on
   // the next sync.
-  const totalCompacted = compactRemovedJobs(Date.now(), getConfig().retentionMs);
+  const totalCompacted = compactRemovedJobs(ctx, Date.now(), ctx.config.retentionMs);
 
   return {
     queues: queues.length,

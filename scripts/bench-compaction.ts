@@ -11,23 +11,20 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setConfig } from "../src/config.js";
+import { createContext } from "../src/context.js";
 import {
-  closeSqliteDb,
   compactRemovedJobs,
-  createSqliteDb,
   findResurrectedIdsByStagingDiff,
   findStaleIdsByStagingDiff,
-  getSqliteDb,
   softDeleteJobsByIds,
 } from "../src/data/sqlite.js";
 
-setConfig({
+const config = {
   redis: { host: "localhost", port: 6379, db: 0 },
   pollInterval: 3000,
   prefix: "bull",
   retentionMs: 1,
-});
+};
 
 function seedJobs(db: Database, queue: string, n: number, removedAt: number | null): void {
   const stmt = db.prepare(
@@ -67,10 +64,9 @@ function bench(label: string, fn: () => void, runs = 5): void {
 async function main() {
   const tmp = mkdtempSync(join(tmpdir(), "bullmq-dash-bench-"));
   const dbPath = join(tmp, "bench.db");
+  const ctx = createContext(config, { dbPath });
+  const db = ctx.db;
   try {
-    createSqliteDb(dbPath);
-    const db = getSqliteDb();
-
     // Scale: 100k live + 5k soft-deleted, all of which are past retention.
     const LIVE = 100_000;
     const GONE = 5_000;
@@ -100,7 +96,7 @@ async function main() {
       // re-seed only the soft-deleted rows
       db.prepare("DELETE FROM jobs WHERE removed_at IS NOT NULL").run();
       seedJobs(db, "q", GONE, 1);
-      compactRemovedJobs(Date.now(), 1);
+      compactRemovedJobs(ctx, Date.now(), 1);
     });
 
     // Re-seed soft-deleted rows for the read-side benches.
@@ -122,24 +118,25 @@ async function main() {
     tx();
 
     bench("findStaleIdsByStagingDiff (steady state)", () => {
-      findStaleIdsByStagingDiff("q");
+      findStaleIdsByStagingDiff(ctx, "q");
     });
     bench("findResurrectedIdsByStagingDiff (steady state)", () => {
-      findResurrectedIdsByStagingDiff("q");
+      findResurrectedIdsByStagingDiff(ctx, "q");
     });
 
     console.log("\nNow soft-delete a fresh batch and re-measure compaction:");
     seedJobs(db, "q", GONE, 1);
     bench("softDeleteJobsByIds (1k of fresh live)", () => {
       const ids = Array.from({ length: 1_000 }, (_, i) => `q-live-${i}`);
-      softDeleteJobsByIds("q", ids, Date.now());
+      softDeleteJobsByIds(ctx, "q", ids, Date.now());
       // restore for next iteration
       db.prepare(
         "UPDATE jobs SET removed_at = NULL WHERE id IN (" + ids.map(() => "?").join(",") + ")",
       ).run(...ids);
     });
   } finally {
-    closeSqliteDb();
+    db.close();
+    await ctx.redis.quit().catch(() => {});
     rmSync(tmp, { recursive: true, force: true });
   }
 }

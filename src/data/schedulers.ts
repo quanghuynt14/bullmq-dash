@@ -1,3 +1,4 @@
+import type { Context } from "../context.js";
 import { getQueue } from "./queues.js";
 
 /**
@@ -71,10 +72,11 @@ const DEFAULT_MAX_RESULTS = 1000;
  * Used by --json mode for bulk export.
  */
 export async function getAllJobSchedulers(
+  ctx: Context,
   queueName: string,
   maxResults: number = DEFAULT_MAX_RESULTS,
 ): Promise<{ schedulers: JobSchedulerSummary[]; total: number }> {
-  const queue = getQueue(queueName);
+  const queue = getQueue(ctx, queueName);
   const end = maxResults - 1;
 
   const [schedulers, total] = await Promise.all([
@@ -99,11 +101,12 @@ export async function getAllJobSchedulers(
  * Get job schedulers with pagination
  */
 export async function getJobSchedulers(
+  ctx: Context,
   queueName: string,
   page: number = 1,
   pageSize: number = PAGE_SIZE,
 ): Promise<SchedulersResult> {
-  const queue = getQueue(queueName);
+  const queue = getQueue(ctx, queueName);
   const start = (page - 1) * pageSize;
   const end = start + pageSize - 1;
 
@@ -135,10 +138,11 @@ export async function getJobSchedulers(
  * Get detailed information for a single job scheduler
  */
 export async function getJobSchedulerDetail(
+  ctx: Context,
   queueName: string,
   schedulerKey: string,
 ): Promise<JobSchedulerDetail | null> {
-  const queue = getQueue(queueName);
+  const queue = getQueue(ctx, queueName);
 
   // Fetch all schedulers and find the one with matching key
   // (BullMQ doesn't have a direct getJobScheduler(key) method)

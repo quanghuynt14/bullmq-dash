@@ -3,11 +3,9 @@ import { stateManager } from "./state.js";
 import { pollingManager } from "./polling.js";
 import { getJobDetail, deleteJob } from "./data/jobs.js";
 import { getJobSchedulerDetail } from "./data/schedulers.js";
-import { disconnectRedis } from "./data/redis.js";
-import { closeAllQueues } from "./data/queues.js";
 import { getConfig } from "./config.js";
-import { createSqliteDb, closeSqliteDb } from "./data/sqlite.js";
 import { fullSync } from "./data/sync.js";
+import { closeContext, createContext, type Context } from "./context.js";
 
 // UI imports
 import { createLayout, updateHeaderStatus, type LayoutElements } from "./ui/layout.js";
@@ -65,6 +63,18 @@ export class App {
   private elements: AppElements | null = null;
   private unsubscribeState: (() => void) | null = null;
   private syncIntervalId: ReturnType<typeof setInterval> | null = null;
+  private ctx: Context | null = null;
+
+  /**
+   * Single chokepoint for non-null ctx from instance methods. Throws if a key
+   * handler fires after `cleanup()` cleared ctx (possible during shutdown).
+   */
+  private requireCtx(): Context {
+    if (!this.ctx) {
+      throw new Error("App.start() must be called before this operation");
+    }
+    return this.ctx;
+  }
 
   async start(): Promise<void> {
     // Create renderer
@@ -86,14 +96,28 @@ export class App {
       this.render();
     });
 
-    // Initialize SQLite (always on — core infrastructure)
-    createSqliteDb();
+    // Initialize Context (config + Redis + SQLite + queue cache).
+    this.ctx = createContext(getConfig());
+    const ctx = this.ctx;
+
+    // Explicit eager connect — matches `runJsonMode`'s startup shape so both
+    // entry points agree on "the connection is opened on startup, not lazily
+    // on the first BullMQ call." TUI swallows failures (the disconnect banner
+    // surfaces them via the next poll cycle); headless exits 3.
+    try {
+      await ctx.redis.connect();
+    } catch (error) {
+      console.error(
+        "Redis connection failed at startup:",
+        error instanceof Error ? error.message : error,
+      );
+    }
 
     // Start polling
-    pollingManager.start();
+    pollingManager.start(ctx);
 
     const runFullSync = () => {
-      fullSync().catch((error) => {
+      fullSync(ctx).catch((error) => {
         console.error("SQLite full sync failed:", error);
       });
     };
@@ -309,7 +333,7 @@ export class App {
     if (!selectedJob || !selectedQueue) return;
 
     try {
-      const detail = await getJobDetail(selectedQueue.name, selectedJob.id);
+      const detail = await getJobDetail(this.requireCtx(), selectedQueue.name, selectedJob.id);
       if (detail) {
         stateManager.openJobDetail(detail);
       }
@@ -325,7 +349,11 @@ export class App {
     if (!selectedScheduler || !selectedQueue) return;
 
     try {
-      const detail = await getJobSchedulerDetail(selectedQueue.name, selectedScheduler.key);
+      const detail = await getJobSchedulerDetail(
+        this.requireCtx(),
+        selectedQueue.name,
+        selectedScheduler.key,
+      );
       if (detail) {
         stateManager.openSchedulerDetail(detail);
       }
@@ -342,7 +370,11 @@ export class App {
     if (!schedulerDetail?.nextJob || !selectedQueue) return;
 
     try {
-      const jobDetail = await getJobDetail(selectedQueue.name, schedulerDetail.nextJob.id);
+      const jobDetail = await getJobDetail(
+        this.requireCtx(),
+        selectedQueue.name,
+        schedulerDetail.nextJob.id,
+      );
       if (jobDetail) {
         // Close scheduler detail and open job detail
         stateManager.closeSchedulerDetail();
@@ -372,7 +404,7 @@ export class App {
     }
 
     try {
-      await deleteJob(selectedQueue.name, jobId);
+      await deleteJob(this.requireCtx(), selectedQueue.name, jobId);
       stateManager.hideDeleteConfirm();
       stateManager.closeJobDetail();
       await pollingManager.refresh();
@@ -419,14 +451,15 @@ export class App {
       pageJump,
     } = this.elements;
 
-    // Update header
-    const config = getConfig();
+    // Update header. Read from ctx (when available) so the header reflects
+    // the live connection's config, not the bootstrap singleton.
+    const headerConfig = this.ctx?.config ?? getConfig();
     updateHeaderStatus(
       layout.headerStatus,
       state.connected,
       state.error,
-      config.redis.host,
-      config.redis.port,
+      headerConfig.redis.host,
+      headerConfig.redis.port,
     );
 
     // Update global metrics
@@ -515,12 +548,11 @@ export class App {
       this.unsubscribeState();
     }
 
-    // Close connections
-    await closeAllQueues();
-    await disconnectRedis();
-
-    // Close SQLite
-    closeSqliteDb();
+    // Close connections owned by the Context.
+    if (this.ctx) {
+      await closeContext(this.ctx);
+      this.ctx = null;
+    }
 
     // Destroy renderer
     if (this.renderer) {
