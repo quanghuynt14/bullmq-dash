@@ -6,7 +6,9 @@ dist/
 
 # Environment
 .env
+.env.*
 .env.local
+.envrc
 
 # IDE
 .idea/
@@ -27,6 +29,8 @@ npm-debug.log*
 
 # npm
 .npmrc
+.package.json.prepack-backup
+*.tgz
 
 # Worktrees
 .worktrees/

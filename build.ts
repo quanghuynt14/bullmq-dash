@@ -1,4 +1,12 @@
-import { rmSync, writeFileSync, readFileSync } from "node:fs";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+
+const packageJson = JSON.parse(readFileSync("./package.json", "utf-8")) as {
+  version?: unknown;
+};
+
+if (typeof packageJson.version !== "string" || packageJson.version.trim() === "") {
+  throw new Error("Invalid package.json version");
+}
 
 // Clean dist folder
 rmSync("./dist", { recursive: true, force: true });
@@ -9,9 +17,12 @@ const result = await Bun.build({
   outdir: "./dist",
   target: "bun",
   format: "esm",
-  sourcemap: "linked",
+  sourcemap: "none",
   minify: false,
-  external: ["bullmq", "ioredis", "@opentui/core", "zod"],
+  external: ["bullmq", "@opentui/core"],
+  define: {
+    BUILD_PACKAGE_VERSION: JSON.stringify(packageJson.version),
+  },
 });
 
 if (!result.success) {
@@ -26,5 +37,6 @@ if (!result.success) {
 const outputPath = "./dist/index.js";
 const content = readFileSync(outputPath, "utf-8");
 writeFileSync(outputPath, `#!/usr/bin/env bun\n${content}`);
+chmodSync(outputPath, 0o755);
 
 console.log("Build completed successfully");

@@ -1,6 +1,6 @@
 {
   "name": "bullmq-dash",
-  "version": "0.2.7",
+  "version": "0.3.0",
   "description": "Terminal UI dashboard for BullMQ queue monitoring",
   "keywords": [
     "bullmq",
@@ -12,21 +12,27 @@
     "terminal",
     "tui"
   ],
+  "homepage": "https://github.com/quanghuynt14/bullmq-dash#readme",
+  "bugs": {
+    "url": "https://github.com/quanghuynt14/bullmq-dash/issues"
+  },
   "license": "MIT",
   "author": "quanghuynt14",
   "repository": {
     "type": "git",
-    "url": "https://github.com/quanghuynt14/bullmq-dash"
+    "url": "git+https://github.com/quanghuynt14/bullmq-dash.git"
   },
   "bin": {
-    "bullmq-dash": "./dist/index.js"
+    "bullmq-dash": "dist/index.js"
   },
   "files": [
     "dist"
   ],
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "provenance": true
+  },
   "scripts": {
     "dev": "bun src/index.ts",
     "build": "bun build.ts",
@@ -36,14 +42,22 @@
     "lint:fix": "oxlint --fix",
     "format": "oxfmt --write",
     "format:check": "oxfmt --check",
+    "security:audit-0.2.7": "bun scripts/audit-socket-target.ts",
+    "security:release": "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package && bun run security:score",
+    "security:score": "bun scripts/socket-score.ts",
+    "security:verify-lockfile": "bun scripts/lockfile-policy.ts",
+    "security:verify-package": "bun scripts/verify-package.ts",
+    "security:verify-source-control": "bun scripts/source-control-policy.ts",
+    "security:verify-workflows": "bun scripts/workflow-policy.ts",
     "test": "bun test",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package",
+    "prepack": "bun scripts/publish-manifest.ts prepack",
+    "postpack": "bun scripts/publish-manifest.ts restore",
+    "postpublish": "bun scripts/publish-manifest.ts restore"
   },
   "dependencies": {
-    "@opentui/core": "^0.2.4",
-    "bullmq": "^5.76.6",
-    "ioredis": "^5.10.1",
-    "zod": "^4.4.3"
+    "@opentui/core": "^0.2.10",
+    "bullmq": "^5.76.8"
   },
   "devDependencies": {
     "@types/bun": "1.3.13",
