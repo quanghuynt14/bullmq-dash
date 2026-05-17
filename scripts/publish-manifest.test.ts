@@ -218,7 +218,7 @@ describe("assertSourceManifest", () => {
     manifest.scripts = {
       ...(manifest.scripts as Record<string, string>),
       "security:release":
-        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package",
+        "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows",
     };
 
     expect(() => assertSourceManifest(manifest)).toThrow(
@@ -230,7 +230,8 @@ describe("assertSourceManifest", () => {
     const manifest = validManifest();
     manifest.scripts = {
       ...(manifest.scripts as Record<string, string>),
-      "security:release": `bun run security:score && ${PREPUBLISH_ONLY_SCRIPT}`,
+      "security:release":
+        "bun run security:verify-lockfile && bun run security:verify-source-control && bun run security:verify-workflows && bun run security:verify-package",
     };
 
     expect(() => assertSourceManifest(manifest)).toThrow(

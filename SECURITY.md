@@ -39,10 +39,9 @@ That command runs, in order:
    exist, and CI/publish workflows install with `--frozen-lockfile`.
 3. `bun run security:verify-workflows` — confirms CI and publish workflows pin
    GitHub Actions by commit SHA, reject `pull_request_target` and unsafe
-   `${{ github.event.* }}` interpolation, use read-only CI tokens, scope
-   secrets to approved steps, keep npm lifecycle scripts enabled, publish with
-   provenance, install Socket CLI `1.1.94`, and run the post-publish Socket
-   score gate.
+   `${{ github.event.* }}` interpolation, use read-only CI tokens, reject
+   publish secrets, keep npm lifecycle scripts enabled, and publish with
+   provenance.
 4. `bun run security:verify-package` — packs the release tarball and verifies
    the source manifest, no direct `ioredis` or `zod` imports in source or the
    packed entrypoint, no dynamic-code or shell primitives in source or
@@ -53,10 +52,11 @@ That command runs, in order:
    repo-level secret scanners like git-secrets / gitleaks), the stripped
    publish manifest, packed size and entry-count limits, and the expected
    runtime dependency set (`@opentui/core`, `bullmq`).
-5. `bun run security:score` — scores the published package via the pinned
-   Socket CLI (`@socketsecurity/cli@1.1.94`) and compares Socket's alerts
-   against an accepted-alert allowlist. The gate exits nonzero only when
-   Socket reports an alert type outside that set.
+
+`bun run security:score` remains available as an optional manual audit for a
+version that already exists on npm. It is intentionally not part of the publish
+workflow because Socket scoring can lag or fail after npm accepts the immutable
+package version.
 
 The accepted-alert set is defined in
 [`scripts/socket-score.ts`](scripts/socket-score.ts) as `ACCEPTED_ALERT_TYPES`.
@@ -72,9 +72,7 @@ Risk-signal alert types (`debugAccess`, `gptAnomaly`, `newAuthor`,
 the `bullmq` or `@opentui/core` transitive graph. When one fires, investigate
 the offending transitive, then either revert the dependency change or add
 the alert type to `ACCEPTED_RISK_ALERTS` in `scripts/socket-score.ts` with
-a one-line citation. Expect the gate to fire on first publish, and on any
-dependency update that introduces a new alert type, until each actually-
-observed alert has been triaged this way.
+a one-line citation.
 
 ## Historical Audit
 

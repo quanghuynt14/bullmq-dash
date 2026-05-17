@@ -225,7 +225,7 @@ bun run start
 # Audit the immutable 0.2.7 Socket target (historical evidence)
 bun run security:audit-0.2.7
 
-# Score the configured package version after it is published
+# Optional manual Socket score for an already-published version
 bun run security:score
 
 # Verify forbidden local-only files are ignored and not tracked
@@ -234,7 +234,7 @@ bun run security:verify-source-control
 # Verify Bun package manager pinning, bun.lock tracking, and frozen installs
 bun run security:verify-lockfile
 
-# Verify CI/publish workflows pin actions, lock down releases, and score after publish
+# Verify CI/publish workflows pin actions and lock down releases
 bun run security:verify-workflows
 
 # Verify source import policy, npm tarball contents, and stripped publish manifest
@@ -260,26 +260,19 @@ or gitleaks), enforces packed-tarball size and entry-count limits, and
 verifies the stripped publish manifest. Note: `ioredis` remains a transitive
 dependency through `bullmq`; the policy blocks _direct_ imports only.
 
-`bun run security:score` runs the Socket package score against the version in
-`package.json` (must already be published to npm). It compares the alert set
-against an accepted-alert allowlist that includes the capabilities a Redis
-monitoring tool legitimately needs (`networkAccess`, `urlStrings`,
-`filesystemAccess`, `envVars`), Socket's transient `recentlyPublished` window,
-and the transitive alert types present in the `bullmq` and `@opentui/core`
-graphs. The gate exits nonzero only when an alert type appears outside that set,
-which surfaces real regressions from dependency updates without paging on every
-publish.
+`bun run security:score` is an optional manual audit for a version that already
+exists on npm. It compares the Socket alert set against the accepted-alert
+allowlist, but it is intentionally not part of the publish workflow because
+Socket scoring can lag or fail after npm accepts the immutable package version.
 
 `bun run security:verify-workflows` rejects mutable GitHub Action refs,
 `pull_request_target` triggers, and direct `${{ github.event.* }}` interpolation
 in workflow commands. It also verifies CI and publish workflows run the
 source-control, lockfile, workflow, and package policy verifiers, CI uses
-read-only permissions, and the npm publish workflow scopes secrets to approved
-step env entries, is release-only, runs the source-control, lockfile, workflow,
-and package verifiers before publishing, uses least privilege, keeps npm
-lifecycle scripts enabled, publishes with provenance, installs the Socket CLI by
-the configured exact version `1.1.94`, and runs the post-publish Socket score
-gate.
+read-only permissions, and the npm publish workflow rejects publish secrets,
+is release-only, runs the source-control, lockfile, workflow, and package
+verifiers before publishing, uses least privilege, keeps npm lifecycle scripts
+enabled, and publishes with provenance.
 
 `bun run security:verify-source-control` rejects tracked `.env` / `.envrc` /
 `.npmrc` files, build output, publish manifest backups, and generated package

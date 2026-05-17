@@ -14,7 +14,7 @@ export const POSTPUBLISH_SCRIPT = "bun scripts/publish-manifest.ts restore";
 export const PREPUBLISH_ONLY_SCRIPT =
   "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package";
 export const SECURITY_RELEASE_SCRIPT =
-  "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package && bun run security:score";
+  "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package";
 // Versions whose number we explicitly refuse to re-publish from a local
 // worktree. npm enforces version immutability registry-side, but this
 // tripwire is what surfaces the mistake at `prepack` time rather than

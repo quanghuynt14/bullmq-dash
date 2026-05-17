@@ -1,6 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { SOCKET_CLI_VERSION } from "./audit-socket-target.js";
 import {
   escapeRegex,
   getExecutableCommandText,
@@ -187,13 +186,13 @@ export function getWorkflowPolicyViolations(
 //    workflow's prepack writes the stripped manifest; suppressing it would
 //    publish the source manifest as-is and break the policy.
 // 2. In **both** CI and publish, every `bun install` invocation must
-//    include `--ignore-scripts`. The publish job carries `id-token: write`
-//    and NPM_TOKEN, so a transitive postinstall there would run with the
-//    privileges to mint a provenance attestation. The CI job runs with
-//    `contents: read` and `persist-credentials: false`, but a postinstall
-//    can still poison the runner cache or tamper with the working tree
-//    before security:verify-package packs it — so the rule applies there
-//    too. The project's own build runs explicitly via prepack
+//    include `--ignore-scripts`. The publish job carries `id-token: write`,
+//    so a transitive postinstall there would run in a context that can mint
+//    a provenance attestation. The CI job runs with `contents: read` and
+//    `persist-credentials: false`, but a postinstall can still poison the
+//    runner cache or tamper with the working tree before
+//    security:verify-package packs it — so the rule applies there too. The
+//    project's own build runs explicitly via prepack
 //    (`await import("../build.ts")`) and `bun run build`, so install-time
 //    lifecycle scripts are unnecessary in either workflow.
 function getCommandLevelIgnoreScriptsViolations(
@@ -283,13 +282,6 @@ function findEnclosingStep(steps: WorkflowStep[], lineNumber: number): WorkflowS
   return null;
 }
 
-function stepRunMatches(step: WorkflowStep, pattern: RegExp): boolean {
-  for (const { command } of getExecutableCommands(step.content)) {
-    if (pattern.test(command)) return true;
-  }
-  return false;
-}
-
 interface ApprovedSecretBinding {
   envKey: string;
   secretName: string;
@@ -305,38 +297,13 @@ interface ApprovedSecretBinding {
 // structure justifies that binding via its own run command.
 function getApprovedSecretBindings(parsed: ParsedWorkflow, path: string): ApprovedSecretBinding[] {
   if (path !== ".github/workflows/publish.yml" || !parsed.jobs) return [];
-  const approved: ApprovedSecretBinding[] = [];
+  void parsed;
 
-  for (const step of collectParsedSteps(parsed)) {
-    if (!step.env || typeof step.env !== "object" || Array.isArray(step.env)) continue;
-    const run = typeof step.run === "string" ? step.run : "";
-
-    for (const [envKey, envValue] of Object.entries(step.env as Record<string, unknown>)) {
-      if (typeof envValue !== "string") continue;
-      const secretMatch = envValue.match(
-        /^\s*\$\{\{\s*secrets\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}\s*$/,
-      );
-      if (!secretMatch) continue;
-      const secretName = secretMatch[1] ?? "";
-
-      if (
-        envKey === "NODE_AUTH_TOKEN" &&
-        secretName === "NPM_TOKEN" &&
-        /^npm publish\b/.test(run.trim())
-      ) {
-        approved.push({ envKey, secretName });
-      }
-      if (
-        envKey === "SOCKET_CLI_API_TOKEN" &&
-        secretName === "SOCKET_CLI_API_TOKEN" &&
-        (/\bsecurity:score\b/.test(run) || /^socket\b/.test(run.trim()))
-      ) {
-        approved.push({ envKey, secretName });
-      }
-    }
-  }
-
-  return approved;
+  // The publish workflow uses npm trusted publishing through GitHub OIDC,
+  // so it should not receive long-lived npm or Socket credentials. Keep the
+  // parsed walk here as the single place to add a tightly scoped exception if
+  // a future private dependency needs a read-only install token.
+  return [];
 }
 
 function isAllowedSecretEnvLine(
@@ -365,10 +332,7 @@ function isAllowedSecretEnvLine(
       // did, but re-applied here so a misattributed line in a non-
       // publish step (with a parsed-elsewhere approval) cannot sneak
       // through.
-      if (envKey === "NODE_AUTH_TOKEN") return stepRunMatches(step, /^npm publish\b/);
-      if (envKey === "SOCKET_CLI_API_TOKEN") {
-        return stepRunMatches(step, /\bsecurity:score\b|^socket\b/);
-      }
+      return false;
     }
   }
   return false;
@@ -486,39 +450,6 @@ function findExecutableCommandLine(content: string, pattern: RegExp, afterLine =
   return 0;
 }
 
-function findExecutableCommandMatches(
-  content: string,
-  pattern: RegExp,
-): Array<{ line: number; command: string }> {
-  const matches: Array<{ line: number; command: string }> = [];
-  const lines = content.split("\n");
-
-  for (const [index, line] of lines.entries()) {
-    const command = getExecutableCommandText(line);
-    if (!command) continue;
-    if (/^echo\b/.test(command)) continue;
-    if (pattern.test(command)) {
-      matches.push({ line: index + 1, command });
-    }
-  }
-
-  return matches;
-}
-
-function getExpectedSocketCliInstallPattern(): RegExp {
-  return new RegExp(
-    `^npm install --global @socketsecurity\\/cli@${escapeRegex(SOCKET_CLI_VERSION)}\\s*$`,
-  );
-}
-
-export function getPinnedSocketCliVersion(publishWorkflow: string): string | null {
-  const install = findExecutableCommandMatches(
-    publishWorkflow,
-    /^npm install --global @socketsecurity\/cli@\d+\.\d+\.\d+\s*$/,
-  )[0];
-  return install?.command.match(/@socketsecurity\/cli@(\d+\.\d+\.\d+)\s*$/)?.[1] ?? null;
-}
-
 function getWorkflowReleasePolicyViolations(
   files: Record<string, string>,
 ): WorkflowPolicyViolation[] {
@@ -628,19 +559,6 @@ function getWorkflowReleasePolicyViolations(
   }
 
   const publishCommandLine = findPublishWithProvenanceLine(publish);
-  const scoreCommandLine = findExecutableCommandLine(
-    publish,
-    /\bbun run security:score\b/,
-    publishCommandLine,
-  );
-  const socketCliInstallLine = findExecutableCommandLine(
-    publish,
-    getExpectedSocketCliInstallPattern(),
-  );
-  const mutableSocketCliInstall = findExecutableCommandMatches(
-    publish,
-    /\bnpm (?:install|i|add)\b.*@socketsecurity\/cli(?:@|\s|$)/,
-  ).find(({ command }) => !getExpectedSocketCliInstallPattern().test(command));
 
   if (publishCommandLine === 0) {
     violations.push({
@@ -661,38 +579,6 @@ function getWorkflowReleasePolicyViolations(
         message: `publish workflow must run the ${label} policy verifier before publishing`,
       });
     }
-  }
-
-  if (publishCommandLine > 0 && scoreCommandLine === 0) {
-    violations.push({
-      path: publishPath,
-      line: findLine(publish, /security:score|npm publish/),
-      message: "publish workflow must score the just-published package with Socket",
-    });
-  }
-
-  if (mutableSocketCliInstall) {
-    violations.push({
-      path: publishPath,
-      line: mutableSocketCliInstall.line,
-      message: `publish workflow must install Socket CLI ${SOCKET_CLI_VERSION} after publishing and before scoring`,
-    });
-  }
-
-  if (
-    !mutableSocketCliInstall &&
-    scoreCommandLine > 0 &&
-    (socketCliInstallLine === 0 ||
-      socketCliInstallLine < publishCommandLine ||
-      socketCliInstallLine > scoreCommandLine)
-  ) {
-    violations.push({
-      path: publishPath,
-      line:
-        findOptionalLine(publish, /@socketsecurity\/cli/) ||
-        findLine(publish, /security:score|npm publish/),
-      message: `publish workflow must install Socket CLI ${SOCKET_CLI_VERSION} after publishing and before scoring`,
-    });
   }
 
   return violations;
@@ -722,6 +608,6 @@ if (import.meta.main) {
   }
 
   console.log(
-    `Workflow policy: actions pinned by SHA, unsafe PR/event patterns absent, source-control, lockfile, workflow, and package verifier steps run before publishing, secrets scoped, release publishing locked down, npm lifecycle scripts enabled, exact Socket CLI install pinned${getPinnedSocketCliVersion(workflowFiles[".github/workflows/publish.yml"] ?? "") ? ` to ${getPinnedSocketCliVersion(workflowFiles[".github/workflows/publish.yml"] ?? "")}` : ""}, and post-publish Socket scoring enforced`,
+    "Workflow policy: actions pinned by SHA, unsafe PR/event patterns absent, source-control, lockfile, workflow, and package verifier steps run before publishing, secrets scoped, release publishing locked down, npm lifecycle scripts enabled, and provenance publishing enforced",
   );
 }

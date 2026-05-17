@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { getPinnedSocketCliVersion, getWorkflowPolicyViolations } from "./workflow-policy.js";
+import { getWorkflowPolicyViolations } from "./workflow-policy.js";
 
 const checkoutSha = "34e114876b0b11c390a56381ad16ebd13914f8d5";
 const validCi = `name: CI
@@ -34,8 +34,6 @@ jobs:
       - run: bun run security:verify-workflows
       - run: bun run security:verify-package
       - run: npm publish --provenance --access public
-      - run: npm install --global @socketsecurity/cli@1.1.94
-      - run: bun run security:score
 `;
 
 describe("getWorkflowPolicyViolations", () => {
@@ -83,7 +81,7 @@ describe("getWorkflowPolicyViolations", () => {
     ).toEqual([
       {
         path: ".github/workflows/publish.yml",
-        line: 19,
+        line: 17,
         message:
           "publish workflow must run bun install with --ignore-scripts to block transitive postinstall scripts",
       },
@@ -118,7 +116,7 @@ describe("getWorkflowPolicyViolations", () => {
       }),
     ).toContainEqual({
       path: ".github/workflows/publish.yml",
-      line: 19,
+      line: 17,
       message:
         "publish workflow must run bun install with --ignore-scripts to block transitive postinstall scripts",
     });
@@ -148,7 +146,7 @@ describe("getWorkflowPolicyViolations", () => {
   it("rejects CI workflows where bun install runs without --ignore-scripts", () => {
     // A transitive postinstall on a PR build can poison the runner cache or
     // tamper with the working tree before security:verify-package packs it.
-    // CI lacks NPM_TOKEN / id-token but still has filesystem access to the
+    // CI lacks id-token but still has filesystem access to the
     // pre-publish source tree, so the same rule that protects publish.yml
     // protects ci.yml. Drop the --ignore-scripts flag and the gate must fire.
     const ciWithoutFlag = validCi.replace(
@@ -185,10 +183,6 @@ describe("getWorkflowPolicyViolations", () => {
       message:
         "CI workflow must run bun install with --ignore-scripts to block transitive postinstall scripts",
     });
-  });
-
-  it("extracts the publish-pinned Socket CLI version", () => {
-    expect(getPinnedSocketCliVersion(validPublish)).toBe("1.1.94");
   });
 
   it("rejects workflow actions pinned only to mutable tags", () => {
@@ -705,14 +699,14 @@ jobs:
         ".github/workflows/publish.yml": validPublish
           .replace("      - run: bun run security:verify-lockfile\n", "")
           .replace(
-            "      - run: bun run security:score",
-            "      - run: bun run security:score\n      - run: bun run security:verify-lockfile",
+            "      - run: npm publish --provenance --access public",
+            "      - run: npm publish --provenance --access public\n      - run: bun run security:verify-lockfile",
           ),
       }),
     ).toEqual([
       {
         path: ".github/workflows/publish.yml",
-        line: 18,
+        line: 16,
         message: "publish workflow must run the lockfile policy verifier before publishing",
       },
     ]);
@@ -725,14 +719,14 @@ jobs:
         ".github/workflows/publish.yml": validPublish
           .replace("      - run: bun run security:verify-source-control\n", "")
           .replace(
-            "      - run: bun run security:score",
-            "      - run: bun run security:score\n      - run: bun run security:verify-source-control",
+            "      - run: npm publish --provenance --access public",
+            "      - run: npm publish --provenance --access public\n      - run: bun run security:verify-source-control",
           ),
       }),
     ).toEqual([
       {
         path: ".github/workflows/publish.yml",
-        line: 18,
+        line: 16,
         message: "publish workflow must run the source-control policy verifier before publishing",
       },
     ]);
@@ -745,14 +739,14 @@ jobs:
         ".github/workflows/publish.yml": validPublish
           .replace("      - run: bun run security:verify-workflows\n", "")
           .replace(
-            "      - run: bun run security:score",
-            "      - run: bun run security:score\n      - run: bun run security:verify-workflows",
+            "      - run: npm publish --provenance --access public",
+            "      - run: npm publish --provenance --access public\n      - run: bun run security:verify-workflows",
           ),
       }),
     ).toEqual([
       {
         path: ".github/workflows/publish.yml",
-        line: 18,
+        line: 16,
         message: "publish workflow must run the workflow policy verifier before publishing",
       },
     ]);
@@ -776,49 +770,13 @@ jobs:
     ]);
   });
 
-  it("rejects publish workflows without a post-publish Socket score gate", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "      - run: bun run security:score\n",
-          "",
-        ),
-      }),
-    ).toEqual([
-      {
-        path: ".github/workflows/publish.yml",
-        line: 16,
-        message: "publish workflow must score the just-published package with Socket",
-      },
-    ]);
-  });
-
-  it("rejects publish workflows where the post-publish Socket score is only mentioned in a comment", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "      - run: bun run security:score",
-          "      # run: bun run security:score",
-        ),
-      }),
-    ).toEqual([
-      {
-        path: ".github/workflows/publish.yml",
-        line: 16,
-        message: "publish workflow must score the just-published package with Socket",
-      },
-    ]);
-  });
-
   // Regression: `findExecutableCommandLine` skips lines starting with
   // `echo` so an `echo "..."` placeholder can't satisfy a verifier-presence
   // check. Each verifier needs its own case — a future refactor that
-  // narrows the `echo` filter only to the score command would otherwise
-  // re-open the gap silently. The expected violation line is the line
-  // where the (now-echoed) verifier text appears, which is the line that
-  // `findOptionalLine(/security:verify-…/)` still matches.
+  // narrows the `echo` filter would otherwise re-open the gap silently. The
+  // expected violation line is the line where the (now-echoed) verifier text
+  // appears, which is the line that `findOptionalLine(/security:verify-…/)`
+  // still matches.
   it.each([
     [
       "security:verify-source-control",
@@ -856,134 +814,6 @@ jobs:
     });
   });
 
-  it("rejects publish workflows where the post-publish Socket score is only echoed", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "      - run: bun run security:score",
-          '      - run: echo "bun run security:score"',
-        ),
-      }),
-    ).toEqual([
-      {
-        path: ".github/workflows/publish.yml",
-        line: 16,
-        message: "publish workflow must score the just-published package with Socket",
-      },
-    ]);
-  });
-
-  it("rejects publish workflows that install the Socket CLI without an exact version", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "npm install --global @socketsecurity/cli@1.1.94",
-          "npm install --global @socketsecurity/cli@latest",
-        ),
-      }),
-    ).toEqual([
-      {
-        path: ".github/workflows/publish.yml",
-        line: 17,
-        message:
-          "publish workflow must install Socket CLI 1.1.94 after publishing and before scoring",
-      },
-    ]);
-  });
-
-  it("rejects publish workflows that install a different exact Socket CLI version", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "npm install --global @socketsecurity/cli@1.1.94",
-          "npm install --global @socketsecurity/cli@1.1.93",
-        ),
-      }),
-    ).toEqual([
-      {
-        path: ".github/workflows/publish.yml",
-        line: 17,
-        message:
-          "publish workflow must install Socket CLI 1.1.94 after publishing and before scoring",
-      },
-    ]);
-  });
-
-  it("rejects publish workflows that replace an exact Socket CLI install with an unpinned one", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "      - run: bun run security:score",
-          "      - run: npm install --global @socketsecurity/cli@latest\n      - run: bun run security:score",
-        ),
-      }),
-    ).toEqual([
-      {
-        path: ".github/workflows/publish.yml",
-        line: 18,
-        message:
-          "publish workflow must install Socket CLI 1.1.94 after publishing and before scoring",
-      },
-    ]);
-  });
-
-  it("rejects publish workflows that use npm aliases for an unpinned Socket CLI install", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "      - run: bun run security:score",
-          "      - run: npm i -g @socketsecurity/cli@latest\n      - run: bun run security:score",
-        ),
-      }),
-    ).toEqual([
-      {
-        path: ".github/workflows/publish.yml",
-        line: 18,
-        message:
-          "publish workflow must install Socket CLI 1.1.94 after publishing and before scoring",
-      },
-    ]);
-  });
-
-  it("rejects publish workflows that install the Socket CLI before publishing", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "      - run: npm publish --provenance --access public\n      - run: npm install --global @socketsecurity/cli@1.1.94",
-          "      - run: npm install --global @socketsecurity/cli@1.1.94\n      - run: npm publish --provenance --access public",
-        ),
-      }),
-    ).toEqual([
-      {
-        path: ".github/workflows/publish.yml",
-        line: 16,
-        message:
-          "publish workflow must install Socket CLI 1.1.94 after publishing and before scoring",
-      },
-    ]);
-  });
-
-  it("allows post-publish Socket scoring inside a run block", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "      - run: bun run security:score",
-          `      - run: |
-          if bun run security:score; then
-            exit 0
-          fi`,
-        ),
-      }),
-    ).toEqual([]);
-  });
-
   it("rejects secrets interpolated directly into workflow commands", () => {
     expect(
       getWorkflowPolicyViolations({
@@ -993,18 +823,15 @@ jobs:
     ).toEqual([
       {
         path: ".github/workflows/publish.yml",
-        line: 19,
+        line: 17,
         message: "secrets must only be passed through approved publish step env entries",
       },
     ]);
   });
 
-  it("rejects approved secret env entries when they're not scoped to the right step", () => {
-    // Appends a `- env:` step with no `run:`. None of the three secrets can
-    // qualify: NPM_TOKEN requires the enclosing step to run `npm publish`
-    // and SOCKET_CLI_API_TOKEN requires it to run `security:score`. A
-    // free-floating env block would re-bind privileged tokens into steps
-    // that have no business holding them.
+  it("rejects publish workflow secret env entries", () => {
+    // The release job uses npm trusted publishing through GitHub OIDC, so it
+    // should not receive long-lived npm or Socket credentials.
     expect(
       getWorkflowPolicyViolations({
         ".github/workflows/ci.yml": validCi,
@@ -1013,23 +840,23 @@ jobs:
     ).toEqual([
       {
         path: ".github/workflows/publish.yml",
+        line: 18,
+        message: "secrets must only be passed through approved publish step env entries",
+      },
+      {
+        path: ".github/workflows/publish.yml",
+        line: 19,
+        message: "secrets must only be passed through approved publish step env entries",
+      },
+      {
+        path: ".github/workflows/publish.yml",
         line: 20,
-        message: "secrets must only be passed through approved publish step env entries",
-      },
-      {
-        path: ".github/workflows/publish.yml",
-        line: 21,
-        message: "secrets must only be passed through approved publish step env entries",
-      },
-      {
-        path: ".github/workflows/publish.yml",
-        line: 22,
         message: "secrets must only be passed through approved publish step env entries",
       },
     ]);
   });
 
-  it("accepts NODE_AUTH_TOKEN when scoped to the npm publish step", () => {
+  it("rejects NODE_AUTH_TOKEN even when scoped to the npm publish step", () => {
     expect(
       getWorkflowPolicyViolations({
         ".github/workflows/ci.yml": validCi,
@@ -1038,50 +865,19 @@ jobs:
           `      - env:\n          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}\n        run: npm publish --provenance --access public`,
         ),
       }),
-    ).toEqual([]);
-  });
-
-  it("rejects NODE_AUTH_TOKEN bound to a non-publish step", () => {
-    // Binds NPM_TOKEN on the Socket score step instead of the npm publish
-    // step. The Socket score step runs `npm exec`/`npm install` and
-    // shouldn't carry the publish token — defence-in-depth against a
-    // compromised Socket CLI release accessing the publish credential.
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "      - run: bun run security:score",
-          `      - env:\n          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}\n        run: bun run security:score`,
-        ),
-      }),
     ).toContainEqual({
       path: ".github/workflows/publish.yml",
-      line: 19,
+      line: 17,
       message: "secrets must only be passed through approved publish step env entries",
     });
   });
 
-  it("accepts SOCKET_CLI_API_TOKEN when scoped to the Socket score step", () => {
-    expect(
-      getWorkflowPolicyViolations({
-        ".github/workflows/ci.yml": validCi,
-        ".github/workflows/publish.yml": validPublish.replace(
-          "      - run: bun run security:score",
-          `      - env:\n          SOCKET_CLI_API_TOKEN: \${{ secrets.SOCKET_CLI_API_TOKEN }}\n        run: bun run security:score`,
-        ),
-      }),
-    ).toEqual([]);
-  });
-
   it("rejects a second NODE_AUTH_TOKEN env binding on a non-publish step (YAML-backed attribution)", () => {
     // This is the attack the YAML-backed step boundary fix addresses:
-    // a malicious PR adds a SECOND env binding with the same literal text
-    // as the legit publish step's binding, but on a different step whose
-    // run command is not `npm publish`. The line-level regex alone would
-    // mis-attribute the line if the splitter were confused about step
-    // boundaries; the YAML-parsed approved-bindings list is anchored to
-    // each binding's *own* step's run command, so the second binding
-    // can't pass on the strength of the first.
+    // a malicious PR adds two env bindings with the same literal text in
+    // different steps. The line-level regex alone would mis-attribute a line
+    // if the splitter were confused about step boundaries; the policy must
+    // reject both bindings.
     const malicious = validPublish.replace(
       "      - run: npm publish --provenance --access public",
       `      - env:\n          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}\n        run: npm publish --provenance --access public\n      - env:\n          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}\n        run: ./malicious-thing`,
@@ -1095,7 +891,7 @@ jobs:
         (v) =>
           v.message === "secrets must only be passed through approved publish step env entries",
       ).length,
-    ).toBe(1);
+    ).toBe(2);
   });
 
   it("rejects a workflow whose YAML shape is too ambiguous to attribute lines deterministically", () => {

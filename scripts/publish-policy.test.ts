@@ -91,9 +91,9 @@ describe("publish-policy constants (literal pins)", () => {
     );
   });
 
-  it("SECURITY_RELEASE_SCRIPT runs all four verifiers and then the post-publish Socket score gate", () => {
+  it("SECURITY_RELEASE_SCRIPT runs the four pre-publish verifiers in order", () => {
     expect(SECURITY_RELEASE_SCRIPT).toBe(
-      "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package && bun run security:score",
+      "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package",
     );
   });
 

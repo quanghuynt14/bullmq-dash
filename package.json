@@ -43,7 +43,7 @@
     "format": "oxfmt --write",
     "format:check": "oxfmt --check",
     "security:audit-0.2.7": "bun scripts/audit-socket-target.ts",
-    "security:release": "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package && bun run security:score",
+    "security:release": "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package",
     "security:score": "bun scripts/socket-score.ts",
     "security:verify-lockfile": "bun scripts/lockfile-policy.ts",
     "security:verify-package": "bun scripts/verify-package.ts",
