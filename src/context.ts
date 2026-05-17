@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { RedisConnection, type Queue, type RedisClient } from "bullmq";
 import type { Config } from "./config.js";
+import { closeAllQueues } from "./data/queues.js";
 import { createSqliteDb } from "./data/sqlite.js";
 
 /**
@@ -130,4 +131,16 @@ export function createContext(config: Config, opts: CreateContextOptions = {}): 
     syncLock: { inProgress: false, acquiredAt: null },
     recentlyPolledWrites: new Map(),
   };
+}
+
+/**
+ * Tear down every connection owned by a Context: BullMQ queues, the Redis
+ * client, and the SQLite handle. The Redis quit is best-effort (its `.catch`
+ * is internal); the other two propagate failures so callers can decide
+ * whether to surface or swallow them.
+ */
+export async function closeContext(ctx: Context): Promise<void> {
+  await closeAllQueues(ctx);
+  await ctx.redis.quit().catch(() => {});
+  ctx.db.close();
 }

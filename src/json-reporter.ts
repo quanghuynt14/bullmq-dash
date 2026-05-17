@@ -1,4 +1,4 @@
-import { discoverQueueNames, getQueueStats, closeAllQueues, deleteQueue } from "./data/queues.js";
+import { discoverQueueNames, getQueueStats, deleteQueue } from "./data/queues.js";
 import { getAllJobs, getJobDetail, retryFailedJobs, VALID_JOB_STATUSES } from "./data/jobs.js";
 import type { JsonJobStatus, RetryResult } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
@@ -8,7 +8,7 @@ import { markPolledWrites } from "./data/sync.js";
 import type { Subcommand } from "./cli.js";
 import type { Config } from "./config.js";
 import { setConfig } from "./config.js";
-import { createContext, type Context } from "./context.js";
+import { closeContext, createContext, type Context } from "./context.js";
 import {
   formatQueuesOverview,
   formatJobsList,
@@ -178,7 +178,7 @@ async function fetchJobDetail(ctx: Context, queueName: string, jobId: string) {
   if (!job) {
     writeError(`Job '${jobId}' not found in queue '${queueName}'`, "RUNTIME_ERROR");
     try {
-      await cleanup(ctx);
+      await closeContext(ctx);
     } catch {
       // Ignore cleanup errors
     }
@@ -211,7 +211,7 @@ async function fetchSchedulerDetail(ctx: Context, queueName: string, schedulerKe
   if (!scheduler) {
     writeError(`Scheduler '${schedulerKey}' not found in queue '${queueName}'`, "RUNTIME_ERROR");
     try {
-      await cleanup(ctx);
+      await closeContext(ctx);
     } catch {
       // Ignore cleanup errors
     }
@@ -252,14 +252,6 @@ function promptConfirmation(message: string): Promise<boolean> {
       resolve(answer.toLowerCase() === "y");
     });
   });
-}
-
-// ── Cleanup helper ──────────────────────────────────────────────────────
-
-async function cleanup(ctx: Context): Promise<void> {
-  await closeAllQueues(ctx);
-  await ctx.redis.quit().catch(() => {});
-  ctx.db.close();
 }
 
 // ── Route and execute ───────────────────────────────────────────────────
@@ -358,7 +350,7 @@ export async function runJsonMode(
       );
       if (!confirmed) {
         process.stderr.write("Cancelled.\n");
-        await cleanup(ctx);
+        await closeContext(ctx);
         process.exit(1);
       }
     } else {
@@ -380,7 +372,7 @@ export async function runJsonMode(
       error instanceof Error ? error.message : String(error),
     );
     try {
-      await cleanup(ctx);
+      await closeContext(ctx);
     } catch {
       // Ignore cleanup errors — the original error has already been reported
     }
@@ -406,13 +398,13 @@ export async function runJsonMode(
       error instanceof Error ? error.message : String(error),
     );
     try {
-      await cleanup(ctx);
+      await closeContext(ctx);
     } catch {
       // Ignore cleanup errors — the original error has already been reported
     }
     process.exit(1);
   }
 
-  await cleanup(ctx);
+  await closeContext(ctx);
   process.exit(exitCode);
 }

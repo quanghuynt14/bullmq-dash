@@ -3,10 +3,9 @@ import { stateManager } from "./state.js";
 import { pollingManager } from "./polling.js";
 import { getJobDetail, deleteJob } from "./data/jobs.js";
 import { getJobSchedulerDetail } from "./data/schedulers.js";
-import { closeAllQueues } from "./data/queues.js";
 import { getConfig } from "./config.js";
 import { fullSync } from "./data/sync.js";
-import { createContext, type Context } from "./context.js";
+import { closeContext, createContext, type Context } from "./context.js";
 
 // UI imports
 import { createLayout, updateHeaderStatus, type LayoutElements } from "./ui/layout.js";
@@ -551,9 +550,7 @@ export class App {
 
     // Close connections owned by the Context.
     if (this.ctx) {
-      await closeAllQueues(this.ctx);
-      await this.ctx.redis.quit().catch(() => {});
-      this.ctx.db.close();
+      await closeContext(this.ctx);
       this.ctx = null;
     }
 
