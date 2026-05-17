@@ -152,7 +152,11 @@ export function resolveConfigPath(
 
 // ── Env-var interpolation ───────────────────────────────────────────────
 
-const ENV_REF = /^\$\{([A-Z_][A-Z0-9_]*)\}$/i;
+// POSIX shell convention is uppercase env var names; pin the case so the
+// "one obvious way" surface stays narrow. A lowercase `${var}` form would
+// otherwise silently work, which makes config files inconsistent across
+// machines and harder for `set` / dotenv tooling to introspect.
+const ENV_REF = /^\$\{([A-Z_][A-Z0-9_]*)\}$/;
 
 /**
  * Walk a parsed profile and replace any string of the exact form `${VAR}`

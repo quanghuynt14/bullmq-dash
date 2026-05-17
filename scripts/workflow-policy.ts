@@ -2,8 +2,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SOCKET_CLI_VERSION } from "./audit-socket-target.js";
 import {
+  escapeRegex,
   getExecutableCommandText,
   getExecutableCommands,
+  hasBooleanFlagEnabled,
   splitShellSegments,
 } from "./workflow-yaml.js";
 
@@ -13,6 +15,45 @@ export interface WorkflowPolicyViolation {
   message: string;
 }
 
+interface ParsedStep {
+  name?: unknown;
+  uses?: unknown;
+  run?: unknown;
+  env?: unknown;
+  with?: unknown;
+  id?: unknown;
+}
+
+interface ParsedWorkflow {
+  on?: unknown;
+  permissions?: unknown;
+  jobs?: Record<string, { steps?: unknown }>;
+}
+
+function parseWorkflowYaml(content: string): ParsedWorkflow | null {
+  try {
+    const parsed = Bun.YAML.parse(content);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as ParsedWorkflow;
+  } catch {
+    return null;
+  }
+}
+
+function collectParsedSteps(parsed: ParsedWorkflow): ParsedStep[] {
+  if (!parsed.jobs) return [];
+  const steps: ParsedStep[] = [];
+  for (const job of Object.values(parsed.jobs)) {
+    if (!job || typeof job !== "object" || !Array.isArray(job.steps)) continue;
+    for (const step of job.steps) {
+      if (step && typeof step === "object" && !Array.isArray(step)) {
+        steps.push(step as ParsedStep);
+      }
+    }
+  }
+  return steps;
+}
+
 export function getWorkflowPolicyViolations(
   files: Record<string, string>,
 ): WorkflowPolicyViolation[] {
@@ -20,6 +61,47 @@ export function getWorkflowPolicyViolations(
 
   for (const [path, content] of Object.entries(files)) {
     const lines = content.split("\n");
+    const parsed = parseWorkflowYaml(content);
+
+    // Step boundaries: prefer YAML-derived attribution over the regex
+    // splitter when both agree on step count. If the splitter sees more
+    // anchors than the parser sees steps, something in the workflow
+    // (e.g. list-shaped text inside a `run: |` block, a YAML anchor
+    // expansion) is creating false step boundaries; refuse to lint
+    // secret bindings on that shape rather than silently mis-attribute.
+    let steps: WorkflowStep[];
+    if (parsed) {
+      const yamlBacked = getYamlBackedSteps(content, parsed);
+      if (yamlBacked === null) {
+        violations.push({
+          path,
+          line: 1,
+          message:
+            "workflow step shape is ambiguous (line-splitter anchor count != parsed step count); simplify the YAML so the linter can attribute lines to steps deterministically",
+        });
+        steps = getWorkflowSteps(content);
+      } else {
+        steps = yamlBacked;
+      }
+    } else {
+      if (/\$\{\{\s*secrets\./i.test(content)) {
+        violations.push({
+          path,
+          line: 1,
+          message: "workflow YAML failed to parse; refuse to lint secret bindings",
+        });
+      }
+      steps = getWorkflowSteps(content);
+    }
+
+    // Secrets allow-list derived from the parsed structure: each entry
+    // describes an env binding the publish step is permitted to hold,
+    // anchored to a specific step's run command. Without this list, the
+    // line scan would allow ANY occurrence of `KEY: ${{ secrets.NAME }}`
+    // anywhere in the file as long as the literal text matched the
+    // approved pattern, even on a step that doesn't actually publish.
+    const approvedBindings = parsed ? getApprovedSecretBindings(parsed, path) : [];
+
     for (const [index, line] of lines.entries()) {
       const lineNumber = index + 1;
       const usesMatch = line.match(/^\s*(?:-\s*)?uses:\s*([^@\s#]+)@([^\s#]+)/);
@@ -60,7 +142,10 @@ export function getWorkflowPolicyViolations(
         });
       }
 
-      if (/\$\{\{\s*secrets\./i.test(line) && !isAllowedSecretEnvLine(path, line)) {
+      if (
+        /\$\{\{\s*secrets\./i.test(line) &&
+        !isAllowedSecretEnvLine(path, line, findEnclosingStep(steps, lineNumber), approvedBindings)
+      ) {
         violations.push({
           path,
           line: lineNumber,
@@ -96,24 +181,29 @@ export function getWorkflowPolicyViolations(
   return violations;
 }
 
-// Two structural checks (instead of the old blanket `\bignore-scripts\b`
-// regex):
+// Structural checks (instead of a blanket `\bignore-scripts\b` regex):
 //
-// 1. `npm publish --ignore-scripts` is banned. The publish workflow's
-//    prepack writes the stripped manifest; suppressing it would publish
-//    the source manifest as-is and break the policy.
-// 2. In publish.yml, every `bun install` invocation must include
-//    `--ignore-scripts`. The publish job carries `id-token: write` and
-//    NPM_TOKEN, so a transitive postinstall would run with the privileges
-//    to mint a provenance attestation. The project's own build runs
-//    explicitly via prepack (`await import("../build.ts")`), so install-
-//    time lifecycle scripts are unnecessary here.
+// 1. `npm publish --ignore-scripts` is banned in publish.yml. The publish
+//    workflow's prepack writes the stripped manifest; suppressing it would
+//    publish the source manifest as-is and break the policy.
+// 2. In **both** CI and publish, every `bun install` invocation must
+//    include `--ignore-scripts`. The publish job carries `id-token: write`
+//    and NPM_TOKEN, so a transitive postinstall there would run with the
+//    privileges to mint a provenance attestation. The CI job runs with
+//    `contents: read` and `persist-credentials: false`, but a postinstall
+//    can still poison the runner cache or tamper with the working tree
+//    before security:verify-package packs it — so the rule applies there
+//    too. The project's own build runs explicitly via prepack
+//    (`await import("../build.ts")`) and `bun run build`, so install-time
+//    lifecycle scripts are unnecessary in either workflow.
 function getCommandLevelIgnoreScriptsViolations(
   path: string,
   content: string,
 ): WorkflowPolicyViolation[] {
   const violations: WorkflowPolicyViolation[] = [];
-  if (path !== ".github/workflows/publish.yml") return violations;
+  const isPublish = path === ".github/workflows/publish.yml";
+  const isCi = path === ".github/workflows/ci.yml";
+  if (!isPublish && !isCi) return violations;
 
   for (const { line, command } of getExecutableCommands(content)) {
     for (const segment of splitShellSegments(command)) {
@@ -122,7 +212,7 @@ function getCommandLevelIgnoreScriptsViolations(
       // (`npm publish --ignore-scripts`), through config (`npm config set
       // ignore-scripts true`), or by setting an alias. Bun's install flag
       // is explicitly excluded by the leading-`npm` anchor below.
-      if (/^npm\b/.test(segment) && /\bignore-scripts\b/i.test(segment)) {
+      if (isPublish && /^npm\b/.test(segment) && /\bignore-scripts\b/i.test(segment)) {
         violations.push({
           path,
           line,
@@ -130,12 +220,12 @@ function getCommandLevelIgnoreScriptsViolations(
         });
       }
 
-      if (/^bun install\b/.test(segment) && !/\s--ignore-scripts\b/.test(segment)) {
+      if (/^bun install\b/.test(segment) && !hasBooleanFlagEnabled(segment, "ignore-scripts")) {
+        const workflowLabel = isPublish ? "publish" : "CI";
         violations.push({
           path,
           line,
-          message:
-            "publish workflow must run bun install with --ignore-scripts to block transitive postinstall scripts",
+          message: `${workflowLabel} workflow must run bun install with --ignore-scripts to block transitive postinstall scripts`,
         });
       }
     }
@@ -143,18 +233,176 @@ function getCommandLevelIgnoreScriptsViolations(
   return violations;
 }
 
-function isAllowedSecretEnvLine(path: string, line: string): boolean {
-  if (path !== ".github/workflows/publish.yml") {
-    return false;
+interface WorkflowStep {
+  startLine: number;
+  endLine: number;
+  content: string;
+}
+
+// Split a workflow file into its step blocks. A step starts at any
+// hyphen-led list item that introduces a YAML key (`- name:`, `- uses:`,
+// `- run:`, `- env:`, etc.) and runs until the next such line or end of
+// file. This is the minimum structure we need to ask "does the step
+// that owns this env line also run `npm publish`?" without pulling in a
+// YAML parser. Header lines (`on:`, `permissions:`, `jobs:`, etc.) that
+// precede the first step fall outside any block.
+function getWorkflowSteps(content: string): WorkflowStep[] {
+  const lines = content.split("\n");
+  const steps: WorkflowStep[] = [];
+  let currentStart: number | null = null;
+
+  for (const [index, line] of lines.entries()) {
+    if (/^\s+-\s+[\w-]+:/.test(line)) {
+      if (currentStart !== null) {
+        steps.push({
+          startLine: currentStart,
+          endLine: index,
+          content: lines.slice(currentStart - 1, index).join("\n"),
+        });
+      }
+      currentStart = index + 1;
+    }
+  }
+  if (currentStart !== null) {
+    steps.push({
+      startLine: currentStart,
+      endLine: lines.length,
+      content: lines.slice(currentStart - 1).join("\n"),
+    });
+  }
+  return steps;
+}
+
+function findEnclosingStep(steps: WorkflowStep[], lineNumber: number): WorkflowStep | null {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i]!;
+    if (step.startLine <= lineNumber && lineNumber <= step.endLine) {
+      return step;
+    }
+  }
+  return null;
+}
+
+function stepRunMatches(step: WorkflowStep, pattern: RegExp): boolean {
+  for (const { command } of getExecutableCommands(step.content)) {
+    if (pattern.test(command)) return true;
+  }
+  return false;
+}
+
+interface ApprovedSecretBinding {
+  envKey: string;
+  secretName: string;
+}
+
+// Build the set of step-attributed approved secret bindings by walking
+// the YAML-parsed structure. Each entry says "this env key + secret name
+// is permitted **because** there exists a step in the parsed workflow
+// whose run command matches the approved pattern". The line scan then
+// allows a `KEY: ${{ secrets.NAME }}` line only when the KEY+NAME pair
+// is on this list — which means a second, copy-pasted env binding on a
+// non-publish step is correctly rejected, because no step in the parsed
+// structure justifies that binding via its own run command.
+function getApprovedSecretBindings(parsed: ParsedWorkflow, path: string): ApprovedSecretBinding[] {
+  if (path !== ".github/workflows/publish.yml" || !parsed.jobs) return [];
+  const approved: ApprovedSecretBinding[] = [];
+
+  for (const step of collectParsedSteps(parsed)) {
+    if (!step.env || typeof step.env !== "object" || Array.isArray(step.env)) continue;
+    const run = typeof step.run === "string" ? step.run : "";
+
+    for (const [envKey, envValue] of Object.entries(step.env as Record<string, unknown>)) {
+      if (typeof envValue !== "string") continue;
+      const secretMatch = envValue.match(
+        /^\s*\$\{\{\s*secrets\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}\s*$/,
+      );
+      if (!secretMatch) continue;
+      const secretName = secretMatch[1] ?? "";
+
+      if (
+        envKey === "NODE_AUTH_TOKEN" &&
+        secretName === "NPM_TOKEN" &&
+        /^npm publish\b/.test(run.trim())
+      ) {
+        approved.push({ envKey, secretName });
+      }
+      if (
+        envKey === "SOCKET_CLI_API_TOKEN" &&
+        secretName === "SOCKET_CLI_API_TOKEN" &&
+        (/\bsecurity:score\b/.test(run) || /^socket\b/.test(run.trim()))
+      ) {
+        approved.push({ envKey, secretName });
+      }
+    }
   }
 
-  // Indent only has to be deeper than a top-level key (≥4 spaces); the exact
-  // depth depends on how the publish step is nested. Hardcoding 10 spaces
-  // would silently break the policy on a YAML restructure.
-  return (
-    /^\s{4,}NODE_AUTH_TOKEN:\s*\$\{\{\s*secrets\.NPM_TOKEN\s*\}\}\s*$/.test(line) ||
-    /^\s{4,}SOCKET_CLI_API_TOKEN:\s*\$\{\{\s*secrets\.SOCKET_CLI_API_TOKEN\s*\}\}\s*$/.test(line)
-  );
+  return approved;
+}
+
+function isAllowedSecretEnvLine(
+  path: string,
+  line: string,
+  step: WorkflowStep | null,
+  approved: ApprovedSecretBinding[],
+): boolean {
+  if (path !== ".github/workflows/publish.yml") return false;
+  if (!step) return false;
+
+  // The line must match one of the approved bindings. We require the
+  // pair (envKey, secretName) to appear in `approved`, which is built
+  // from the parsed structure — so a free-floating env block that
+  // shares a literal env line with the publish step still fails,
+  // because that block's parent step has the wrong run command.
+  for (const { envKey, secretName } of approved) {
+    const pattern = new RegExp(
+      `^\\s{4,}${escapeRegex(envKey)}:\\s*\\$\\{\\{\\s*secrets\\.${escapeRegex(secretName)}\\s*\\}\\}\\s*$`,
+    );
+    if (pattern.test(line)) {
+      // Final guard: the line must actually fall inside the same step
+      // (per YAML-backed boundaries) that the parsed structure used
+      // to justify this binding. The simplest expression is "step.run
+      // matches the approved pattern" — same check getApprovedSecretBindings
+      // did, but re-applied here so a misattributed line in a non-
+      // publish step (with a parsed-elsewhere approval) cannot sneak
+      // through.
+      if (envKey === "NODE_AUTH_TOKEN") return stepRunMatches(step, /^npm publish\b/);
+      if (envKey === "SOCKET_CLI_API_TOKEN") {
+        return stepRunMatches(step, /\bsecurity:score\b|^socket\b/);
+      }
+    }
+  }
+  return false;
+}
+
+// Pair anchor lines (regex-detected step starts) with parsed-step
+// indices. Returns null when the counts disagree — that signals YAML
+// shapes the line splitter can't parse deterministically (list-shaped
+// text inside `run: |` blocks, YAML anchors, etc.) and the caller
+// should fall back rather than risk misattribution.
+function getYamlBackedSteps(content: string, parsed: ParsedWorkflow): WorkflowStep[] | null {
+  const parsedSteps = collectParsedSteps(parsed);
+  const lines = content.split("\n");
+  const anchorPattern = /^\s{4,}-\s+(?:name|uses|run|id|env|with|if|shell|working-directory):/;
+  const anchors: number[] = [];
+
+  for (const [index, line] of lines.entries()) {
+    if (anchorPattern.test(line)) anchors.push(index + 1);
+  }
+
+  if (parsedSteps.length === 0 && anchors.length === 0) return [];
+  if (anchors.length !== parsedSteps.length) return null;
+
+  const steps: WorkflowStep[] = [];
+  for (let i = 0; i < anchors.length; i++) {
+    const startLine = anchors[i]!;
+    const endLine = i + 1 < anchors.length ? anchors[i + 1]! - 1 : lines.length;
+    steps.push({
+      startLine,
+      endLine,
+      content: lines.slice(startLine - 1, endLine).join("\n"),
+    });
+  }
+  return steps;
 }
 
 function findLine(content: string, pattern: RegExp): number {
@@ -187,20 +435,24 @@ function hasDangerousWritePermission(content: string): boolean {
   );
 }
 
-function hasLockfilePolicyStep(content: string): boolean {
-  return /^\s*(?:-\s*)?run:\s*bun run security:verify-lockfile\s*$/m.test(content);
+interface SecurityVerifier {
+  script: string;
+  label: string;
 }
 
-function hasSourceControlPolicyStep(content: string): boolean {
-  return findExecutableCommandLine(content, /\bbun run security:verify-source-control\b/) > 0;
-}
+// Source-control → lockfile → workflows → package matches the natural
+// pre-publish ordering of the publish workflow. The publish-side check
+// requires each to run before `npm publish`, so the order here is the
+// order violations surface when multiple are missing.
+const SECURITY_VERIFIERS: ReadonlyArray<SecurityVerifier> = [
+  { script: "security:verify-source-control", label: "source-control" },
+  { script: "security:verify-lockfile", label: "lockfile" },
+  { script: "security:verify-workflows", label: "workflow" },
+  { script: "security:verify-package", label: "package" },
+];
 
-function hasWorkflowPolicyStep(content: string): boolean {
-  return findExecutableCommandLine(content, /\bbun run security:verify-workflows\b/) > 0;
-}
-
-function hasPackageVerifierStep(content: string): boolean {
-  return findExecutableCommandLine(content, /\bbun run security:verify-package\b/) > 0;
+function findVerifierCommandLine(content: string, script: string): number {
+  return findExecutableCommandLine(content, new RegExp(`\\bbun run ${escapeRegex(script)}\\b`));
 }
 
 // `npm publish` with provenance can be written several semantically
@@ -255,7 +507,7 @@ function findExecutableCommandMatches(
 
 function getExpectedSocketCliInstallPattern(): RegExp {
   return new RegExp(
-    `^npm install --global @socketsecurity\\/cli@${SOCKET_CLI_VERSION.replaceAll(".", "\\.")}\\s*$`,
+    `^npm install --global @socketsecurity\\/cli@${escapeRegex(SOCKET_CLI_VERSION)}\\s*$`,
   );
 }
 
@@ -295,36 +547,20 @@ function getWorkflowReleasePolicyViolations(
     });
   }
 
-  if (ci && !hasLockfilePolicyStep(ci)) {
-    violations.push({
-      path: ciPath,
-      line: findLine(ci, /^\s*steps:|security:verify-workflows|security:verify-package|bun test/),
-      message: "CI workflow must run the lockfile policy verifier",
-    });
-  }
-
-  if (ci && !hasSourceControlPolicyStep(ci)) {
-    violations.push({
-      path: ciPath,
-      line: findLine(ci, /^\s*steps:|security:verify-workflows|security:verify-package|bun test/),
-      message: "CI workflow must run the source-control policy verifier",
-    });
-  }
-
-  if (ci && !hasWorkflowPolicyStep(ci)) {
-    violations.push({
-      path: ciPath,
-      line: findLine(ci, /^\s*steps:|security:verify-workflows|security:verify-package|bun test/),
-      message: "CI workflow must run the workflow policy verifier",
-    });
-  }
-
-  if (ci && !hasPackageVerifierStep(ci)) {
-    violations.push({
-      path: ciPath,
-      line: findLine(ci, /^\s*steps:|security:verify-workflows|security:verify-package|bun test/),
-      message: "CI workflow must run the package policy verifier",
-    });
+  if (ci) {
+    const ciFallbackLine = findLine(
+      ci,
+      /^\s*steps:|security:verify-workflows|security:verify-package|bun test/,
+    );
+    for (const { script, label } of SECURITY_VERIFIERS) {
+      if (findVerifierCommandLine(ci, script) === 0) {
+        violations.push({
+          path: ciPath,
+          line: ciFallbackLine,
+          message: `CI workflow must run the ${label} policy verifier`,
+        });
+      }
+    }
   }
 
   if (!publish) {
@@ -392,22 +628,6 @@ function getWorkflowReleasePolicyViolations(
   }
 
   const publishCommandLine = findPublishWithProvenanceLine(publish);
-  const sourceControlVerifierLine = findExecutableCommandLine(
-    publish,
-    /\bbun run security:verify-source-control\b/,
-  );
-  const lockfileVerifierLine = findExecutableCommandLine(
-    publish,
-    /\bbun run security:verify-lockfile\b/,
-  );
-  const workflowVerifierLine = findExecutableCommandLine(
-    publish,
-    /\bbun run security:verify-workflows\b/,
-  );
-  const packageVerifierLine = findExecutableCommandLine(
-    publish,
-    /\bbun run security:verify-package\b/,
-  );
   const scoreCommandLine = findExecutableCommandLine(
     publish,
     /\bbun run security:score\b/,
@@ -430,53 +650,17 @@ function getWorkflowReleasePolicyViolations(
     });
   }
 
-  if (
-    lockfileVerifierLine === 0 ||
-    (publishCommandLine > 0 && lockfileVerifierLine > publishCommandLine)
-  ) {
-    violations.push({
-      path: publishPath,
-      line:
-        findOptionalLine(publish, /security:verify-lockfile/) || findLine(publish, /npm publish/),
-      message: "publish workflow must run the lockfile policy verifier before publishing",
-    });
-  }
-
-  if (
-    sourceControlVerifierLine === 0 ||
-    (publishCommandLine > 0 && sourceControlVerifierLine > publishCommandLine)
-  ) {
-    violations.push({
-      path: publishPath,
-      line:
-        findOptionalLine(publish, /security:verify-source-control/) ||
-        findLine(publish, /npm publish/),
-      message: "publish workflow must run the source-control policy verifier before publishing",
-    });
-  }
-
-  if (
-    workflowVerifierLine === 0 ||
-    (publishCommandLine > 0 && workflowVerifierLine > publishCommandLine)
-  ) {
-    violations.push({
-      path: publishPath,
-      line:
-        findOptionalLine(publish, /security:verify-workflows/) || findLine(publish, /npm publish/),
-      message: "publish workflow must run the workflow policy verifier before publishing",
-    });
-  }
-
-  if (
-    packageVerifierLine === 0 ||
-    (publishCommandLine > 0 && packageVerifierLine > publishCommandLine)
-  ) {
-    violations.push({
-      path: publishPath,
-      line:
-        findOptionalLine(publish, /security:verify-package/) || findLine(publish, /npm publish/),
-      message: "publish workflow must run the package policy verifier before publishing",
-    });
+  for (const { script, label } of SECURITY_VERIFIERS) {
+    const verifierLine = findVerifierCommandLine(publish, script);
+    if (verifierLine === 0 || (publishCommandLine > 0 && verifierLine > publishCommandLine)) {
+      violations.push({
+        path: publishPath,
+        line:
+          findOptionalLine(publish, new RegExp(escapeRegex(script))) ||
+          findLine(publish, /npm publish/),
+        message: `publish workflow must run the ${label} policy verifier before publishing`,
+      });
+    }
   }
 
   if (publishCommandLine > 0 && scoreCommandLine === 0) {

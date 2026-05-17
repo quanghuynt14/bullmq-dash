@@ -8,6 +8,7 @@
 /.github/workflows/                @quanghuynt14
 /.github/dependabot.yml            @quanghuynt14
 /.github/CODEOWNERS                @quanghuynt14
+/.gitignore                        @quanghuynt14
 /scripts/                          @quanghuynt14
 /package.json                      @quanghuynt14
 /bun.lock                          @quanghuynt14

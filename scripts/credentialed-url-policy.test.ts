@@ -30,7 +30,7 @@ describe("assertNoCredentialedRedisUrls", () => {
         "package/README.md": "redis://user:pass@redis.example.com:6379/0",
       }),
     ).toThrow(
-      "Packed artifacts must not contain credentialed Redis URL examples: package/README.md",
+      "Packed artifacts must not contain literal credentialed Redis URL examples: package/README.md",
     );
   });
 });

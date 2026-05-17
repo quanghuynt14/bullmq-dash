@@ -1,7 +1,11 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BUN_PACKAGE_MANAGER } from "./publish-policy.js";
-import { getExecutableCommands, splitShellSegments } from "./workflow-yaml.js";
+import {
+  getExecutableCommands,
+  hasBooleanFlagEnabled,
+  splitShellSegments,
+} from "./workflow-yaml.js";
 
 export interface LockfilePolicyInput {
   packageJson: string;
@@ -31,11 +35,13 @@ function getBunInstallSegments(command: string): string[] {
 // Frozen-lockfile only requires the flag to be present anywhere in the
 // `bun install` invocation — `bun install --production --frozen-lockfile`
 // and `bun install --frozen-lockfile --ignore-scripts` both qualify. We
-// match `\b--frozen-lockfile\b` rather than anchoring to a fixed position
-// so flag reordering doesn't silently demote the install to mutable.
+// use `hasBooleanFlagEnabled` rather than `\b--frozen-lockfile\b` because
+// a bare word-boundary regex matches `--frozen-lockfile=false` and
+// `--no-frozen-lockfile` (since `-` is a non-word character), which
+// would silently demote the install to mutable.
 function isFrozenBunInstall(segment: string): boolean {
   if (!/^bun install\b/.test(segment)) return false;
-  return /\s--frozen-lockfile\b/.test(segment);
+  return hasBooleanFlagEnabled(segment, "frozen-lockfile");
 }
 
 function parsePackageJson(packageJson: string): Record<string, unknown> | null {

@@ -7,6 +7,8 @@ import {
   PACKAGE_BUGS_URL,
   PACKAGE_HOMEPAGE,
   PACKAGE_REPOSITORY_URL,
+  POSTPACK_SCRIPT,
+  POSTPUBLISH_SCRIPT,
   PREPACK_SCRIPT,
   PREPUBLISH_ONLY_SCRIPT,
   REMOVED_DIRECT_DEPENDENCIES,
@@ -50,6 +52,24 @@ export function assertSourceManifest(pkg: Record<string, unknown>): void {
   const prepackScript = (scripts as Record<string, unknown>).prepack;
   if (prepackScript !== PREPACK_SCRIPT) {
     throw new Error("Refusing to publish: package.json prepack script is missing or unexpected.");
+  }
+
+  // postpack/postpublish are the manifest-restore guards. If either is
+  // silently dropped, `npm publish` can leave the stripped manifest on
+  // disk between releases, defeating the SECURITY.md fallback recipe.
+  // Pin both so a refactor PR that removes one trips this gate.
+  const postpackScript = (scripts as Record<string, unknown>).postpack;
+  if (postpackScript !== POSTPACK_SCRIPT) {
+    throw new Error(
+      "Refusing to publish: package.json postpack manifest-restore guard is missing or unexpected.",
+    );
+  }
+
+  const postpublishScript = (scripts as Record<string, unknown>).postpublish;
+  if (postpublishScript !== POSTPUBLISH_SCRIPT) {
+    throw new Error(
+      "Refusing to publish: package.json postpublish manifest-restore guard is missing or unexpected.",
+    );
   }
 
   const prepublishOnlyScript = (scripts as Record<string, unknown>).prepublishOnly;
@@ -162,9 +182,18 @@ async function prepack(): Promise<void> {
   // fires, the stripped manifest is left on disk. Catch the common interrupt
   // signals so Ctrl-C / SIGTERM restores before exiting. The fallback recovery
   // is `bun scripts/publish-manifest.ts restore`, documented in SECURITY.md.
+  //
+  // The try/finally guarantees process.exit runs even if restoreManifest
+  // throws (e.g. the backup was tampered with mid-flight); we'd rather log
+  // the failure and exit with the signal code than mask it.
   const restoreOnSignal = (signal: NodeJS.Signals) => {
-    restoreManifest();
-    process.exit(128 + (signal === "SIGINT" ? 2 : 15));
+    try {
+      restoreManifest();
+    } catch (error) {
+      console.error("Failed to restore manifest during signal cleanup:", error);
+    } finally {
+      process.exit(128 + (signal === "SIGINT" ? 2 : 15));
+    }
   };
   process.on("SIGINT", restoreOnSignal);
   process.on("SIGTERM", restoreOnSignal);

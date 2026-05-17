@@ -46,9 +46,13 @@ That command runs, in order:
 4. `bun run security:verify-package` — packs the release tarball and verifies
    the source manifest, no direct `ioredis` or `zod` imports in source or the
    packed entrypoint, no dynamic-code or shell primitives in source or
-   `dist/index.js`, no credentialed Redis URL examples in packed text, the
-   stripped publish manifest, packed size and entry-count limits, and the
-   expected runtime dependency set (`@opentui/core`, `bullmq`).
+   `dist/index.js`, no literal credentialed `redis://` URL examples in packed
+   text — i.e. `redis://`-prefixed authority forms that embed a
+   `username:password` pair before the host (a focused doc-leakage guard;
+   base64 / env-var / split-string forms are out of scope and belong to
+   repo-level secret scanners like git-secrets / gitleaks), the stripped
+   publish manifest, packed size and entry-count limits, and the expected
+   runtime dependency set (`@opentui/core`, `bullmq`).
 5. `bun run security:score` — scores the published package via the pinned
    Socket CLI (`@socketsecurity/cli@1.1.94`) and compares Socket's alerts
    against an accepted-alert allowlist. The gate exits nonzero only when

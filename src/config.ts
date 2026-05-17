@@ -39,10 +39,18 @@ function coerceNonNegativeInt(value: unknown, fallback: number): number | null {
   return numberValue;
 }
 
-function optionalString(value: unknown): string | undefined | null {
+function coerceString(value: unknown, fallback: string): string | null {
+  if (value === undefined) return fallback;
+  return typeof value === "string" ? value : null;
+}
+
+function coerceOptionalString(value: unknown): string | undefined | null {
   if (value === undefined) return undefined;
   return typeof value === "string" ? value : null;
 }
+
+const CONFIG_ALLOWED_KEYS = ["redis", "pollInterval", "prefix", "queueNames", "retentionMs"];
+const CONFIG_REDIS_ALLOWED_KEYS = ["host", "port", "username", "password", "db", "tls"];
 
 function validateConfig(raw: {
   redis: Record<string, unknown>;
@@ -52,18 +60,37 @@ function validateConfig(raw: {
   retentionMs?: unknown;
 }): { success: true; data: Config } | { success: false; errors: string[] } {
   const errors: string[] = [];
+
+  // Defense in depth: the in-process callers (loadConfig, createConfigFromPrompt)
+  // construct `raw` from a fixed list of fields, so an unknown key here can't
+  // come from user input today. Pinning the allowlist anyway keeps that
+  // guarantee from regressing if a future entry point passes a less-vetted
+  // object.
+  for (const key of Object.keys(raw)) {
+    if (!CONFIG_ALLOWED_KEYS.includes(key)) {
+      errors.push(`unknown key '${key}' in config (allowed: ${CONFIG_ALLOWED_KEYS.join(", ")})`);
+    }
+  }
+  for (const key of Object.keys(raw.redis)) {
+    if (!CONFIG_REDIS_ALLOWED_KEYS.includes(key)) {
+      errors.push(
+        `unknown key '${key}' in config.redis (allowed: ${CONFIG_REDIS_ALLOWED_KEYS.join(", ")})`,
+      );
+    }
+  }
+
   const redis = raw.redis;
 
-  const host = optionalString(redis.host) ?? "localhost";
+  const host = coerceString(redis.host, "localhost");
   if (host === null) errors.push("redis.host must be a string");
 
   const port = coercePositiveInt(redis.port, 6379);
   if (port === null) errors.push("redis.port must be a positive integer");
 
-  const username = optionalString(redis.username);
+  const username = coerceOptionalString(redis.username);
   if (username === null) errors.push("redis.username must be a string");
 
-  const password = optionalString(redis.password);
+  const password = coerceOptionalString(redis.password);
   if (password === null) errors.push("redis.password must be a string");
 
   const db = coerceNonNegativeInt(redis.db, 0);
@@ -77,7 +104,7 @@ function validateConfig(raw: {
   const pollInterval = coercePositiveInt(raw.pollInterval, 3000);
   if (pollInterval === null) errors.push("pollInterval must be a positive integer");
 
-  const prefix = optionalString(raw.prefix) ?? "bull";
+  const prefix = coerceString(raw.prefix, "bull");
   if (prefix === null) errors.push("prefix must be a string");
 
   const queueNames = raw.queueNames;
@@ -158,7 +185,7 @@ export function loadConfig(cliArgs: CliArgs, profile?: ResolvedProfile | null): 
   const result = validateConfig(raw);
 
   if (!result.success) {
-    writeError("Configuration error", "CONFIG_ERROR", JSON.stringify(result.errors));
+    writeError("Configuration error", "CONFIG_ERROR", result.errors.join("; "));
     process.exit(2);
   }
 

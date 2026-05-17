@@ -86,6 +86,15 @@ describe("expandEnvRefs", () => {
   it("does not partial-substitute (only whole-string ${VAR} matches)", () => {
     expect(expandEnvRefs("prefix-${VAR}-suffix", { VAR: "x" })).toBe("prefix-${VAR}-suffix");
   });
+
+  it("does not match lowercase env var names — only POSIX-style uppercase", () => {
+    // The ENV_REF regex is case-sensitive on purpose: a lowercase ${var}
+    // would silently work, which makes config files inconsistent across
+    // machines and harder for shell `set` / dotenv tooling to introspect.
+    // Lowercase forms must pass through unchanged like any other literal.
+    expect(expandEnvRefs("${myPassword}", { myPassword: "ignored" })).toBe("${myPassword}");
+    expect(expandEnvRefs("${redis_url}", { redis_url: "ignored" })).toBe("${redis_url}");
+  });
 });
 
 describe("loadProfile", () => {

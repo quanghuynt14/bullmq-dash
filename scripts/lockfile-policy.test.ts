@@ -166,4 +166,48 @@ describe("getLockfilePolicyViolations", () => {
       }),
     ).toEqual([]);
   });
+
+  // Regression: a bare `\b--frozen-lockfile\b` regex matches all of these
+  // forms because `-` and `=` are non-word characters. Each form would
+  // silently demote the install to mutable. The disable forms must trip
+  // the gate, and the typo forms must not satisfy it.
+  it.each([
+    ["--frozen-lockfile=false", "bun install --frozen-lockfile=false"],
+    ["--frozen-lockfile=0", "bun install --frozen-lockfile=0"],
+    ["--frozen-lockfile=off", "bun install --frozen-lockfile=off"],
+    ["--frozen-lockfile=no", "bun install --frozen-lockfile=no"],
+    ["--no-frozen-lockfile", "bun install --no-frozen-lockfile"],
+    ["--frozen-lockfile-foo (typo, not a real flag)", "bun install --frozen-lockfile-foo"],
+    ["--frozen-lockfile-no (typo, not a real flag)", "bun install --frozen-lockfile-no"],
+  ])("rejects %s as a satisfying frozen install", (_label, command) => {
+    expect(
+      getLockfilePolicyViolations({
+        packageJson: validPackageJson,
+        rootFiles: ["package.json", "bun.lock"],
+        workflowFiles: {
+          ".github/workflows/ci.yml": `steps:\n  - run: ${command}\n`,
+          ".github/workflows/publish.yml": "steps:\n  - run: bun install --frozen-lockfile\n",
+        },
+        trackedFiles: ["package.json", "bun.lock"],
+      }),
+    ).toContainEqual({
+      path: ".github/workflows/ci.yml",
+      line: 2,
+      message: "workflow must install dependencies with bun install --frozen-lockfile",
+    });
+  });
+
+  it("accepts explicit truthy assignment forms of --frozen-lockfile", () => {
+    expect(
+      getLockfilePolicyViolations({
+        packageJson: validPackageJson,
+        rootFiles: ["package.json", "bun.lock"],
+        workflowFiles: {
+          ".github/workflows/ci.yml": "steps:\n  - run: bun install --frozen-lockfile=true\n",
+          ".github/workflows/publish.yml": "steps:\n  - run: bun install --frozen-lockfile=1\n",
+        },
+        trackedFiles: ["package.json", "bun.lock"],
+      }),
+    ).toEqual([]);
+  });
 });

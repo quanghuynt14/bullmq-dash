@@ -8,6 +8,7 @@ interface FakeClient {
 
 interface PendingConnection {
   options: Record<string, unknown>;
+  extraOptions: Record<string, unknown> | undefined;
   resolveClient: (client: FakeClient) => void;
   rejectClient: (err: unknown) => void;
   close: () => Promise<void>;
@@ -24,7 +25,7 @@ const state: {
 mock.module("bullmq", () => ({
   RedisConnection: class {
     public readonly client: Promise<FakeClient>;
-    constructor(options: Record<string, unknown>) {
+    constructor(options: Record<string, unknown>, extraOptions?: Record<string, unknown>) {
       let resolveClient!: (client: FakeClient) => void;
       let rejectClient!: (err: unknown) => void;
       this.client = new Promise<FakeClient>((resolve, reject) => {
@@ -33,6 +34,7 @@ mock.module("bullmq", () => ({
       });
       state.constructions.push({
         options,
+        extraOptions,
         resolveClient,
         rejectClient,
         close: async () => {
@@ -130,9 +132,59 @@ describe("getRedisClient", () => {
     expect(options.port).toBe(6379);
     expect(options.lazyConnect).toBe(true);
     const retry = options.retryStrategy as (times: number) => number | null;
+    // Backoff is times*200 capped at 2000, with null after attempt 3.
+    // retry(0) is the first attempt — ioredis passes 0 on the initial
+    // connect — so a 0ms delay is correct. retry(1..3) is bounded
+    // arithmetic. retry(20) and any far-out value must return null;
+    // the >3 short-circuit is what stops ioredis from looping forever
+    // against a Redis instance that's down.
+    expect(retry(0)).toBe(0);
     expect(retry(1)).toBe(200);
+    expect(retry(2)).toBe(400);
     expect(retry(3)).toBe(600);
     expect(retry(4)).toBe(null);
+    expect(retry(20)).toBe(null);
+    expect(retry(Number.MAX_SAFE_INTEGER)).toBe(null);
+  });
+
+  it("opts out of BullMQ's blocking-mode default so maxRetriesPerRequest stays intact", async () => {
+    // Regression guard: BullMQ's RedisConnection defaults extraOptions to
+    // { blocking: true }, which unconditionally sets maxRetriesPerRequest = null
+    // on the underlying ioredis client. That is the right default for queue
+    // workers but the wrong default for a read-only dashboard — a stalled
+    // command would loop indefinitely instead of failing fast. We pass
+    // { blocking: false } explicitly; if a future refactor drops it, this
+    // test fails before any user notices a hang.
+    const attempt = getRedisClient();
+    state.constructions[0]!.resolveClient({ ping: async () => "PONG" });
+    await attempt;
+
+    expect(state.constructions[0]!.extraOptions).toEqual({ blocking: false });
+  });
+
+  it("shares the rejected promise across concurrent callers, then retries from a clean slate", async () => {
+    // The behaviour under test is the cache-clear in redis.ts's .catch
+    // handler: after a rejection, the next call must construct a fresh
+    // RedisConnection rather than re-await the rejected promise. The
+    // first half (p1/p2 sharing the same rejection) only proves that
+    // both callers await the same in-flight promise; the third call
+    // below is the real assertion that the rejection isn't sticky.
+    const p1 = getRedisClient().catch((err: Error) => err);
+    const p2 = getRedisClient().catch((err: Error) => err);
+    expect(state.constructions.length).toBe(1);
+
+    state.constructions[0]!.rejectClient(new Error("boom"));
+    const [err1, err2] = await Promise.all([p1, p2]);
+    expect((err1 as Error).message).toBe("boom");
+    expect((err2 as Error).message).toBe("boom");
+
+    // After the catch handler clears the cache, a third call gets a
+    // fresh construction — this is what proves the cache-clear works.
+    await Promise.resolve();
+    const p3 = getRedisClient();
+    expect(state.constructions.length).toBe(2);
+    state.constructions[1]!.resolveClient({ ping: async () => "PONG" });
+    await expect(p3).resolves.toBeDefined();
   });
 });
 

@@ -11,6 +11,7 @@ jobs:
   test:
     steps:
       - uses: actions/checkout@${checkoutSha} # v4
+      - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run security:verify-lockfile
       - run: bun run security:verify-package
       - run: bun run security:verify-source-control
@@ -98,6 +99,40 @@ describe("getWorkflowPolicyViolations", () => {
     ).toEqual([]);
   });
 
+  // Regression: a bare `\b--ignore-scripts\b` regex matches `=false`, `=0`,
+  // `--no-ignore-scripts`, and `--ignore-scripts-no` because `-` and `=` are
+  // non-word characters. Each of those disables transitive postinstall
+  // suppression on the privileged publish job — the gate must reject them.
+  it.each([
+    ["--ignore-scripts=false", "bun install --frozen-lockfile --ignore-scripts=false"],
+    ["--ignore-scripts=0", "bun install --frozen-lockfile --ignore-scripts=0"],
+    ["--ignore-scripts=off", "bun install --frozen-lockfile --ignore-scripts=off"],
+    ["--no-ignore-scripts", "bun install --frozen-lockfile --no-ignore-scripts"],
+    ["--ignore-scripts-no", "bun install --frozen-lockfile --ignore-scripts-no"],
+    ["--ignore-scripts-foo", "bun install --frozen-lockfile --ignore-scripts-foo"],
+  ])("rejects publish workflows where bun install uses %s instead of a real flag", (_l, run) => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": `${validPublish}      - run: ${run}\n`,
+      }),
+    ).toContainEqual({
+      path: ".github/workflows/publish.yml",
+      line: 19,
+      message:
+        "publish workflow must run bun install with --ignore-scripts to block transitive postinstall scripts",
+    });
+  });
+
+  it("accepts explicit truthy assignment forms of --ignore-scripts", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": `${validPublish}      - run: bun install --frozen-lockfile --ignore-scripts=true\n`,
+      }),
+    ).toEqual([]);
+  });
+
   it("allows bun install --ignore-scripts even though the flag is banned on npm", () => {
     expect(
       getWorkflowPolicyViolations({
@@ -108,6 +143,48 @@ describe("getWorkflowPolicyViolations", () => {
         ),
       }),
     ).toEqual([]);
+  });
+
+  it("rejects CI workflows where bun install runs without --ignore-scripts", () => {
+    // A transitive postinstall on a PR build can poison the runner cache or
+    // tamper with the working tree before security:verify-package packs it.
+    // CI lacks NPM_TOKEN / id-token but still has filesystem access to the
+    // pre-publish source tree, so the same rule that protects publish.yml
+    // protects ci.yml. Drop the --ignore-scripts flag and the gate must fire.
+    const ciWithoutFlag = validCi.replace(
+      "bun install --frozen-lockfile --ignore-scripts",
+      "bun install --frozen-lockfile",
+    );
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": ciWithoutFlag,
+        ".github/workflows/publish.yml": validPublish,
+      }),
+    ).toContainEqual({
+      path: ".github/workflows/ci.yml",
+      line: 10,
+      message:
+        "CI workflow must run bun install with --ignore-scripts to block transitive postinstall scripts",
+    });
+  });
+
+  it.each([
+    ["--ignore-scripts=false", "bun install --frozen-lockfile --ignore-scripts=false"],
+    ["--no-ignore-scripts", "bun install --frozen-lockfile --no-ignore-scripts"],
+    ["--ignore-scripts-no", "bun install --frozen-lockfile --ignore-scripts-no"],
+  ])("rejects CI workflows where bun install uses %s instead of a real flag", (_l, run) => {
+    const ciWithBogusFlag = validCi.replace("bun install --frozen-lockfile --ignore-scripts", run);
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": ciWithBogusFlag,
+        ".github/workflows/publish.yml": validPublish,
+      }),
+    ).toContainEqual({
+      path: ".github/workflows/ci.yml",
+      line: 10,
+      message:
+        "CI workflow must run bun install with --ignore-scripts to block transitive postinstall scripts",
+    });
   });
 
   it("extracts the publish-pinned Socket CLI version", () => {
@@ -208,6 +285,31 @@ steps:
       {
         path: ".github/workflows/ci.yml",
         line: 1,
+        message: "pull_request_target is not allowed in release or CI workflows",
+      },
+    ]);
+  });
+
+  it("rejects pull_request_target written as a block-sequence trigger", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": `on:
+  - pull_request_target
+permissions:
+  contents: read
+jobs: {}
+steps:
+  - run: bun run security:verify-lockfile
+  - run: bun run security:verify-package
+  - run: bun run security:verify-source-control
+  - run: bun run security:verify-workflows
+`,
+        ".github/workflows/publish.yml": validPublish,
+      }),
+    ).toEqual([
+      {
+        path: ".github/workflows/ci.yml",
+        line: 2,
         message: "pull_request_target is not allowed in release or CI workflows",
       },
     ]);
@@ -710,6 +812,50 @@ jobs:
     ]);
   });
 
+  // Regression: `findExecutableCommandLine` skips lines starting with
+  // `echo` so an `echo "..."` placeholder can't satisfy a verifier-presence
+  // check. Each verifier needs its own case — a future refactor that
+  // narrows the `echo` filter only to the score command would otherwise
+  // re-open the gap silently. The expected violation line is the line
+  // where the (now-echoed) verifier text appears, which is the line that
+  // `findOptionalLine(/security:verify-…/)` still matches.
+  it.each([
+    [
+      "security:verify-source-control",
+      "publish workflow must run the source-control policy verifier before publishing",
+      12,
+    ],
+    [
+      "security:verify-lockfile",
+      "publish workflow must run the lockfile policy verifier before publishing",
+      13,
+    ],
+    [
+      "security:verify-workflows",
+      "publish workflow must run the workflow policy verifier before publishing",
+      14,
+    ],
+    [
+      "security:verify-package",
+      "publish workflow must run the package policy verifier before publishing",
+      15,
+    ],
+  ])("rejects publish workflows where %s is only echoed", (verifier, message, line) => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": validPublish.replace(
+          `      - run: bun run ${verifier}`,
+          `      - run: echo "bun run ${verifier}"`,
+        ),
+      }),
+    ).toContainEqual({
+      path: ".github/workflows/publish.yml",
+      line,
+      message,
+    });
+  });
+
   it("rejects publish workflows where the post-publish Socket score is only echoed", () => {
     expect(
       getWorkflowPolicyViolations({
@@ -853,7 +999,12 @@ jobs:
     ]);
   });
 
-  it("allows only the approved publish and Socket token env entries", () => {
+  it("rejects approved secret env entries when they're not scoped to the right step", () => {
+    // Appends a `- env:` step with no `run:`. None of the three secrets can
+    // qualify: NPM_TOKEN requires the enclosing step to run `npm publish`
+    // and SOCKET_CLI_API_TOKEN requires it to run `security:score`. A
+    // free-floating env block would re-bind privileged tokens into steps
+    // that have no business holding them.
     expect(
       getWorkflowPolicyViolations({
         ".github/workflows/ci.yml": validCi,
@@ -862,9 +1013,122 @@ jobs:
     ).toEqual([
       {
         path: ".github/workflows/publish.yml",
+        line: 20,
+        message: "secrets must only be passed through approved publish step env entries",
+      },
+      {
+        path: ".github/workflows/publish.yml",
+        line: 21,
+        message: "secrets must only be passed through approved publish step env entries",
+      },
+      {
+        path: ".github/workflows/publish.yml",
         line: 22,
         message: "secrets must only be passed through approved publish step env entries",
       },
     ]);
+  });
+
+  it("accepts NODE_AUTH_TOKEN when scoped to the npm publish step", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": validPublish.replace(
+          "      - run: npm publish --provenance --access public",
+          `      - env:\n          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}\n        run: npm publish --provenance --access public`,
+        ),
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects NODE_AUTH_TOKEN bound to a non-publish step", () => {
+    // Binds NPM_TOKEN on the Socket score step instead of the npm publish
+    // step. The Socket score step runs `npm exec`/`npm install` and
+    // shouldn't carry the publish token — defence-in-depth against a
+    // compromised Socket CLI release accessing the publish credential.
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": validPublish.replace(
+          "      - run: bun run security:score",
+          `      - env:\n          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}\n        run: bun run security:score`,
+        ),
+      }),
+    ).toContainEqual({
+      path: ".github/workflows/publish.yml",
+      line: 19,
+      message: "secrets must only be passed through approved publish step env entries",
+    });
+  });
+
+  it("accepts SOCKET_CLI_API_TOKEN when scoped to the Socket score step", () => {
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": validCi,
+        ".github/workflows/publish.yml": validPublish.replace(
+          "      - run: bun run security:score",
+          `      - env:\n          SOCKET_CLI_API_TOKEN: \${{ secrets.SOCKET_CLI_API_TOKEN }}\n        run: bun run security:score`,
+        ),
+      }),
+    ).toEqual([]);
+  });
+
+  it("rejects a second NODE_AUTH_TOKEN env binding on a non-publish step (YAML-backed attribution)", () => {
+    // This is the attack the YAML-backed step boundary fix addresses:
+    // a malicious PR adds a SECOND env binding with the same literal text
+    // as the legit publish step's binding, but on a different step whose
+    // run command is not `npm publish`. The line-level regex alone would
+    // mis-attribute the line if the splitter were confused about step
+    // boundaries; the YAML-parsed approved-bindings list is anchored to
+    // each binding's *own* step's run command, so the second binding
+    // can't pass on the strength of the first.
+    const malicious = validPublish.replace(
+      "      - run: npm publish --provenance --access public",
+      `      - env:\n          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}\n        run: npm publish --provenance --access public\n      - env:\n          NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}\n        run: ./malicious-thing`,
+    );
+    const violations = getWorkflowPolicyViolations({
+      ".github/workflows/ci.yml": validCi,
+      ".github/workflows/publish.yml": malicious,
+    });
+    expect(
+      violations.filter(
+        (v) =>
+          v.message === "secrets must only be passed through approved publish step env entries",
+      ).length,
+    ).toBe(1);
+  });
+
+  it("rejects a workflow whose YAML shape is too ambiguous to attribute lines deterministically", () => {
+    // List-shaped text inside a `run: |` block makes the regex splitter
+    // see more step anchors than the parsed structure has. Rather than
+    // silently mis-attribute, the linter must refuse to lint.
+    const ambiguous = `name: Ambiguous
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    steps:
+      - name: anchor 1
+        run: |
+          echo "hi"
+          - run: nested-list-shaped-text
+      - run: bun run security:verify-lockfile
+      - run: bun run security:verify-package
+      - run: bun run security:verify-source-control
+      - run: bun run security:verify-workflows
+`;
+    expect(
+      getWorkflowPolicyViolations({
+        ".github/workflows/ci.yml": ambiguous,
+        ".github/workflows/publish.yml": validPublish,
+      }),
+    ).toContainEqual({
+      path: ".github/workflows/ci.yml",
+      line: 1,
+      message:
+        "workflow step shape is ambiguous (line-splitter anchor count != parsed step count); simplify the YAML so the linter can attribute lines to steps deterministically",
+    });
   });
 });

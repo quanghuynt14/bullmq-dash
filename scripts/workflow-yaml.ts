@@ -63,3 +63,27 @@ export function splitShellSegments(command: string): string[] {
     .map((segment) => segment.trim())
     .filter(Boolean);
 }
+
+export function escapeRegex(literal: string): string {
+  return literal.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Boolean-flag detection that resists the common evasions:
+//   `--frozen-lockfile=false`, `--frozen-lockfile=0`, `--no-frozen-lockfile`,
+//   `--frozen-lockfileX`, `--frozen-lockfile-no`. A bare `\b--flag\b` regex
+//   matches all of these because `-` is a non-word character (so `\b`
+//   triggers between `\b--frozen-lockfile` and `=false` / `-no`).
+//
+// Returns true iff `flag` appears as a standalone token, optionally with
+// an explicit truthy assignment (`--flag=true|1|yes|on`). Returns false
+// for any of the disable / negation forms above.
+export function hasBooleanFlagEnabled(segment: string, flag: string): boolean {
+  const escaped = escapeRegex(flag);
+  // Disable forms — `--no-flag` or `--flag=<falsy>` — always disqualify.
+  if (new RegExp(`(?:^|\\s)--no-${escaped}(?:$|\\s|=)`).test(segment)) return false;
+  if (new RegExp(`(?:^|\\s)--${escaped}=(?:false|0|no|off)\\b`, "i").test(segment)) return false;
+  // Enable forms — bare token or `--flag=<truthy>` — qualify.
+  if (new RegExp(`(?:^|\\s)--${escaped}(?:$|\\s)`).test(segment)) return true;
+  if (new RegExp(`(?:^|\\s)--${escaped}=(?:true|1|yes|on)\\b`, "i").test(segment)) return true;
+  return false;
+}

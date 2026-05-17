@@ -157,8 +157,38 @@ export function renderScoreGateSummary(summary: ScoreGateSummary): {
   return { stdout, stderr, exitCode: 0 };
 }
 
+// Anchored, narrowly-scoped tempfail signals. Each pattern reflects a
+// *transient* condition where retrying could legitimately succeed:
+//   - registry lookup miss (Socket may catch up after npm propagation)
+//   - command timeout
+//   - network-level fetch failure during a Socket score call
+//   - Socket score endpoint returning a transient HTTP / "not indexed" reply
+//
+// Auth or configuration failures that happen to mention the same endpoint
+// (e.g. "401 Unauthorized calling purl/score") deliberately do not match —
+// those are permanent failures and must surface immediately rather than
+// burn the 5×15s retry budget the publish workflow gives this gate.
+const TEMPFAIL_PATTERNS: ReadonlyArray<RegExp> = [
+  /^npm\/[\w@.+/-]+ is not available in the npm registry$/,
+  / timed out after \d+ms$/,
+  /\bfetch failed\b.*\bpurl\/score\b/,
+  /\bpurl\/score\b.*\bfetch failed\b/,
+  /\bpurl\/score\b.*\b(?:5\d\d|429|not (?:found|indexed|available)|unavailable)\b/i,
+];
+
 export function isUnavailablePackageScoreError(message: string): boolean {
-  return /fetch failed|purl\/score|not available in the npm registry|timed out after/.test(message);
+  return TEMPFAIL_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+// Splits errors from main() into the two outcomes the publish workflow's
+// retry loop cares about. "tempfail" → exit 75 → retry. "rethrow" → let
+// the original error propagate, which exits 1 with the stack trace —
+// surfaces real gate failures without burning the retry budget.
+export type ScoreErrorClass = "tempfail" | "rethrow";
+
+export function classifyScoreError(error: unknown): ScoreErrorClass {
+  const message = error instanceof Error ? error.message : String(error);
+  return isUnavailablePackageScoreError(message) ? "tempfail" : "rethrow";
 }
 
 async function packageVersionExists(packageSpec: string): Promise<boolean> {
@@ -221,8 +251,7 @@ async function main(): Promise<void> {
 
     process.exit(rendered.exitCode);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (isUnavailablePackageScoreError(message)) {
+    if (classifyScoreError(error) === "tempfail") {
       console.error(
         `Socket could not score npm/${packageSpec}. Package scores are only available after ` +
           "that exact name and version exists in the npm registry, and the score request must complete successfully.",

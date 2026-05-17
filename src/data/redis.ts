@@ -7,21 +7,30 @@ let redisClientPromise: Promise<RedisClient> | null = null;
 export async function getRedisClient(): Promise<RedisClient> {
   if (!redisClientPromise) {
     const config = getConfig();
-    redisConnection = new RedisConnection({
-      host: config.redis.host,
-      port: config.redis.port,
-      username: config.redis.username,
-      password: config.redis.password,
-      db: config.redis.db,
-      ...(config.redis.tls ? { tls: {} } : {}),
-      lazyConnect: true,
-      retryStrategy: (times) => {
-        if (times > 3) {
-          return null; // Stop retrying after 3 attempts
-        }
-        return Math.min(times * 200, 2000);
+    redisConnection = new RedisConnection(
+      {
+        host: config.redis.host,
+        port: config.redis.port,
+        username: config.redis.username,
+        password: config.redis.password,
+        db: config.redis.db,
+        ...(config.redis.tls ? { tls: {} } : {}),
+        lazyConnect: true,
+        retryStrategy: (times) => {
+          if (times > 3) {
+            return null; // Stop retrying after 3 attempts
+          }
+          return Math.min(times * 200, 2000);
+        },
       },
-    });
+      // BullMQ's RedisConnection defaults `blocking: true`, which forces
+      // `maxRetriesPerRequest = null` on the underlying ioredis client. That
+      // is correct for queue workers (which run BZPOPMIN and friends) but
+      // wrong for a read-only dashboard: with it set, a stalled command would
+      // hang on the reconnect loop instead of failing fast on its own retry
+      // budget. We don't issue any blocking commands here, so opt out.
+      { blocking: false },
+    );
     // Clear the cache on rejection so a transient bootstrap failure
     // (bad URL, version-check error, etc.) doesn't pin the cached
     // promise to the rejected state for the rest of the process — the

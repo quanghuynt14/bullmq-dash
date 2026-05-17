@@ -8,6 +8,8 @@ import {
   PACKAGE_BUGS_URL,
   PACKAGE_HOMEPAGE,
   PACKAGE_REPOSITORY_URL,
+  POSTPACK_SCRIPT,
+  POSTPUBLISH_SCRIPT,
   PREPACK_SCRIPT,
   PREPUBLISH_ONLY_SCRIPT,
   REMOVED_DIRECT_DEPENDENCIES,
@@ -32,6 +34,8 @@ function validManifest(): Record<string, unknown> {
     },
     scripts: {
       prepack: PREPACK_SCRIPT,
+      postpack: POSTPACK_SCRIPT,
+      postpublish: POSTPUBLISH_SCRIPT,
       prepublishOnly: PREPUBLISH_ONLY_SCRIPT,
       "security:release": SECURITY_RELEASE_SCRIPT,
     },
@@ -110,10 +114,46 @@ describe("assertSourceManifest", () => {
     const manifest = validManifest();
     manifest.scripts = {
       prepack: PREPACK_SCRIPT,
+      postpack: POSTPACK_SCRIPT,
+      postpublish: POSTPUBLISH_SCRIPT,
     };
 
     expect(() => assertSourceManifest(manifest)).toThrow(
       "Refusing to publish: package.json prepublishOnly security verifier is missing or unexpected.",
+    );
+  });
+
+  it("rejects a missing postpack manifest-restore guard", () => {
+    const manifest = validManifest();
+    const scripts = { ...(manifest.scripts as Record<string, string>) };
+    delete scripts.postpack;
+    manifest.scripts = scripts;
+
+    expect(() => assertSourceManifest(manifest)).toThrow(
+      "Refusing to publish: package.json postpack manifest-restore guard is missing or unexpected.",
+    );
+  });
+
+  it("rejects a missing postpublish manifest-restore guard", () => {
+    const manifest = validManifest();
+    const scripts = { ...(manifest.scripts as Record<string, string>) };
+    delete scripts.postpublish;
+    manifest.scripts = scripts;
+
+    expect(() => assertSourceManifest(manifest)).toThrow(
+      "Refusing to publish: package.json postpublish manifest-restore guard is missing or unexpected.",
+    );
+  });
+
+  it("rejects a tampered postpack restore command", () => {
+    const manifest = validManifest();
+    manifest.scripts = {
+      ...(manifest.scripts as Record<string, string>),
+      postpack: "echo skipped",
+    };
+
+    expect(() => assertSourceManifest(manifest)).toThrow(
+      "Refusing to publish: package.json postpack manifest-restore guard is missing or unexpected.",
     );
   });
 
@@ -163,6 +203,8 @@ describe("assertSourceManifest", () => {
     const manifest = validManifest();
     manifest.scripts = {
       prepack: PREPACK_SCRIPT,
+      postpack: POSTPACK_SCRIPT,
+      postpublish: POSTPUBLISH_SCRIPT,
       prepublishOnly: PREPUBLISH_ONLY_SCRIPT,
     };
 

@@ -251,10 +251,14 @@ evidence only — it reports the alerts on that artifact but cannot fix them.
 `bun run security:verify-package` packs the release tarball end-to-end. It
 checks the source manifest, rejects direct source or packed-entrypoint imports
 of `ioredis` or `zod`, rejects dynamic-code or shell primitives in source or
-`dist/index.js`, rejects credentialed Redis URL examples in packed text,
-enforces packed-tarball size and entry-count limits, and verifies the stripped
-publish manifest. Note: `ioredis` remains a transitive dependency through
-`bullmq`; the policy blocks _direct_ imports only.
+`dist/index.js`, rejects literal credentialed `redis://` URL examples in
+packed text — i.e. `redis://`-prefixed authority forms that embed a
+`username:password` pair before the host (a focused doc-leakage guard, not a
+general secret scanner; base64 / env-var-interpolated / split-string forms
+are out of scope by design and belong to repo-level tools like git-secrets
+or gitleaks), enforces packed-tarball size and entry-count limits, and
+verifies the stripped publish manifest. Note: `ioredis` remains a transitive
+dependency through `bullmq`; the policy blocks _direct_ imports only.
 
 `bun run security:score` runs the Socket package score against the version in
 `package.json` (must already be published to npm). It compares the alert set
@@ -284,20 +288,6 @@ archives, and verifies that the ignore policy covers those local-only files.
 `bun run security:verify-lockfile` rejects missing or untracked `bun.lock`,
 competing package manager lockfiles, a mismatched `packageManager` pin, and CI
 or publish workflows that install dependencies without `--frozen-lockfile`.
-
-`bun run security:score` reads the package name and version from `package.json`.
-Socket package scores are registry lookups, so the exact version must already be
-published before this command can score it. The command checks npm registry
-existence first, then exits nonzero if the version is unpublished or if Socket
-reports any package or transitive alerts for that version. If Socket reports
-`recentlyPublished`, the command still fails and tells you to rerun the gate
-after Socket's new-publish window clears. See
-[`docs/security-release.md`](docs/security-release.md) for the release checklist
-and why already-published versions cannot be changed by local fixes. See
-[`docs/adr/0003-socket-clean-release-boundary.md`](docs/adr/0003-socket-clean-release-boundary.md)
-for why the current Redis dashboard architecture must remain blocked until a
-same-package rewrite, package split, or accepted Socket policy proves
-`bullmq-dash@0.3.0` clean.
 
 ## Tech Stack
 

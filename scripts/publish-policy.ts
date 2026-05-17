@@ -9,10 +9,17 @@ export const PACKAGE_BIN = "dist/index.js";
 export const PACKAGE_FILES = ["dist"] as const;
 export const BUN_PACKAGE_MANAGER = "bun@1.3.13";
 export const PREPACK_SCRIPT = "bun scripts/publish-manifest.ts prepack";
+export const POSTPACK_SCRIPT = "bun scripts/publish-manifest.ts restore";
+export const POSTPUBLISH_SCRIPT = "bun scripts/publish-manifest.ts restore";
 export const PREPUBLISH_ONLY_SCRIPT =
   "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package";
 export const SECURITY_RELEASE_SCRIPT =
   "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package && bun run security:score";
+// Versions whose number we explicitly refuse to re-publish from a local
+// worktree. npm enforces version immutability registry-side, but this
+// tripwire is what surfaces the mistake at `prepack` time rather than
+// after `npm publish` has already failed (and possibly left the working
+// tree in the stripped-manifest state).
 export const BLOCKED_PUBLISHED_VERSIONS = ["0.2.7"] as const;
 export const FORBIDDEN_SOURCE_MANIFEST_FIELDS = [
   "bundleDependencies",

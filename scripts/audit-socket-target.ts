@@ -126,6 +126,18 @@ export function runPinnedSocket(
   );
 }
 
+// Trust boundary: callers only feed this output from `npm --json` and
+// `socket ... --json` (see runPinnedSocket above) — both of which we
+// invoke ourselves with array-form args via Bun.spawn, so there is no
+// shell interpolation surface. The "noisy" framing handles the spinner
+// / progress chatter those tools print to stdout *before* their JSON
+// payload; the greedy `lastIndexOf` slice means a malformed payload that
+// also contains a literal `}` or `]` later in the buffer could mis-parse.
+// Today that is moot — the tools we call emit deterministic JSON-only
+// output once their progress chatter clears — but anything that wires
+// new callers in must pipe a tool whose --json stdout is similarly
+// deterministic. For broader use cases, parse `--ndjson` line-by-line
+// or read from a known stable file descriptor instead.
 export function parseJsonFromNoisyOutput<T>(stdout: string): T {
   const objectStart = stdout.indexOf("{");
   const arrayStart = stdout.indexOf("[");
