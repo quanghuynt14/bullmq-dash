@@ -13,3 +13,11 @@ updates:
       - "dependencies"
     assignees:
       - "quanghuynt14"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+    assignees:
+      - "quanghuynt14"

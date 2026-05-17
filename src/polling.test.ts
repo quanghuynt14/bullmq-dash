@@ -196,7 +196,9 @@ describe("pollingManager", () => {
     mockState.observedQueues = [email];
     mockState.activeTotal = 0;
     mockState.activeJobs = [];
-    upsertJobs(ctx, "email", [{ id: "stale", name: "stale-job", state: "active", timestamp: 1000 }]);
+    upsertJobs(ctx, "email", [
+      { id: "stale", name: "stale-job", state: "active", timestamp: 1000 },
+    ]);
     stateManager.setState({
       jobsStatus: "active",
     });
@@ -214,7 +216,9 @@ describe("pollingManager", () => {
     const email = queueStats("email");
     mockState.observedQueues = [email];
     mockState.getQueueError = "redis job fetch failed";
-    upsertJobs(ctx, "email", [{ id: "cached", name: "job-cached", state: "waiting", timestamp: 1000 }]);
+    upsertJobs(ctx, "email", [
+      { id: "cached", name: "job-cached", state: "waiting", timestamp: 1000 },
+    ]);
 
     await pollingManager.poll();
 

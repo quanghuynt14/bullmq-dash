@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
 import { parseArgs } from "util";
 import { writeError } from "./errors.js";
 import { parseDuration, MAX_RETRY_PAGE_SIZE } from "./data/duration.js";
 import { parseRedisUrl, type ResolvedProfile } from "./profiles.js";
+import packageJson from "../package.json" with { type: "json" };
 
 // ── Subcommand types ────────────────────────────────────────────────────
 
@@ -39,7 +39,9 @@ export interface CliArgs {
   configPath?: string;
 }
 
-let packageVersion: string | null = null;
+declare const BUILD_PACKAGE_VERSION: string | undefined;
+const PACKAGE_VERSION =
+  typeof BUILD_PACKAGE_VERSION === "string" ? BUILD_PACKAGE_VERSION : packageJson.version;
 
 const HELP_TEXT = `
 bullmq-dash - Terminal UI dashboard for BullMQ queue monitoring
@@ -63,7 +65,7 @@ Connection Options (all commands):
   --profile <name>         Use a named profile from the config file
   --config <path>          Path to config file
                            (default: ~/.config/bullmq-dash/config.json)
-  --redis-url <url>        Full connection URL: redis://[user:pass@]host[:port][/db]
+  --redis-url <url>        Full connection URL: redis://host[:port][/db]
                            (rediss:// for TLS)
   --prefix <prefix>        BullMQ key prefix (default: bull)
 
@@ -81,7 +83,7 @@ General:
 
 Examples:
   bullmq-dash --tui --redis-url redis://localhost:6379
-  bullmq-dash --tui --redis-url redis://user:pass@redis.example.com:6379/0
+  bullmq-dash --tui --redis-url redis://redis.example.com:6379/0
   bullmq-dash --tui --profile prod
   bullmq-dash queues list --redis-url redis://localhost:6379
   bullmq-dash queues list --profile prod
@@ -99,7 +101,7 @@ Connection Options:
   --config <path>          Path to config file
                            (default: ~/.config/bullmq-dash/config.json)
   --redis-url <url>        Full connection URL (required unless provided via profile)
-                           Format: redis://[user:pass@]host[:port][/db]
+                           Format: redis://host[:port][/db]
                            Use rediss:// for TLS.
   --prefix <prefix>        BullMQ key prefix (default: bull)
 
@@ -529,7 +531,7 @@ export function parseCliArgs(): CliArgs {
     const yes = values.yes ?? false;
 
     // Validate the URL itself eagerly so bad input fails fast with CONFIG_ERROR
-    // instead of an opaque ioredis error during connect.
+    // instead of an opaque Redis connection error during connect.
     if (values["redis-url"] !== undefined) {
       try {
         parseRedisUrl(values["redis-url"]);
@@ -726,25 +728,7 @@ export function showVersion(): void {
 }
 
 export function getVersionText(): string {
-  return `bullmq-dash v${getPackageVersion()}`;
-}
-
-function getPackageVersion(): string {
-  if (packageVersion) {
-    return packageVersion;
-  }
-
-  const packageJsonUrl = new URL("../package.json", import.meta.url);
-  const packageJson = JSON.parse(readFileSync(packageJsonUrl, "utf-8")) as {
-    version?: unknown;
-  };
-
-  if (typeof packageJson.version !== "string" || packageJson.version.trim() === "") {
-    throw new Error("Invalid package.json version");
-  }
-
-  packageVersion = packageJson.version;
-  return packageVersion;
+  return `bullmq-dash v${PACKAGE_VERSION}`;
 }
 
 export function parseQueueNames(value: string | undefined): string[] | undefined {

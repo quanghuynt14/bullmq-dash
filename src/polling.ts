@@ -377,7 +377,12 @@ class PollingManager {
 
       const jobsResult =
         observedJobsResult ??
-        (await getJobsFromStore(this.requireCtx(), selectedQueue.name, state.jobsStatus, state.jobsPage));
+        (await getJobsFromStore(
+          this.requireCtx(),
+          selectedQueue.name,
+          state.jobsStatus,
+          state.jobsPage,
+        ));
 
       stateManager.setState({
         jobs: jobsResult.jobs,

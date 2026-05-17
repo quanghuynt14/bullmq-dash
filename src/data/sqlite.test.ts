@@ -251,7 +251,9 @@ describe("upsertJobs", () => {
 
   it("updates existing jobs on conflict", () => {
     upsertJobs(ctx, "email", [{ id: "1", name: "send-welcome", state: "active", timestamp: 1000 }]);
-    upsertJobs(ctx, "email", [{ id: "1", name: "send-welcome", state: "completed", timestamp: 2000 }]);
+    upsertJobs(ctx, "email", [
+      { id: "1", name: "send-welcome", state: "completed", timestamp: 2000 },
+    ]);
 
     const db = ctx.db;
     const rows = db.prepare("SELECT * FROM jobs WHERE queue = ?").all("email") as JobRow[];
@@ -283,7 +285,9 @@ describe("upsertJobs", () => {
   it("returns null data_preview when JSON.stringify throws (BigInt)", () => {
     // BigInt is not JSON-serializable; safeDataPreview must catch.
     const bad = { amount: 42n };
-    upsertJobs(ctx, "email", [{ id: "1", name: "job", state: "active", timestamp: 1000, data: bad }]);
+    upsertJobs(ctx, "email", [
+      { id: "1", name: "job", state: "active", timestamp: 1000, data: bad },
+    ]);
 
     const row = ctx.db.prepare("SELECT * FROM jobs WHERE id = ?").get("1") as JobRow;
     expect(row.data_preview).toBeNull();
@@ -632,7 +636,12 @@ describe("FTS5 full-text search", () => {
   });
 
   it("sort order works with FTS5 search", () => {
-    const result = queryJobs(ctx, { queue: "email", search: "send", sort: "timestamp", order: "asc" });
+    const result = queryJobs(ctx, {
+      queue: "email",
+      search: "send",
+      sort: "timestamp",
+      order: "asc",
+    });
     expect(result.jobs[0]!.id).toBe("1");
     expect(result.jobs[result.jobs.length - 1]!.id).toBe("5");
   });
@@ -885,7 +894,8 @@ describe("scheduler observations", () => {
   });
 
   it("paginates with offset and limit", () => {
-    upsertSchedulers(ctx, 
+    upsertSchedulers(
+      ctx,
       "email",
       Array.from({ length: 30 }, (_, i) => ({
         key: `s-${String(i).padStart(2, "0")}`,
@@ -1103,7 +1113,9 @@ describe("staging table diff", () => {
 
     // Simulate "polling just wrote id=3": filter it out of the stale list
     const recentlyPolled = new Set(["3"]);
-    const toDelete = findStaleIdsByStagingDiff(ctx, "email").filter((id) => !recentlyPolled.has(id));
+    const toDelete = findStaleIdsByStagingDiff(ctx, "email").filter(
+      (id) => !recentlyPolled.has(id),
+    );
     expect(toDelete.toSorted()).toEqual(["2"]);
 
     deleteJobsByIds(ctx, "email", toDelete);

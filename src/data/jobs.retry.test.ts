@@ -252,7 +252,9 @@ describe("retryFailedJobs — validation", () => {
     mockState.failedJobs = [];
     mockState.totalFailedCount = 0;
 
-    await expect(retryFailedJobs(ctx, "q", { since: "bogus" })).rejects.toThrow("Invalid --since value");
+    await expect(retryFailedJobs(ctx, "q", { since: "bogus" })).rejects.toThrow(
+      "Invalid --since value",
+    );
   });
 
   it("clamps pageSize above the max", async () => {

@@ -75,9 +75,7 @@ describe("createContext", () => {
         .prepare("INSERT INTO jobs (id, queue, name, state, timestamp) VALUES (?, ?, ?, ?, ?)")
         .run("only-in-a", "q", "job", "waiting", 1);
 
-      const seenFromB = b.db
-        .prepare("SELECT id FROM jobs WHERE id = ?")
-        .get("only-in-a");
+      const seenFromB = b.db.prepare("SELECT id FROM jobs WHERE id = ?").get("only-in-a");
 
       expect(seenFromB).toBeNull();
       expect(a.redis).not.toBe(b.redis);

@@ -440,11 +440,7 @@ export async function getJobDetail(
 /**
  * Delete a job from a queue
  */
-export async function deleteJob(
-  ctx: Context,
-  queueName: string,
-  jobId: string,
-): Promise<boolean> {
+export async function deleteJob(ctx: Context, queueName: string, jobId: string): Promise<boolean> {
   const queue = getQueue(ctx, queueName);
   const job = await queue.getJob(jobId);
 

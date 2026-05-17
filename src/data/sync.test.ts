@@ -45,12 +45,7 @@ import {
   __resetSyncLockForTests,
   __forceSyncLockForTests,
 } from "./sync.js";
-import {
-  getJobFromDb,
-  softDeleteJobsByIds,
-  upsertJobs,
-  type JobRow,
-} from "./sqlite.js";
+import { getJobFromDb, softDeleteJobsByIds, upsertJobs, type JobRow } from "./sqlite.js";
 import { createContext, type Context } from "../context.js";
 import type { Config } from "../config.js";
 
@@ -185,14 +180,23 @@ describe("syncQueue", () => {
   });
 
   it("preserves state for jobs polling just refreshed", async () => {
-    // Simulate: polling just wrote state=completed with fresh data.
+    let releaseGate!: () => void;
+    mockState.gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    mockState.batches = [[{ id: "1", state: "active" }]];
+
+    const pending = syncQueue(ctx, "q");
+    // Let sync start and capture syncStart before simulating a polling write.
+    await Promise.resolve();
+
+    // Simulate: polling just wrote state=completed with fresh data while
+    // sync's staged Redis snapshot is stale.
     upsertJobs(ctx, "q", [{ id: "1", name: "job-a", state: "completed", timestamp: 5000 }]);
     markPolledWrites("q", ["1"]);
 
-    // Sync's staging snapshot has the older state=active.
-    mockState.batches = [[{ id: "1", state: "active" }]];
-
-    const result = await syncQueue(ctx, "q");
+    releaseGate();
+    const result = await pending;
     expect(result.error).toBeUndefined();
     // stateUpdated should be 0: the changed-row was filtered out
     expect(result.stateUpdated).toBe(0);
