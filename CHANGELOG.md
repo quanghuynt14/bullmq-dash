@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-17
+
+### Fixed
+
+- **Publish workflow stops after npm provenance publish.** Removed the post-publish Socket score step from the GitHub Actions release workflow so a temporary Socket API/indexing failure cannot mark an already-successful npm publish as failed. `bun run security:score` remains available as an optional manual audit for already-published versions.
+- **Trusted publishing release path no longer uses long-lived npm credentials.** The publish workflow relies on GitHub OIDC through the `npm-publish` environment and rejects publish secrets in workflow policy checks.
+
+## [0.3.0] - 2026-05-17
+
 ### Security
 
 - **`bullmq-dash@0.3.0` ships through a hardened publish surface.** `prepack` rewrites the manifest to strip dev dependencies, source-only scripts, package manager metadata, and graph-rewrite fields, keeping only the `dist`-only file allowlist. `bun run security:verify-package` runs that pack end-to-end and rejects unexpected runtime dependencies, direct runtime source or packed-entrypoint imports of `ioredis` or `zod`, dynamic-code or shell primitives in source or `dist/index.js`, credentialed Redis URL examples in packed text, oversized tarballs, and bundled dependencies. `prepublishOnly` runs the source-control, lockfile, workflow, and package verifiers before manual publishes.

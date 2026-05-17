@@ -20,7 +20,7 @@ import { getRuntimeSourcePolicyViolations } from "./runtime-source-policy.js";
 function validManifest(): Record<string, unknown> {
   return {
     name: "bullmq-dash",
-    version: "0.3.0",
+    version: "0.3.1",
     homepage: PACKAGE_HOMEPAGE,
     bugs: {
       url: PACKAGE_BUGS_URL,

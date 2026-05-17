@@ -101,7 +101,7 @@ describe("publish-policy constants (literal pins)", () => {
     // Keep this list literal — npm enforces version immutability registry-side
     // but this tripwire is what surfaces a "do not re-cut this number" mistake
     // at prepack time rather than after `npm publish` has already failed.
-    expect([...BLOCKED_PUBLISHED_VERSIONS]).toEqual(["0.2.7"]);
+    expect([...BLOCKED_PUBLISHED_VERSIONS]).toEqual(["0.2.7", "0.3.0"]);
   });
 
   it("FORBIDDEN_SOURCE_MANIFEST_FIELDS lists every graph-rewriting / bundling field", () => {
