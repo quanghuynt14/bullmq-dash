@@ -201,17 +201,3 @@ export function loadConfig(cliArgs: CliArgs, profile?: ResolvedProfile | null): 
 export function createConfigFromPrompt(redisUrl: string, cliArgs: CliArgs): Config {
   return loadConfig({ ...cliArgs, redisUrl });
 }
-
-// Singleton config instance
-let configInstance: Config | null = null;
-
-export function setConfig(config: Config): void {
-  configInstance = config;
-}
-
-export function getConfig(): Config {
-  if (!configInstance) {
-    throw new Error("Config not initialized. Call setConfig() first.");
-  }
-  return configInstance;
-}
