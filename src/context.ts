@@ -3,6 +3,7 @@ import { RedisConnection, type Queue, type RedisClient } from "bullmq";
 import type { Config } from "./config.js";
 import { closeAllQueues } from "./data/queues.js";
 import { createSqliteDb } from "./data/sqlite.js";
+import { redisConnectionOptions } from "./redis-options.js";
 
 /**
  * Process state bundle threaded through the data layer.
@@ -66,12 +67,7 @@ function createRedisClient(config: Config): ContextRedisClient {
     if (!clientPromise) {
       connection = new RedisConnection(
         {
-          host: config.redis.host,
-          port: config.redis.port,
-          username: config.redis.username,
-          password: config.redis.password,
-          db: config.redis.db,
-          ...(config.redis.tls ? { tls: {} } : {}),
+          ...redisConnectionOptions(config),
           lazyConnect: true,
           retryStrategy: (times) => {
             if (times > 3) {

@@ -68,9 +68,8 @@ async function main() {
       config = createConfigFromPrompt(url, cliArgs);
     }
 
-    const ctx = createContext(config);
-
     try {
+      const ctx = createContext(config);
       const app = new App(ctx);
       await app.start();
     } catch (error) {
