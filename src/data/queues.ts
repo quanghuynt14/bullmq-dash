@@ -1,5 +1,6 @@
 import { Queue } from "bullmq";
 import type { Context } from "../context.js";
+import { redisConnectionOptions } from "../redis-options.js";
 
 const QUEUE_NAMES_CACHE_TTL = 5000; // 5 seconds
 const SCAN_COUNT = 1000;
@@ -28,14 +29,7 @@ export function getQueue(ctx: Context, queueName: string): Queue {
 
   const queue = new Queue(queueName, {
     prefix: ctx.config.prefix,
-    connection: {
-      host: ctx.config.redis.host,
-      port: ctx.config.redis.port,
-      username: ctx.config.redis.username,
-      password: ctx.config.redis.password,
-      db: ctx.config.redis.db,
-      ...(ctx.config.redis.tls ? { tls: {} } : {}),
-    },
+    connection: redisConnectionOptions(ctx.config),
   });
   ctx.queueCache.set(queueName, queue);
   return queue;
