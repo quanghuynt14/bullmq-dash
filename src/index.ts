@@ -6,11 +6,12 @@ import {
   hasRedisHostConfig,
   shouldLoadProfile,
 } from "./cli.js";
-import { loadConfig, createConfigFromPrompt, setConfig } from "./config.js";
+import { loadConfig, createConfigFromPrompt } from "./config.js";
 import { loadProfile } from "./profiles.js";
 import { runConfigPrompt } from "./ui/config-prompt.js";
 import { runJsonMode } from "./json-reporter.js";
 import { writeError } from "./errors.js";
+import { createContext } from "./context.js";
 
 async function main() {
   // Parse CLI arguments
@@ -49,13 +50,8 @@ async function main() {
     }
 
     const config = loadConfig(cliArgs, profile);
-    await runJsonMode(
-      config,
-      cliArgs.subcommand,
-      cliArgs.humanFriendly,
-      cliArgs.dryRun,
-      cliArgs.yes,
-    );
+    const ctx = createContext(config);
+    await runJsonMode(ctx, cliArgs.subcommand, cliArgs.humanFriendly, cliArgs.dryRun, cliArgs.yes);
     return;
   }
 
@@ -72,10 +68,10 @@ async function main() {
       config = createConfigFromPrompt(url, cliArgs);
     }
 
-    setConfig(config);
+    const ctx = createContext(config);
 
     try {
-      const app = new App();
+      const app = new App(ctx);
       await app.start();
     } catch (error) {
       writeError(

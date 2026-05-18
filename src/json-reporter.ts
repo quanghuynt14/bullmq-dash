@@ -6,9 +6,7 @@ import { writeError } from "./errors.js";
 import { upsertJobs } from "./data/sqlite.js";
 import { markPolledWrites } from "./data/sync.js";
 import type { Subcommand } from "./cli.js";
-import type { Config } from "./config.js";
-import { setConfig } from "./config.js";
-import { closeContext, createContext, type Context } from "./context.js";
+import { closeContext, type Context } from "./context.js";
 import {
   formatQueuesOverview,
   formatJobsList,
@@ -332,17 +330,12 @@ function formatOutput(result: unknown, subcommand: Subcommand, humanFriendly: bo
 // ── Entry point ─────────────────────────────────────────────────────────
 
 export async function runJsonMode(
-  config: Config,
+  ctx: Context,
   subcommand: Subcommand,
   humanFriendly: boolean = false,
   dryRun: boolean = false,
   yes: boolean = false,
 ): Promise<void> {
-  // TODO(#22): drop alongside getConfig. Until then, keep the singleton
-  // populated for any helper that still reads getConfig().
-  setConfig(config);
-  const ctx = createContext(config);
-
   if (subcommand.kind === "queues-delete" && !yes && !dryRun) {
     if (process.stdin.isTTY) {
       const confirmed = await promptConfirmation(

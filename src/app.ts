@@ -3,9 +3,8 @@ import { stateManager } from "./state.js";
 import { pollingManager } from "./polling.js";
 import { getJobDetail, deleteJob } from "./data/jobs.js";
 import { getJobSchedulerDetail } from "./data/schedulers.js";
-import { getConfig } from "./config.js";
 import { fullSync } from "./data/sync.js";
-import { closeContext, createContext, type Context } from "./context.js";
+import { closeContext, type Context } from "./context.js";
 
 // UI imports
 import { createLayout, updateHeaderStatus, type LayoutElements } from "./ui/layout.js";
@@ -63,16 +62,10 @@ export class App {
   private elements: AppElements | null = null;
   private unsubscribeState: (() => void) | null = null;
   private syncIntervalId: ReturnType<typeof setInterval> | null = null;
-  private ctx: Context | null = null;
 
-  /**
-   * Single chokepoint for non-null ctx from instance methods. Throws if a key
-   * handler fires after `cleanup()` cleared ctx (possible during shutdown).
-   */
+  constructor(private readonly ctx: Context) {}
+
   private requireCtx(): Context {
-    if (!this.ctx) {
-      throw new Error("App.start() must be called before this operation");
-    }
     return this.ctx;
   }
 
@@ -96,8 +89,6 @@ export class App {
       this.render();
     });
 
-    // Initialize Context (config + Redis + SQLite + queue cache).
-    this.ctx = createContext(getConfig());
     const ctx = this.ctx;
 
     // Explicit eager connect — matches `runJsonMode`'s startup shape so both
@@ -451,9 +442,7 @@ export class App {
       pageJump,
     } = this.elements;
 
-    // Update header. Read from ctx (when available) so the header reflects
-    // the live connection's config, not the bootstrap singleton.
-    const headerConfig = this.ctx?.config ?? getConfig();
+    const headerConfig = this.ctx.config;
     updateHeaderStatus(
       layout.headerStatus,
       state.connected,
@@ -549,10 +538,7 @@ export class App {
     }
 
     // Close connections owned by the Context.
-    if (this.ctx) {
-      await closeContext(this.ctx);
-      this.ctx = null;
-    }
+    await closeContext(this.ctx);
 
     // Destroy renderer
     if (this.renderer) {
