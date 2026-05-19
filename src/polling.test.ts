@@ -117,7 +117,7 @@ beforeEach(() => {
       redis: { host: "localhost", port: 6379, db: 0 },
       pollInterval: 3000,
       prefix: "bull",
-      retentionMs: 7 * 24 * 60 * 60 * 1000,
+      cacheTtlMs: 24 * 60 * 60 * 1000,
     },
     { dbPath: TEST_DB_PATH },
   );
@@ -225,8 +225,8 @@ describe("pollingManager", () => {
     const state = stateManager.getState();
     expect(state.connected).toBe(false);
     expect(state.error).toBe("redis job fetch failed");
-    expect(state.queues).toEqual([email]);
-    expect(state.jobs).toEqual([
+    expect(state.queues).toMatchObject([email]);
+    expect(state.jobs).toMatchObject([
       { id: "cached", name: "job-cached", state: "waiting", timestamp: 1000 },
     ]);
     expect(state.jobsTotal).toBe(1);
@@ -261,7 +261,7 @@ describe("pollingManager", () => {
     expect(state.jobs).toEqual([]);
     expect(state.jobsTotal).toBe(0);
     expect(state.jobsTotalPages).toBe(0);
-    expect(state.schedulers).toEqual([cachedScheduler]);
+    expect(state.schedulers).toMatchObject([cachedScheduler]);
     expect(state.schedulersTotal).toBe(1);
     expect(state.schedulersTotalPages).toBe(1);
   });
@@ -284,7 +284,7 @@ describe("pollingManager", () => {
 
     const state = stateManager.getState();
     expect(state.connected).toBe(true);
-    expect(state.schedulers).toEqual([scheduler]);
+    expect(state.schedulers).toMatchObject([scheduler]);
     expect(state.schedulersTotal).toBe(1);
     expect(state.schedulersTotalPages).toBe(1);
     expect(state.jobs).toEqual([]);
@@ -306,7 +306,7 @@ describe("pollingManager", () => {
 
     const state = stateManager.getState();
     expect(state.connected).toBe(true);
-    expect(state.schedulers).toEqual([{ key: "s-1000", name: "scheduler-1000" }]);
+    expect(state.schedulers).toMatchObject([{ key: "s-1000", name: "scheduler-1000" }]);
     expect(state.schedulersTotal).toBe(1001);
     expect(state.schedulersTotalPages).toBe(41);
   });
@@ -322,7 +322,7 @@ describe("pollingManager", () => {
 
     const afterFirstPoll = stateManager.getState();
     expect(afterFirstPoll.connected).toBe(true);
-    expect(afterFirstPoll.queues).toEqual([email]);
+    expect(afterFirstPoll.queues).toMatchObject([email]);
     expect(afterFirstPoll.jobs).toEqual([
       { id: "j1", name: "job-1", state: "active", timestamp: 1000 },
     ]);
@@ -337,9 +337,9 @@ describe("pollingManager", () => {
     expect(afterFailure.connected).toBe(false);
     expect(afterFailure.error).toBe("connection refused");
     // Queue still visible (from SQLite).
-    expect(afterFailure.queues).toEqual([email]);
+    expect(afterFailure.queues).toMatchObject([email]);
     // Last-known job still visible (from SQLite — j1 was persisted in cycle 1).
-    expect(afterFailure.jobs).toEqual([
+    expect(afterFailure.jobs).toMatchObject([
       { id: "j1", name: "job-1", state: "active", timestamp: 1000 },
     ]);
     // Rates explicitly zeroed during disconnect.

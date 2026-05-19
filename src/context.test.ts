@@ -9,7 +9,7 @@ const baseConfig: Config = {
   redis: { host: "localhost", port: 6379, db: 0 },
   pollInterval: 3000,
   prefix: "bull",
-  retentionMs: 7 * 24 * 60 * 60 * 1000,
+  cacheTtlMs: 24 * 60 * 60 * 1000,
 };
 
 let active: Context | null = null;

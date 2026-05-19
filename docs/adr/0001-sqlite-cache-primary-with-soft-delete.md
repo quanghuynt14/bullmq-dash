@@ -1,5 +1,7 @@
 # SQLite is cache-primary; soft-delete with retention window
 
+Status: Superseded by [ADR-0003](0003-queue-data-store-ttl-observation-cache.md).
+
 ## Context
 
 bullmq-dash maintains a SQLite cache of every observed BullMQ job. Three downstream features depend on it: full-text search across many jobs, fast paginated browsing, and a historical view of jobs past Redis retention. The original sync logic deleted any job from SQLite that was no longer in Redis, which silently broke the historical-view requirement.

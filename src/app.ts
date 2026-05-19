@@ -3,7 +3,7 @@ import { stateManager } from "./state.js";
 import { pollingManager } from "./polling.js";
 import { getJobDetail, deleteJob } from "./data/jobs.js";
 import { getJobSchedulerDetail } from "./data/schedulers.js";
-import { fullSync } from "./data/sync.js";
+import { runQueueStoreCleanupIfDue } from "./data/queue-store-lifecycle.js";
 import { closeContext, type Context } from "./context.js";
 
 // UI imports
@@ -61,7 +61,7 @@ export class App {
   private renderer: CliRenderer | null = null;
   private elements: AppElements | null = null;
   private unsubscribeState: (() => void) | null = null;
-  private syncIntervalId: ReturnType<typeof setInterval> | null = null;
+  private cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly ctx: Context) {}
 
@@ -107,17 +107,15 @@ export class App {
     // Start polling
     pollingManager.start(ctx);
 
-    const runFullSync = () => {
-      fullSync(ctx).catch((error) => {
-        console.error("SQLite full sync failed:", error);
-      });
+    const runCleanup = () => {
+      runQueueStoreCleanupIfDue(ctx);
     };
 
-    // Run initial full sync in background (non-blocking)
-    runFullSync();
+    // Run initial queue-store TTL cleanup in background lifecycle.
+    runCleanup();
 
-    // Schedule background full sync every 60s
-    this.syncIntervalId = setInterval(runFullSync, 60_000);
+    // Schedule queue-store TTL cleanup every 60s.
+    this.cleanupIntervalId = setInterval(runCleanup, 60_000);
 
     // Initial render
     this.render();
@@ -525,11 +523,11 @@ export class App {
   }
 
   private async cleanup(): Promise<void> {
-    // Stop polling and background sync
+    // Stop polling and background cleanup
     pollingManager.stop();
-    if (this.syncIntervalId) {
-      clearInterval(this.syncIntervalId);
-      this.syncIntervalId = null;
+    if (this.cleanupIntervalId) {
+      clearInterval(this.cleanupIntervalId);
+      this.cleanupIntervalId = null;
     }
 
     // Unsubscribe from state

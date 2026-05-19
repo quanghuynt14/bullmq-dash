@@ -1,8 +1,7 @@
-import type { Job, JobType } from "bullmq";
+import type { Job } from "bullmq";
 import type { Context } from "../context.js";
 import { getQueue } from "./queues.js";
 import { DEFAULT_RETRY_PAGE_SIZE, MAX_RETRY_PAGE_SIZE, parseDuration } from "./duration.js";
-import { queryJobs, type JobRow } from "./sqlite.js";
 
 export type JobListView =
   | "latest"
@@ -18,10 +17,11 @@ export interface JobSummary {
   name: string;
   state: string;
   timestamp: number;
+  lastObservedAt?: number;
   /**
    * Optional preview payload. Populated by the Redis fetch path so callers
-   * (sync, polling, JSON reporter) can write `data_preview` to SQLite without
-   * casting through `unknown`. Not loaded from SQLite reads.
+   * can record searchable cache observations without casting through
+   * `unknown`. Not loaded from SQLite reads.
    */
   data?: unknown;
 }
@@ -50,19 +50,6 @@ export interface JobsResult {
 
 const PAGE_SIZE = 25;
 const DEFAULT_MAX_RESULTS = 1000;
-
-/** All job states we sync (BullMQ JobType values). */
-const SYNC_JOB_TYPES: JobType[] = [
-  "active",
-  "waiting",
-  "completed",
-  "failed",
-  "delayed",
-  "prioritized",
-];
-
-/** Number of IDs to fetch per Redis call during sync. */
-const SYNC_PAGE_SIZE = 5000;
 
 /**
  * Valid job state values for the --job-state flag
@@ -176,47 +163,6 @@ export async function getAllJobs(
   });
 
   return { jobs: jobSummaries, total };
-}
-
-/**
- * Paginate through all job IDs in a queue, yielding batches.
- *
- * Uses `queue.getRanges()` per state, paginating in chunks of SYNC_PAGE_SIZE.
- * Each yielded batch contains `{ id, state }` pairs ready for staging insertion.
- *
- * This never holds more than one page of IDs in memory at a time, making it
- * safe for queues with millions of jobs.
- */
-export async function* getAllJobIds(
-  ctx: Context,
-  queueName: string,
-): AsyncGenerator<Array<{ id: string; state: string }>> {
-  const queue = getQueue(ctx, queueName);
-
-  for (const type of SYNC_JOB_TYPES) {
-    let offset = 0;
-    while (true) {
-      const end = offset + SYNC_PAGE_SIZE - 1;
-      // Sequential by necessity: we paginate by offset and stop when a page
-      // returns fewer than SYNC_PAGE_SIZE items. Total count isn't known
-      // upfront, so we can't fire all pages in parallel.
-      // eslint-disable-next-line no-await-in-loop
-      const ids = await queue.getRanges([type], offset, end);
-
-      if (ids.length === 0) break;
-
-      const batch = ids
-        .filter((id): id is string => typeof id === "string" && id !== "")
-        .map((id) => ({ id, state: type as string }));
-
-      if (batch.length > 0) {
-        yield batch;
-      }
-
-      if (ids.length < SYNC_PAGE_SIZE) break;
-      offset += SYNC_PAGE_SIZE;
-    }
-  }
 }
 
 /**
@@ -346,58 +292,6 @@ export async function getJobs(
     page,
     pageSize,
     totalPages: Math.ceil(total / pageSize),
-  };
-}
-
-function rowToJobSummary(row: JobRow): JobSummary {
-  return {
-    id: row.id,
-    name: row.name ?? "unknown",
-    state: row.state,
-    timestamp: row.timestamp ?? 0,
-  };
-}
-
-function storeStateFilter(status: JobListView): string | string[] | undefined {
-  switch (status) {
-    case "latest":
-      return undefined;
-    case "wait":
-      return ["waiting", "prioritized"];
-    case "schedulers":
-      throw new Error(
-        "Cannot fetch schedulers via getJobsFromStore(). Use getJobSchedulers() instead.",
-      );
-    default:
-      return status;
-  }
-}
-
-/**
- * Get jobs by status with pagination from the queue-data store.
- */
-export async function getJobsFromStore(
-  ctx: Context,
-  queueName: string,
-  status: JobListView,
-  page: number = 1,
-  pageSize: number = PAGE_SIZE,
-): Promise<JobsResult> {
-  const result = queryJobs(ctx, {
-    queue: queueName,
-    state: storeStateFilter(status),
-    sort: "timestamp",
-    order: "desc",
-    page,
-    pageSize,
-  });
-
-  return {
-    jobs: result.jobs.map(rowToJobSummary),
-    total: result.total,
-    page,
-    pageSize,
-    totalPages: Math.ceil(result.total / pageSize),
   };
 }
 

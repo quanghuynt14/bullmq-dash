@@ -12,6 +12,7 @@ export interface JobSchedulerSummary {
   next?: number;
   iterationCount?: number;
   tz?: string;
+  lastObservedAt?: number;
 }
 
 /**
