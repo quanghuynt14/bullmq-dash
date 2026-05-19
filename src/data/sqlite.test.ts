@@ -61,7 +61,6 @@ describe("createSqliteDb", () => {
     expect(jobColumns.map((c) => c.name)).toContain("last_observed_at");
     expect(queueColumns.map((c) => c.name)).toContain("last_observed_at");
     expect(schedulerColumns.map((c) => c.name)).toContain("last_observed_at");
-    expect(jobColumns.map((c) => c.name)).toContain("removed_at");
   });
 
   it("migrates legacy rows as fresh for one TTL window", () => {

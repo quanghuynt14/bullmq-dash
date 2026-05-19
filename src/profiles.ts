@@ -17,8 +17,6 @@ export interface Profile {
    * older than this are physically removed by queue-store cleanup.
    */
   cacheTtlMs?: number;
-  /** Deprecated profile alias accepted for pre-cacheTtlMs config files. */
-  retentionMs?: number;
 }
 
 export interface ProfilesFile {
@@ -37,14 +35,7 @@ function coerceOptionalPositiveInt(value: unknown): number | undefined | null {
   return numberValue;
 }
 
-const PROFILE_ALLOWED_KEYS = [
-  "redis",
-  "pollInterval",
-  "prefix",
-  "queues",
-  "cacheTtlMs",
-  "retentionMs",
-] as const;
+const PROFILE_ALLOWED_KEYS = ["redis", "pollInterval", "prefix", "queues", "cacheTtlMs"] as const;
 const PROFILES_FILE_ALLOWED_KEYS = ["defaultProfile", "profiles"] as const;
 
 function unknownKeyMessage(path: string, key: string, allowed: readonly string[]): string {
@@ -100,17 +91,6 @@ function validateProfile(value: unknown, path: string, errors: string[]): Profil
   const cacheTtlMs = coerceOptionalPositiveInt(value.cacheTtlMs);
   if (cacheTtlMs === null) errors.push(`${path}.cacheTtlMs must be a positive integer`);
   else if (cacheTtlMs !== undefined) profile.cacheTtlMs = cacheTtlMs;
-
-  const retentionMs = coerceOptionalPositiveInt(value.retentionMs);
-  if (retentionMs === null) {
-    errors.push(`${path}.retentionMs must be a positive integer`);
-  } else if (retentionMs !== undefined) {
-    if (profile.cacheTtlMs !== undefined) {
-      errors.push(`${path} cannot set both cacheTtlMs and retentionMs`);
-    } else {
-      profile.cacheTtlMs = retentionMs;
-    }
-  }
 
   return profile;
 }

@@ -247,29 +247,19 @@ export function expireStaleRecords(
     let cascadedSchedulers = 0;
     if (queueNames.length > 0) {
       const placeholders = queueNames.map(() => "?").join(",");
-      const { n } = database
-        .prepare(`SELECT COUNT(*) as n FROM schedulers WHERE queue IN (${placeholders})`)
-        .get(...queueNames) as { n: number };
-      cascadedSchedulers = n;
-      database
+      cascadedSchedulers = database
         .prepare(`DELETE FROM schedulers WHERE queue IN (${placeholders})`)
-        .run(...queueNames);
+        .run(...queueNames).changes;
       database.prepare(`DELETE FROM queues WHERE name IN (${placeholders})`).run(...queueNames);
     }
 
-    const { n: staleSchedulers } = database
-      .prepare("SELECT COUNT(*) as n FROM schedulers WHERE last_observed_at < ?")
-      .get(cutoff) as { n: number };
-    if (staleSchedulers > 0) {
-      database.prepare("DELETE FROM schedulers WHERE last_observed_at < ?").run(cutoff);
-    }
+    const staleSchedulers = database
+      .prepare("DELETE FROM schedulers WHERE last_observed_at < ?")
+      .run(cutoff).changes;
 
-    const { n: staleJobs } = database
-      .prepare("SELECT COUNT(*) as n FROM jobs WHERE last_observed_at < ?")
-      .get(cutoff) as { n: number };
-    if (staleJobs > 0) {
-      database.prepare("DELETE FROM jobs WHERE last_observed_at < ?").run(cutoff);
-    }
+    const staleJobs = database
+      .prepare("DELETE FROM jobs WHERE last_observed_at < ?")
+      .run(cutoff).changes;
 
     return {
       queuesDeleted: queueNames.length,

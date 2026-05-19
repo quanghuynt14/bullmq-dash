@@ -24,9 +24,6 @@ CREATE TABLE IF NOT EXISTS jobs (
   repeat_job_key TEXT,
   delay INTEGER,
   last_observed_at INTEGER NOT NULL DEFAULT 0,
-  -- Legacy column retained for older user databases. The active queue-store
-  -- model no longer reads or writes soft-delete state.
-  removed_at INTEGER,
   PRIMARY KEY (queue, id)
 );
 
@@ -109,7 +106,6 @@ function migrateCacheColumns(database: Database, now: number): void {
       jobCols,
       "ADD COLUMN last_observed_at INTEGER NOT NULL DEFAULT 0",
     );
-    addColumnIfMissing(database, "jobs", jobCols, "ADD COLUMN removed_at INTEGER");
     database.prepare("UPDATE jobs SET last_observed_at = ? WHERE last_observed_at = 0").run(now);
   }
 
@@ -204,7 +200,6 @@ export interface JobRow {
   repeat_job_key: string | null;
   delay: number | null;
   last_observed_at: number;
-  removed_at: number | null;
 }
 
 export interface JobQueryParams {
@@ -270,7 +265,7 @@ export function upsertQueueStats(
       last_observed_at = excluded.last_observed_at
   `);
 
-  const recordObservedQueues = database.transaction((items: QueueStats[]) => {
+  const runUpsert = database.transaction((items: QueueStats[]) => {
     for (const queue of items) {
       stmt.run(
         queue.name,
@@ -286,7 +281,7 @@ export function upsertQueueStats(
     }
   });
 
-  recordObservedQueues(queues);
+  runUpsert(queues);
 }
 
 export interface SchedulerQueryResult {
@@ -328,7 +323,7 @@ export function upsertSchedulers(
       last_observed_at = excluded.last_observed_at
   `);
 
-  const recordForQueue = database.transaction((items: JobSchedulerSummary[]) => {
+  const runUpsert = database.transaction((items: JobSchedulerSummary[]) => {
     for (const s of items) {
       stmt.run(
         queue,
@@ -344,7 +339,7 @@ export function upsertSchedulers(
     }
   });
 
-  recordForQueue(schedulers);
+  runUpsert(schedulers);
 }
 
 export function querySchedulers(
@@ -403,10 +398,10 @@ export function queryQueueStats(ctx: Context): QueueStats[] {
         active_count,
         completed_count,
         failed_count,
-      delayed_count,
-      schedulers_count,
-      is_paused,
-      last_observed_at
+        delayed_count,
+        schedulers_count,
+        is_paused,
+        last_observed_at
       FROM queues
       ORDER BY name ASC
     `)
