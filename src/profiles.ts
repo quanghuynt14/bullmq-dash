@@ -14,7 +14,8 @@ export interface Profile {
   queues?: string[];
   /**
    * Observation-cache TTL in milliseconds. Cached queues, jobs, and schedulers
-   * older than this are physically removed by queue-store cleanup.
+   * older than this are physically removed by queue-store cleanup. Config files
+   * may still use legacy `retentionMs`; validation normalizes it into this field.
    */
   cacheTtlMs?: number;
 }
@@ -35,7 +36,14 @@ function coerceOptionalPositiveInt(value: unknown): number | undefined | null {
   return numberValue;
 }
 
-const PROFILE_ALLOWED_KEYS = ["redis", "pollInterval", "prefix", "queues", "cacheTtlMs"] as const;
+const PROFILE_ALLOWED_KEYS = [
+  "redis",
+  "pollInterval",
+  "prefix",
+  "queues",
+  "cacheTtlMs",
+  "retentionMs",
+] as const;
 const PROFILES_FILE_ALLOWED_KEYS = ["defaultProfile", "profiles"] as const;
 
 function unknownKeyMessage(path: string, key: string, allowed: readonly string[]): string {
@@ -90,7 +98,23 @@ function validateProfile(value: unknown, path: string, errors: string[]): Profil
 
   const cacheTtlMs = coerceOptionalPositiveInt(value.cacheTtlMs);
   if (cacheTtlMs === null) errors.push(`${path}.cacheTtlMs must be a positive integer`);
-  else if (cacheTtlMs !== undefined) profile.cacheTtlMs = cacheTtlMs;
+
+  const retentionMs = coerceOptionalPositiveInt(value.retentionMs);
+  if (retentionMs === null) errors.push(`${path}.retentionMs must be a positive integer`);
+
+  if (
+    cacheTtlMs !== undefined &&
+    cacheTtlMs !== null &&
+    retentionMs !== undefined &&
+    retentionMs !== null &&
+    cacheTtlMs !== retentionMs
+  ) {
+    errors.push(`${path}.cacheTtlMs and ${path}.retentionMs must match when both are set`);
+  } else if (cacheTtlMs !== undefined && cacheTtlMs !== null) {
+    profile.cacheTtlMs = cacheTtlMs;
+  } else if (retentionMs !== undefined && retentionMs !== null) {
+    profile.cacheTtlMs = retentionMs;
+  }
 
   return profile;
 }

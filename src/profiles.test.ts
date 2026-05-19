@@ -245,13 +245,22 @@ describe("loadProfile", () => {
     expect(result?.profile.redis?.url).toBe("rediss://user:pass@host.example.com:6380/2");
   });
 
-  it("rejects retentionMs as an unknown profile key", () => {
-    // retentionMs was the pre-TTL-cache config name; it's intentionally not a
-    // backward-compat alias, so a strict-schema rejection is the right signal.
+  it("accepts retentionMs as a legacy alias for cacheTtlMs", () => {
     writeFileSync(
       configPath,
       JSON.stringify({
         profiles: { local: { retentionMs: 60_000 } },
+      }),
+    );
+    const result = loadProfile({ configPath, profileName: "local" });
+    expect(result?.profile.cacheTtlMs).toBe(60_000);
+  });
+
+  it("rejects conflicting cacheTtlMs and retentionMs values", () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        profiles: { local: { cacheTtlMs: 30_000, retentionMs: 60_000 } },
       }),
     );
     const safety = silenceErrors();

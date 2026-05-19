@@ -32,15 +32,18 @@ function createResponse<T>(data: T): { timestamp: string } & T {
   };
 }
 
+export function omitObservationMetadata<T extends object>(item: T): Omit<T, "lastObservedAt"> {
+  const copy: T & { lastObservedAt?: unknown } = { ...item };
+  delete copy.lastObservedAt;
+  return copy;
+}
+
 // ── Queues overview (default) ───────────────────────────────────────────
 
 async function fetchQueuesOverview(ctx: Context) {
   const queueNames = await discoverQueueNames(ctx);
   const queues = await Promise.all(queueNames.map((name) => getQueueStats(ctx, name)));
   const observedAt = Date.now();
-  for (const queue of queues) {
-    queue.lastObservedAt = observedAt;
-  }
 
   try {
     recordObservedQueues(ctx, queues, { observedAt });
@@ -61,7 +64,7 @@ async function fetchQueuesOverview(ctx: Context) {
   );
 
   return createResponse({
-    queues,
+    queues: queues.map(omitObservationMetadata),
     metrics: {
       queueCount: queues.length,
       jobCounts,
@@ -96,9 +99,6 @@ async function fetchJobsList(
 ) {
   const { jobs, total } = await getAllJobs(ctx, queueName, jobState, maxResults, true);
   const observedAt = Date.now();
-  for (const job of jobs) {
-    job.lastObservedAt = observedAt;
-  }
 
   // Side effect: populate SQLite cache with fetched jobs (best-effort).
   try {
@@ -110,7 +110,7 @@ async function fetchJobsList(
   return createResponse({
     queue: queueName,
     jobState: jobState ?? "all",
-    jobs,
+    jobs: jobs.map(omitObservationMetadata),
     total,
   });
 }
@@ -184,17 +184,16 @@ async function fetchJobDetail(ctx: Context, queueName: string, jobId: string) {
     process.exit(1);
   }
   const observedAt = Date.now();
-  const observedJob = { ...job, lastObservedAt: observedAt };
 
   try {
-    recordObservedJobs(ctx, queueName, [observedJob], { observedAt });
+    recordObservedJobs(ctx, queueName, [job], { observedAt });
   } catch {
     // SQLite upsert is best-effort; don't break CLI output on failure
   }
 
   return createResponse({
     queue: queueName,
-    job: observedJob,
+    job: omitObservationMetadata(job),
   });
 }
 
@@ -203,9 +202,6 @@ async function fetchJobDetail(ctx: Context, queueName: string, jobId: string) {
 async function fetchSchedulersList(ctx: Context, queueName: string, maxResults?: number) {
   const { schedulers, total } = await getAllJobSchedulers(ctx, queueName, maxResults);
   const observedAt = Date.now();
-  for (const scheduler of schedulers) {
-    scheduler.lastObservedAt = observedAt;
-  }
 
   try {
     recordObservedSchedulers(ctx, queueName, schedulers, { observedAt });
@@ -215,7 +211,7 @@ async function fetchSchedulersList(ctx: Context, queueName: string, maxResults?:
 
   return createResponse({
     queue: queueName,
-    schedulers,
+    schedulers: schedulers.map(omitObservationMetadata),
     total,
   });
 }
@@ -235,17 +231,16 @@ async function fetchSchedulerDetail(ctx: Context, queueName: string, schedulerKe
     process.exit(1);
   }
   const observedAt = Date.now();
-  const observedScheduler = { ...scheduler, lastObservedAt: observedAt };
 
   try {
-    recordObservedSchedulers(ctx, queueName, [observedScheduler], { observedAt });
+    recordObservedSchedulers(ctx, queueName, [scheduler], { observedAt });
   } catch {
     // SQLite upsert is best-effort; don't break CLI output on failure
   }
 
   return createResponse({
     queue: queueName,
-    scheduler: observedScheduler,
+    scheduler: omitObservationMetadata(scheduler),
   });
 }
 
