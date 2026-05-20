@@ -69,22 +69,30 @@ function tableColumns(database: Database, table: string): Set<string> {
   return new Set(cols.map((c) => c.name));
 }
 
+/** Returns true when the column was actually added, false if it already existed. */
 function addColumnIfMissing(
   database: Database,
   table: string,
   columns: Set<string>,
   sql: string,
-): void {
+): boolean {
   const match = sql.match(/ADD COLUMN\s+([a-z_]+)/i);
   const name = match?.[1];
-  if (!name || columns.has(name)) return;
+  if (!name || columns.has(name)) return false;
   database.exec(`ALTER TABLE ${table} ${sql}`);
   columns.add(name);
+  return true;
 }
 
 /**
  * Bring older cache tables forward. The CREATE TABLE IF NOT EXISTS statements
  * are no-ops against existing tables, so added columns need explicit ALTERs.
+ *
+ * Backfill: when `last_observed_at` is first added, rows arrive with the
+ * column default (0) and would be immediately stale; mark them fresh as of
+ * now so users don't lose their cache on the upgrade boot. We only run the
+ * backfill when the ALTER actually fired — otherwise this would scan the
+ * full table on every startup looking for sentinel rows that can't exist.
  */
 function migrateCacheColumns(database: Database, now: number): void {
   const jobCols = tableColumns(database, "jobs");
@@ -100,37 +108,42 @@ function migrateCacheColumns(database: Database, now: number): void {
     addColumnIfMissing(database, "jobs", jobCols, "ADD COLUMN progress_json TEXT");
     addColumnIfMissing(database, "jobs", jobCols, "ADD COLUMN repeat_job_key TEXT");
     addColumnIfMissing(database, "jobs", jobCols, "ADD COLUMN delay INTEGER");
-    addColumnIfMissing(
-      database,
-      "jobs",
-      jobCols,
-      "ADD COLUMN last_observed_at INTEGER NOT NULL DEFAULT 0",
-    );
-    database.prepare("UPDATE jobs SET last_observed_at = ? WHERE last_observed_at = 0").run(now);
+    if (
+      addColumnIfMissing(
+        database,
+        "jobs",
+        jobCols,
+        "ADD COLUMN last_observed_at INTEGER NOT NULL DEFAULT 0",
+      )
+    ) {
+      database.prepare("UPDATE jobs SET last_observed_at = ?").run(now);
+    }
   }
 
   const queueCols = tableColumns(database, "queues");
-  if (queueCols.size > 0) {
+  if (
+    queueCols.size > 0 &&
     addColumnIfMissing(
       database,
       "queues",
       queueCols,
       "ADD COLUMN last_observed_at INTEGER NOT NULL DEFAULT 0",
-    );
-    database.prepare("UPDATE queues SET last_observed_at = ? WHERE last_observed_at = 0").run(now);
+    )
+  ) {
+    database.prepare("UPDATE queues SET last_observed_at = ?").run(now);
   }
 
   const schedulerCols = tableColumns(database, "schedulers");
-  if (schedulerCols.size > 0) {
+  if (
+    schedulerCols.size > 0 &&
     addColumnIfMissing(
       database,
       "schedulers",
       schedulerCols,
       "ADD COLUMN last_observed_at INTEGER NOT NULL DEFAULT 0",
-    );
-    database
-      .prepare("UPDATE schedulers SET last_observed_at = ? WHERE last_observed_at = 0")
-      .run(now);
+    )
+  ) {
+    database.prepare("UPDATE schedulers SET last_observed_at = ?").run(now);
   }
 }
 
@@ -233,8 +246,9 @@ export interface JobQueryResult {
 }
 
 /**
- * Legacy queue observation helper. Active callers should use
- * `recordObservedQueues` in queue-store.ts.
+ * SQL primitive for upserting observed queue stats. Not the public API —
+ * external callers go through `recordObservedQueues` in queue-store.ts so
+ * the facade can stamp `observedAt` consistently.
  */
 export function upsertQueueStats(
   ctx: Context,
@@ -290,8 +304,8 @@ export interface SchedulerQueryResult {
 }
 
 /**
- * Legacy scheduler observation helper. Active callers should use
- * `recordObservedSchedulers` in queue-store.ts.
+ * SQL primitive for upserting observed schedulers. Not the public API —
+ * external callers go through `recordObservedSchedulers` in queue-store.ts.
  */
 export function upsertSchedulers(
   ctx: Context,

@@ -290,6 +290,25 @@ describe("pollingManager", () => {
     expect(state.jobs).toEqual([]);
   });
 
+  it("does not render stale cached schedulers when Redis observes none", async () => {
+    const email = queueStats("email");
+    mockState.observedQueues = [email];
+    mockState.schedulers = [];
+    upsertSchedulers(ctx, "email", [{ key: "stale", name: "stale" }]);
+    stateManager.setState({
+      jobsStatus: "schedulers",
+      schedulersPage: 1,
+    });
+
+    await pollingManager.poll();
+
+    const state = stateManager.getState();
+    expect(state.connected).toBe(true);
+    expect(state.schedulers).toEqual([]);
+    expect(state.schedulersTotal).toBe(0);
+    expect(state.schedulersTotalPages).toBe(0);
+  });
+
   it("renders scheduler pages beyond the default 1000-row bulk cap", async () => {
     const email = queueStats("email");
     mockState.observedQueues = [email];

@@ -9,9 +9,9 @@
  *     rows. SQLite can't be the connected render source because we only
  *     ever observe the current page — other pages aren't in the cache.
  *
- *   - Schedulers: full-set observation (up to ~1000). Mirror the full set
- *     into SQLite, then paginate from SQLite. The full-set mirror lets
- *     SQLite pagination match Redis exactly.
+ *   - Schedulers: full-set observation (up to ~1000). Render the connected
+ *     view from that Redis observation, and persist it so disconnected
+ *     fallback can serve last-known rows.
  *
  * On disconnect, both render from SQLite via the disconnected fallback.
  */
@@ -64,6 +64,15 @@ function schedulersViewState(schedulers: JobSchedulerSummary[], total: number): 
     jobsTotal: 0,
     jobsTotalPages: 0,
   };
+}
+
+function pageSchedulers(
+  schedulers: JobSchedulerSummary[],
+  page: number,
+  pageSize: number = SCHEDULER_PAGE_SIZE,
+): JobSchedulerSummary[] {
+  const start = (page - 1) * pageSize;
+  return schedulers.slice(start, start + pageSize);
 }
 
 const EMPTY_QUEUE_VIEW: Partial<AppState> = {
@@ -165,12 +174,12 @@ class PollingManager {
           const observed = await this.fetchAllSchedulers(selectedQueue.name);
           this.persistObservedSchedulers(selectedQueue.name, observed.schedulers);
 
-          const storeResult = listSchedulers(ctx, selectedQueue.name, {
-            page: currentState.schedulersPage,
-            pageSize: SCHEDULER_PAGE_SIZE,
-          });
-
-          stateManager.setState(schedulersViewState(storeResult.schedulers, observed.total));
+          stateManager.setState(
+            schedulersViewState(
+              pageSchedulers(observed.schedulers, currentState.schedulersPage),
+              observed.total,
+            ),
+          );
         } else {
           const observedJobsResult = await this.fetchVisibleJobs(
             selectedQueue.name,
@@ -306,9 +315,9 @@ class PollingManager {
    * than always doing a sequential count-then-fetch that would cost an
    * extra round-trip in the common case.
    *
-   * We mirror the full set rather than a page so [[upsertSchedulers]]'s
-   * replace semantics produce a SQLite cache that matches Redis —
-   * pagination is then served from SQLite.
+   * We fetch the full set so connected rendering can page over the current
+   * Redis observation. The queue-store observation is still recorded for
+   * disconnected fallback, but it is TTL-based and may include stale rows.
    */
   private async fetchAllSchedulers(
     queueName: string,
@@ -413,10 +422,13 @@ class PollingManager {
       page: state.schedulersPage,
       pageSize: SCHEDULER_PAGE_SIZE,
     });
+    const schedulers = observed
+      ? pageSchedulers(observed.schedulers, state.schedulersPage)
+      : storeResult.schedulers;
     const total = observed?.total ?? storeResult.total;
 
     stateManager.setState({
-      schedulers: storeResult.schedulers,
+      schedulers,
       schedulersTotal: total,
       schedulersTotalPages: Math.ceil(total / SCHEDULER_PAGE_SIZE),
     });

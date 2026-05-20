@@ -124,6 +124,9 @@ function rowToDetail(row: JobRow): CachedJobDetail {
   return detail;
 }
 
+// Reads return every physically present row regardless of `lastObservedAt`.
+// TTL filtering is `expireStaleRecords`'s job, not the read path's — see
+// ADR-0003. A stale row stays visible until cleanup runs.
 export function listQueues(ctx: Context): QueueStats[] {
   return queryQueueStats(ctx);
 }

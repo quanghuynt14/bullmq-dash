@@ -245,22 +245,15 @@ describe("loadProfile", () => {
     expect(result?.profile.redis?.url).toBe("rediss://user:pass@host.example.com:6380/2");
   });
 
-  it("accepts retentionMs as a legacy alias for cacheTtlMs", () => {
+  it("rejects the pre-TTL `retentionMs` key with a clear unknown-key error", () => {
+    // `retentionMs` was the soft-delete retention window in earlier releases.
+    // Its semantics (preserve history past Redis retention) are the opposite
+    // of `cacheTtlMs` (bounded freshness window) — silently aliasing would
+    // change a user's data lifecycle, so the strict schema rejects it.
     writeFileSync(
       configPath,
       JSON.stringify({
         profiles: { local: { retentionMs: 60_000 } },
-      }),
-    );
-    const result = loadProfile({ configPath, profileName: "local" });
-    expect(result?.profile.cacheTtlMs).toBe(60_000);
-  });
-
-  it("rejects conflicting cacheTtlMs and retentionMs values", () => {
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        profiles: { local: { cacheTtlMs: 30_000, retentionMs: 60_000 } },
       }),
     );
     const safety = silenceErrors();

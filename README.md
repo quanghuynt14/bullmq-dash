@@ -106,7 +106,7 @@ and reference it with `--profile`:
 }
 ```
 
-Each profile carries a single `redis.url`. `cacheTtlMs` controls the SQLite observation-cache TTL and defaults to 24 hours; legacy `retentionMs` is accepted as an alias. The `${VAR}` form interpolates an environment variable as the **whole value** (partial substitution is intentionally not supported), which pairs nicely with managed providers (Upstash, Heroku Redis, Render, Railway, Fly) that hand you a single `REDIS_URL` env var. Prefer environment-backed profile values for authenticated Redis URLs.
+Each profile carries a single `redis.url`. `cacheTtlMs` controls the SQLite observation-cache TTL and defaults to 24 hours. The `${VAR}` form interpolates an environment variable as the **whole value** (partial substitution is intentionally not supported), which pairs nicely with managed providers (Upstash, Heroku Redis, Render, Railway, Fly) that hand you a single `REDIS_URL` env var. Prefer environment-backed profile values for authenticated Redis URLs.
 
 ```bash
 # Connect using the default profile (defaultProfile field above)

@@ -1,6 +1,6 @@
 import { discoverQueueNames, getQueueStats, deleteQueue } from "./data/queues.js";
 import { getAllJobs, getJobDetail, retryFailedJobs, VALID_JOB_STATUSES } from "./data/jobs.js";
-import type { JsonJobStatus, RetryResult } from "./data/jobs.js";
+import type { JobSummary, JsonJobStatus, RetryResult } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
 import { writeError } from "./errors.js";
 import {
@@ -36,6 +36,17 @@ export function omitObservationMetadata<T extends object>(item: T): Omit<T, "las
   const copy: T & { lastObservedAt?: unknown } = { ...item };
   delete copy.lastObservedAt;
   return copy;
+}
+
+export function publicJobSummary(
+  job: JobSummary,
+): Pick<JobSummary, "id" | "name" | "state" | "timestamp"> {
+  return {
+    id: job.id,
+    name: job.name,
+    state: job.state,
+    timestamp: job.timestamp,
+  };
 }
 
 // ── Queues overview (default) ───────────────────────────────────────────
@@ -110,7 +121,7 @@ async function fetchJobsList(
   return createResponse({
     queue: queueName,
     jobState: jobState ?? "all",
-    jobs: jobs.map(omitObservationMetadata),
+    jobs: jobs.map(publicJobSummary),
     total,
   });
 }

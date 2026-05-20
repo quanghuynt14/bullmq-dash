@@ -65,7 +65,6 @@ export interface SchedulersResult {
   totalPages: number;
 }
 
-const PAGE_SIZE = 25;
 const DEFAULT_MAX_RESULTS = 1000;
 
 /**
@@ -96,43 +95,6 @@ export async function getAllJobSchedulers(
   }));
 
   return { schedulers: summaries, total };
-}
-
-/**
- * Get job schedulers with pagination
- */
-export async function getJobSchedulers(
-  ctx: Context,
-  queueName: string,
-  page: number = 1,
-  pageSize: number = PAGE_SIZE,
-): Promise<SchedulersResult> {
-  const queue = getQueue(ctx, queueName);
-  const start = (page - 1) * pageSize;
-  const end = start + pageSize - 1;
-
-  const [schedulers, total] = await Promise.all([
-    queue.getJobSchedulers(start, end, false),
-    queue.getJobSchedulersCount(),
-  ]);
-
-  const summaries: JobSchedulerSummary[] = schedulers.map((s) => ({
-    key: s.key,
-    name: s.name,
-    pattern: s.pattern ?? undefined,
-    every: s.every ?? undefined,
-    next: s.next ?? undefined,
-    iterationCount: s.iterationCount ?? undefined,
-    tz: s.tz ?? undefined,
-  }));
-
-  return {
-    schedulers: summaries,
-    total,
-    page,
-    pageSize,
-    totalPages: Math.ceil(total / pageSize),
-  };
 }
 
 /**

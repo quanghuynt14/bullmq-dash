@@ -264,8 +264,10 @@ export async function getJobs(
         total = delayedCounts.delayed || 0;
         break;
       case "schedulers":
-        // Schedulers are not jobs - use getJobSchedulers() from schedulers.ts instead
-        throw new Error("Cannot fetch schedulers via getJobs(). Use getJobSchedulers() instead.");
+        // Schedulers are not jobs — use getAllJobSchedulers() from schedulers.ts instead.
+        throw new Error(
+          "Cannot fetch schedulers via getJobs(). Use getAllJobSchedulers() instead.",
+        );
       default:
         tagged = [];
         total = 0;
