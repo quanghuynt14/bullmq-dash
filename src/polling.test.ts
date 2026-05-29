@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { unlinkSync } from "node:fs";
 import { createContext, type Context } from "./context.js";
 import type { QueueStats } from "./data/queues.js";
@@ -134,7 +134,11 @@ beforeEach(() => {
 
 afterEach(async () => {
   pollingManager.stop();
-  ctx.db.close();
+  try {
+    ctx.db.close();
+  } catch {
+    // Some tests intentionally close the handle before cleanup.
+  }
   await ctx.redis.quit().catch(() => {});
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
@@ -328,6 +332,35 @@ describe("pollingManager", () => {
     expect(state.schedulers).toMatchObject([{ key: "s-1000", name: "scheduler-1000" }]);
     expect(state.schedulersTotal).toBe(1001);
     expect(state.schedulersTotalPages).toBe(41);
+  });
+
+  it("manual scheduler refresh renders Redis observations when SQLite is unavailable", async () => {
+    const email = queueStats("email");
+    const scheduler: JobSchedulerSummary = {
+      key: "nightly",
+      name: "nightly",
+      pattern: "0 0 * * *",
+    };
+    mockState.schedulers = [scheduler];
+    stateManager.setState({
+      queues: [email],
+      jobsStatus: "schedulers",
+      schedulersPage: 1,
+      schedulers: [{ key: "cached", name: "cached" }],
+      schedulersTotal: 1,
+      schedulersTotalPages: 1,
+    });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    ctx.db.close();
+
+    await pollingManager.refreshSchedulers();
+
+    const state = stateManager.getState();
+    expect(state.schedulers).toMatchObject([scheduler]);
+    expect(state.schedulersTotal).toBe(1);
+    expect(state.schedulersTotalPages).toBe(1);
+
+    warnSpy.mockRestore();
   });
 
   it("recovers from disconnect: keeps last-known state, then refreshes when Redis returns", async () => {

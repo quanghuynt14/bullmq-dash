@@ -418,19 +418,24 @@ class PollingManager {
       );
     }
 
+    if (observed) {
+      stateManager.setState({
+        schedulers: pageSchedulers(observed.schedulers, state.schedulersPage),
+        schedulersTotal: observed.total,
+        schedulersTotalPages: Math.ceil(observed.total / SCHEDULER_PAGE_SIZE),
+      });
+      return;
+    }
+
     const storeResult = listSchedulers(this.requireCtx(), selectedQueue.name, {
       page: state.schedulersPage,
       pageSize: SCHEDULER_PAGE_SIZE,
     });
-    const schedulers = observed
-      ? pageSchedulers(observed.schedulers, state.schedulersPage)
-      : storeResult.schedulers;
-    const total = observed?.total ?? storeResult.total;
 
     stateManager.setState({
-      schedulers,
-      schedulersTotal: total,
-      schedulersTotalPages: Math.ceil(total / SCHEDULER_PAGE_SIZE),
+      schedulers: storeResult.schedulers,
+      schedulersTotal: storeResult.total,
+      schedulersTotalPages: Math.ceil(storeResult.total / SCHEDULER_PAGE_SIZE),
     });
   }
 }
