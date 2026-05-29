@@ -3,7 +3,6 @@ import { stateManager } from "./state.js";
 import { pollingManager } from "./polling.js";
 import { getJobDetail, deleteJob } from "./data/jobs.js";
 import { getJobSchedulerDetail } from "./data/schedulers.js";
-import { fullSync } from "./data/sync.js";
 import { closeContext, type Context } from "./context.js";
 
 // UI imports
@@ -61,7 +60,6 @@ export class App {
   private renderer: CliRenderer | null = null;
   private elements: AppElements | null = null;
   private unsubscribeState: (() => void) | null = null;
-  private syncIntervalId: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly ctx: Context) {}
 
@@ -104,20 +102,10 @@ export class App {
       );
     }
 
-    // Start polling
+    // Start polling. The poll loop runs queue-store TTL cleanup in its
+    // `finally` block on every tick (rate-limited inside the helper), so no
+    // separate cleanup timer is needed.
     pollingManager.start(ctx);
-
-    const runFullSync = () => {
-      fullSync(ctx).catch((error) => {
-        console.error("SQLite full sync failed:", error);
-      });
-    };
-
-    // Run initial full sync in background (non-blocking)
-    runFullSync();
-
-    // Schedule background full sync every 60s
-    this.syncIntervalId = setInterval(runFullSync, 60_000);
 
     // Initial render
     this.render();
@@ -525,12 +513,8 @@ export class App {
   }
 
   private async cleanup(): Promise<void> {
-    // Stop polling and background sync
+    // Stop polling (which also stops queue-store TTL cleanup)
     pollingManager.stop();
-    if (this.syncIntervalId) {
-      clearInterval(this.syncIntervalId);
-      this.syncIntervalId = null;
-    }
 
     // Unsubscribe from state
     if (this.unsubscribeState) {

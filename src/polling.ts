@@ -9,21 +9,15 @@
  *     rows. SQLite can't be the connected render source because we only
  *     ever observe the current page — other pages aren't in the cache.
  *
- *   - Schedulers: full-set observation (up to ~1000). Mirror the full set
- *     into SQLite, then paginate from SQLite. The full-set mirror lets
- *     SQLite pagination match Redis exactly.
+ *   - Schedulers: full-set observation (up to ~1000). Render the connected
+ *     view from that Redis observation, and persist it so disconnected
+ *     fallback can serve last-known rows.
  *
  * On disconnect, both render from SQLite via the disconnected fallback.
  */
 import type { Context } from "./context.js";
 import { getAllQueueStats, type QueueStats } from "./data/queues.js";
-import {
-  getJobs,
-  getJobsFromStore,
-  type JobListView,
-  type JobsResult,
-  type JobSummary,
-} from "./data/jobs.js";
+import { getJobs, type JobListView, type JobsResult, type JobSummary } from "./data/jobs.js";
 import { getAllJobSchedulers, type JobSchedulerSummary } from "./data/schedulers.js";
 import {
   calculateGlobalMetricsFromQueueStats,
@@ -32,13 +26,14 @@ import {
 } from "./data/metrics.js";
 import { stateManager, type AppState } from "./state.js";
 import {
-  querySchedulers,
-  queryQueueStats,
-  upsertJobs,
-  upsertQueueStats,
-  upsertSchedulers,
-} from "./data/sqlite.js";
-import { markPolledWrites } from "./data/sync.js";
+  listJobs,
+  listQueues,
+  listSchedulers,
+  recordObservedJobs,
+  recordObservedQueues,
+  recordObservedSchedulers,
+} from "./data/queue-store.js";
+import { runQueueStoreCleanupIfDue } from "./data/queue-store-lifecycle.js";
 
 const SCHEDULER_PAGE_SIZE = 25;
 
@@ -69,6 +64,15 @@ function schedulersViewState(schedulers: JobSchedulerSummary[], total: number): 
     jobsTotal: 0,
     jobsTotalPages: 0,
   };
+}
+
+function pageSchedulers(
+  schedulers: JobSchedulerSummary[],
+  page: number,
+  pageSize: number = SCHEDULER_PAGE_SIZE,
+): JobSchedulerSummary[] {
+  const start = (page - 1) * pageSize;
+  return schedulers.slice(start, start + pageSize);
 }
 
 const EMPTY_QUEUE_VIEW: Partial<AppState> = {
@@ -144,8 +148,8 @@ class PollingManager {
       // Redis is the writer/source of observations; the queue-data store is
       // the read path used to render state.
       const observedQueues = await getAllQueueStats(ctx);
-      upsertQueueStats(ctx, observedQueues);
-      const queues = queryQueueStats(ctx);
+      recordObservedQueues(ctx, observedQueues);
+      const queues = listQueues(ctx);
       const rates = updateMetricsTracker(queues);
       const globalMetrics = calculateGlobalMetricsFromQueueStats(queues, rates);
 
@@ -170,14 +174,12 @@ class PollingManager {
           const observed = await this.fetchAllSchedulers(selectedQueue.name);
           this.persistObservedSchedulers(selectedQueue.name, observed.schedulers);
 
-          const storeResult = querySchedulers(
-            ctx,
-            selectedQueue.name,
-            currentState.schedulersPage,
-            SCHEDULER_PAGE_SIZE,
+          stateManager.setState(
+            schedulersViewState(
+              pageSchedulers(observed.schedulers, currentState.schedulersPage),
+              observed.total,
+            ),
           );
-
-          stateManager.setState(schedulersViewState(storeResult.schedulers, observed.total));
         } else {
           const observedJobsResult = await this.fetchVisibleJobs(
             selectedQueue.name,
@@ -203,6 +205,7 @@ class PollingManager {
 
       await this.applyDisconnectedFallback(ctx, errorMessage);
     } finally {
+      runQueueStoreCleanupIfDue(ctx);
       this.isPolling = false;
     }
   }
@@ -220,27 +223,23 @@ class PollingManager {
    */
   private async applyDisconnectedFallback(ctx: Context, errorMessage: string): Promise<void> {
     try {
-      const queues = queryQueueStats(ctx);
+      const queues = listQueues(ctx);
       const currentState = stateManager.getState();
       const clampedIndex = clampQueueIndex(queues, currentState.selectedQueueIndex);
       const selectedQueue = queues[clampedIndex];
 
       let viewState: Partial<AppState>;
       if (selectedQueue && currentState.jobsStatus === "schedulers") {
-        const storeResult = querySchedulers(
-          ctx,
-          selectedQueue.name,
-          currentState.schedulersPage,
-          SCHEDULER_PAGE_SIZE,
-        );
+        const storeResult = listSchedulers(ctx, selectedQueue.name, {
+          page: currentState.schedulersPage,
+          pageSize: SCHEDULER_PAGE_SIZE,
+        });
         viewState = schedulersViewState(storeResult.schedulers, storeResult.total);
       } else if (selectedQueue) {
-        const jobsResult = await getJobsFromStore(
-          ctx,
-          selectedQueue.name,
-          currentState.jobsStatus,
-          currentState.jobsPage,
-        );
+        const jobsResult = listJobs(ctx, selectedQueue.name, {
+          state: currentState.jobsStatus,
+          page: currentState.jobsPage,
+        });
         viewState = jobsViewState(jobsResult);
       } else {
         viewState = EMPTY_QUEUE_VIEW;
@@ -288,19 +287,13 @@ class PollingManager {
   }
 
   /**
-   * Upsert observed jobs into SQLite and tell the background sync to leave
-   * them alone for the next staging cycle. Best-effort: a SQLite failure
-   * here must not break polling — the next cycle will retry.
+   * Upsert observed jobs into SQLite. Best-effort: a SQLite failure here must
+   * not break polling — the next cycle will retry.
    */
   private persistObservedJobs(queueName: string, jobs: JobSummary[]): void {
     const ctx = this.requireCtx();
     try {
-      upsertJobs(ctx, queueName, jobs);
-      markPolledWrites(
-        ctx,
-        queueName,
-        jobs.map((j) => j.id),
-      );
+      recordObservedJobs(ctx, queueName, jobs);
     } catch (error) {
       // SQLite upsert is best-effort; don't break polling on failure. But
       // warn so disk-full / schema-corrupt scenarios don't masquerade as
@@ -322,9 +315,9 @@ class PollingManager {
    * than always doing a sequential count-then-fetch that would cost an
    * extra round-trip in the common case.
    *
-   * We mirror the full set rather than a page so [[upsertSchedulers]]'s
-   * replace semantics produce a SQLite cache that matches Redis —
-   * pagination is then served from SQLite.
+   * We fetch the full set so connected rendering can page over the current
+   * Redis observation. The queue-store observation is still recorded for
+   * disconnected fallback, but it is TTL-based and may include stale rows.
    */
   private async fetchAllSchedulers(
     queueName: string,
@@ -338,7 +331,7 @@ class PollingManager {
 
   private persistObservedSchedulers(queueName: string, schedulers: JobSchedulerSummary[]): void {
     try {
-      upsertSchedulers(this.requireCtx(), queueName, schedulers);
+      recordObservedSchedulers(this.requireCtx(), queueName, schedulers);
     } catch (error) {
       // Best-effort, same as persistObservedJobs — warn for visibility.
       console.warn(
@@ -384,12 +377,10 @@ class PollingManager {
 
       const jobsResult =
         observedJobsResult ??
-        (await getJobsFromStore(
-          this.requireCtx(),
-          selectedQueue.name,
-          state.jobsStatus,
-          state.jobsPage,
-        ));
+        listJobs(this.requireCtx(), selectedQueue.name, {
+          state: state.jobsStatus,
+          page: state.jobsPage,
+        });
 
       stateManager.setState({
         jobs: jobsResult.jobs,
@@ -427,18 +418,24 @@ class PollingManager {
       );
     }
 
-    const storeResult = querySchedulers(
-      this.requireCtx(),
-      selectedQueue.name,
-      state.schedulersPage,
-      SCHEDULER_PAGE_SIZE,
-    );
-    const total = observed?.total ?? storeResult.total;
+    if (observed) {
+      stateManager.setState({
+        schedulers: pageSchedulers(observed.schedulers, state.schedulersPage),
+        schedulersTotal: observed.total,
+        schedulersTotalPages: Math.ceil(observed.total / SCHEDULER_PAGE_SIZE),
+      });
+      return;
+    }
+
+    const storeResult = listSchedulers(this.requireCtx(), selectedQueue.name, {
+      page: state.schedulersPage,
+      pageSize: SCHEDULER_PAGE_SIZE,
+    });
 
     stateManager.setState({
       schedulers: storeResult.schedulers,
-      schedulersTotal: total,
-      schedulersTotalPages: Math.ceil(total / SCHEDULER_PAGE_SIZE),
+      schedulersTotal: storeResult.total,
+      schedulersTotalPages: Math.ceil(storeResult.total / SCHEDULER_PAGE_SIZE),
     });
   }
 }

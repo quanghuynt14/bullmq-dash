@@ -3,12 +3,10 @@ import { parseRedisUrl, type ParsedRedisUrl, type ResolvedProfile } from "./prof
 import type { CliArgs } from "./cli.js";
 
 /**
- * Default soft-delete retention window: 7 days. Soft-deleted jobs remain in
- * the SQLite cache for this long before compaction physically removes them.
- * The window bounds storage growth while leaving room for the historical-view
- * feature to surface jobs past Redis retention. (See ADR-0001.)
+ * Default observation-cache freshness window: 24 hours. Cached queues, jobs,
+ * and schedulers older than this are physically removed by queue-store cleanup.
  */
-const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface Config {
   redis: {
@@ -22,7 +20,7 @@ export interface Config {
   pollInterval: number;
   prefix: string;
   queueNames?: string[];
-  retentionMs: number;
+  cacheTtlMs: number;
 }
 
 function coercePositiveInt(value: unknown, fallback: number): number | null {
@@ -49,7 +47,7 @@ function coerceOptionalString(value: unknown): string | undefined | null {
   return typeof value === "string" ? value : null;
 }
 
-const CONFIG_ALLOWED_KEYS = ["redis", "pollInterval", "prefix", "queueNames", "retentionMs"];
+const CONFIG_ALLOWED_KEYS = ["redis", "pollInterval", "prefix", "queueNames", "cacheTtlMs"];
 const CONFIG_REDIS_ALLOWED_KEYS = ["host", "port", "username", "password", "db", "tls"];
 
 function validateConfig(raw: {
@@ -57,7 +55,7 @@ function validateConfig(raw: {
   pollInterval?: unknown;
   prefix?: unknown;
   queueNames?: unknown;
-  retentionMs?: unknown;
+  cacheTtlMs?: unknown;
 }): { success: true; data: Config } | { success: false; errors: string[] } {
   const errors: string[] = [];
 
@@ -115,8 +113,8 @@ function validateConfig(raw: {
     errors.push("queueNames must be an array of strings");
   }
 
-  const retentionMs = coercePositiveInt(raw.retentionMs, DEFAULT_RETENTION_MS);
-  if (retentionMs === null) errors.push("retentionMs must be a positive integer");
+  const cacheTtlMs = coercePositiveInt(raw.cacheTtlMs, DEFAULT_CACHE_TTL_MS);
+  if (cacheTtlMs === null) errors.push("cacheTtlMs must be a positive integer");
 
   if (errors.length > 0) {
     return { success: false, errors };
@@ -130,7 +128,7 @@ function validateConfig(raw: {
     },
     pollInterval: pollInterval as number,
     prefix: prefix as string,
-    retentionMs: retentionMs as number,
+    cacheTtlMs: cacheTtlMs as number,
   };
 
   if (username !== undefined && username !== null) config.redis.username = username;
@@ -179,7 +177,7 @@ export function loadConfig(cliArgs: CliArgs, profile?: ResolvedProfile | null): 
     pollInterval: cliArgs.pollInterval ?? p?.pollInterval,
     prefix: cliArgs.prefix ?? p?.prefix,
     queueNames: cliArgs.queues ?? p?.queues,
-    retentionMs: p?.retentionMs,
+    cacheTtlMs: p?.cacheTtlMs,
   };
 
   const result = validateConfig(raw);

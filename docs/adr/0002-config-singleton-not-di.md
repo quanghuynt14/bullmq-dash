@@ -25,7 +25,7 @@ type Context = {
 function createContext(config: Config): Context { ... }
 ```
 
-Public function shape becomes `recordObservedJobs(ctx, queue, jobs)`, `listJobs(ctx, queue, filter)`, `reconcileFromRedis(ctx, queue)`, `getQueue(ctx, name)`, etc. — one extra arg, type-visible dependencies.
+Public function shape becomes `recordObservedJobs(ctx, queue, jobs)`, `listJobs(ctx, queue, filter)`, `getQueue(ctx, name)`, etc. — one extra arg, type-visible dependencies. ADR-0003 later removes the reconciliation surface from the queue-data store.
 
 ## Considered alternatives
 

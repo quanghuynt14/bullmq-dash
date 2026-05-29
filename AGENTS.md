@@ -124,7 +124,8 @@ Saved Redis connections live in a JSON config file (default
     "local": { "redis": { "url": "redis://localhost:6379" } },
     "prod": {
       "redis": { "url": "${REDIS_PROD_URL}" },
-      "queues": ["payments", "notifications"]
+      "queues": ["payments", "notifications"],
+      "cacheTtlMs": 86400000
     },
     "upstash": { "redis": { "url": "${REDIS_URL}" } }
   }
@@ -132,11 +133,12 @@ Saved Redis connections live in a JSON config file (default
 ```
 
 Each profile carries a single `redis.url`; the schema is strict so unknown
-fields (e.g. legacy `host`/`port`) are rejected as `CONFIG_ERROR`. Strings of
-the form `${VAR_NAME}` interpolate an environment variable as the **whole
-value** (partial substitution is intentionally not supported). Unset
-references are a hard `CONFIG_ERROR` (exit 2) — secrets never silently
-resolve to empty.
+fields (e.g. legacy `host`/`port`, or the pre-TTL `retentionMs` key) are
+rejected as `CONFIG_ERROR`. `cacheTtlMs` controls the SQLite observation-cache
+TTL and defaults to 24 hours. Strings of the form `${VAR_NAME}` interpolate
+an environment variable as the **whole value** (partial substitution is
+intentionally not supported). Unset references are a hard `CONFIG_ERROR`
+(exit 2) — secrets never silently resolve to empty.
 
 ### Progressive Help
 

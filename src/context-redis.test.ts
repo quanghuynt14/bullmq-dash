@@ -66,7 +66,7 @@ const testConfig: Config = {
   },
   pollInterval: 5000,
   prefix: "bull",
-  retentionMs: 86_400_000,
+  cacheTtlMs: 86_400_000,
 };
 
 function fakeClient(): FakeClient {

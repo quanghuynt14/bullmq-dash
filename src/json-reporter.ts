@@ -1,10 +1,14 @@
 import { discoverQueueNames, getQueueStats, deleteQueue } from "./data/queues.js";
 import { getAllJobs, getJobDetail, retryFailedJobs, VALID_JOB_STATUSES } from "./data/jobs.js";
-import type { JsonJobStatus, RetryResult } from "./data/jobs.js";
+import type { JobSummary, JsonJobStatus, RetryResult } from "./data/jobs.js";
 import { getAllJobSchedulers, getJobSchedulerDetail } from "./data/schedulers.js";
 import { writeError } from "./errors.js";
-import { upsertJobs } from "./data/sqlite.js";
-import { markPolledWrites } from "./data/sync.js";
+import {
+  recordObservedJobs,
+  recordObservedQueues,
+  recordObservedSchedulers,
+} from "./data/queue-store.js";
+import { runQueueStoreCleanupIfDue } from "./data/queue-store-lifecycle.js";
 import type { Subcommand } from "./cli.js";
 import { closeContext, type Context } from "./context.js";
 import {
@@ -28,11 +32,35 @@ function createResponse<T>(data: T): { timestamp: string } & T {
   };
 }
 
+export function omitObservationMetadata<T extends object>(item: T): Omit<T, "lastObservedAt"> {
+  const copy: T & { lastObservedAt?: unknown } = { ...item };
+  delete copy.lastObservedAt;
+  return copy;
+}
+
+export function publicJobSummary(
+  job: JobSummary,
+): Pick<JobSummary, "id" | "name" | "state" | "timestamp"> {
+  return {
+    id: job.id,
+    name: job.name,
+    state: job.state,
+    timestamp: job.timestamp,
+  };
+}
+
 // ── Queues overview (default) ───────────────────────────────────────────
 
 async function fetchQueuesOverview(ctx: Context) {
   const queueNames = await discoverQueueNames(ctx);
   const queues = await Promise.all(queueNames.map((name) => getQueueStats(ctx, name)));
+  const observedAt = Date.now();
+
+  try {
+    recordObservedQueues(ctx, queues, { observedAt });
+  } catch {
+    // SQLite upsert is best-effort; don't break CLI output on failure
+  }
 
   const jobCounts = queues.reduce(
     (acc, q) => ({
@@ -47,7 +75,7 @@ async function fetchQueuesOverview(ctx: Context) {
   );
 
   return createResponse({
-    queues,
+    queues: queues.map(omitObservationMetadata),
     metrics: {
       queueCount: queues.length,
       jobCounts,
@@ -81,27 +109,11 @@ async function fetchJobsList(
   maxResults?: number,
 ) {
   const { jobs, total } = await getAllJobs(ctx, queueName, jobState, maxResults, true);
+  const observedAt = Date.now();
 
   // Side effect: populate SQLite cache with fetched jobs (best-effort).
-  // markPolledWrites tells the background sync not to overwrite this fresh
-  // state with a stale staging snapshot.
   try {
-    upsertJobs(
-      ctx,
-      queueName,
-      jobs.map((j) => ({
-        id: j.id,
-        name: j.name,
-        state: j.state,
-        timestamp: j.timestamp,
-        data: j.data,
-      })),
-    );
-    markPolledWrites(
-      ctx,
-      queueName,
-      jobs.map((j) => j.id),
-    );
+    recordObservedJobs(ctx, queueName, jobs, { observedAt });
   } catch {
     // SQLite upsert is best-effort; don't break CLI output on failure
   }
@@ -109,7 +121,7 @@ async function fetchJobsList(
   return createResponse({
     queue: queueName,
     jobState: jobState ?? "all",
-    jobs,
+    jobs: jobs.map(publicJobSummary),
     total,
   });
 }
@@ -182,10 +194,17 @@ async function fetchJobDetail(ctx: Context, queueName: string, jobId: string) {
     }
     process.exit(1);
   }
+  const observedAt = Date.now();
+
+  try {
+    recordObservedJobs(ctx, queueName, [job], { observedAt });
+  } catch {
+    // SQLite upsert is best-effort; don't break CLI output on failure
+  }
 
   return createResponse({
     queue: queueName,
-    job,
+    job: omitObservationMetadata(job),
   });
 }
 
@@ -193,10 +212,17 @@ async function fetchJobDetail(ctx: Context, queueName: string, jobId: string) {
 
 async function fetchSchedulersList(ctx: Context, queueName: string, maxResults?: number) {
   const { schedulers, total } = await getAllJobSchedulers(ctx, queueName, maxResults);
+  const observedAt = Date.now();
+
+  try {
+    recordObservedSchedulers(ctx, queueName, schedulers, { observedAt });
+  } catch {
+    // SQLite upsert is best-effort; don't break CLI output on failure
+  }
 
   return createResponse({
     queue: queueName,
-    schedulers,
+    schedulers: schedulers.map(omitObservationMetadata),
     total,
   });
 }
@@ -215,10 +241,17 @@ async function fetchSchedulerDetail(ctx: Context, queueName: string, schedulerKe
     }
     process.exit(1);
   }
+  const observedAt = Date.now();
+
+  try {
+    recordObservedSchedulers(ctx, queueName, [scheduler], { observedAt });
+  } catch {
+    // SQLite upsert is best-effort; don't break CLI output on failure
+  }
 
   return createResponse({
     queue: queueName,
-    scheduler,
+    scheduler: omitObservationMetadata(scheduler),
   });
 }
 
@@ -375,6 +408,7 @@ export async function runJsonMode(
   let exitCode = 0;
   try {
     const result = await routeAndFetch(ctx, subcommand);
+    runQueueStoreCleanupIfDue(ctx);
     const output = formatOutput(result, subcommand, humanFriendly);
     process.stdout.write(output + "\n");
 

@@ -244,6 +244,22 @@ describe("loadProfile", () => {
     const result = loadProfile({ configPath, profileName: "prod" });
     expect(result?.profile.redis?.url).toBe("rediss://user:pass@host.example.com:6380/2");
   });
+
+  it("rejects the pre-TTL `retentionMs` key with a clear unknown-key error", () => {
+    // `retentionMs` was the soft-delete retention window in earlier releases.
+    // Its semantics (preserve history past Redis retention) are the opposite
+    // of `cacheTtlMs` (bounded freshness window) — silently aliasing would
+    // change a user's data lifecycle, so the strict schema rejects it.
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        profiles: { local: { retentionMs: 60_000 } },
+      }),
+    );
+    const safety = silenceErrors();
+    expect(() => loadProfile({ configPath, profileName: "local" })).toThrow("process.exit(2)");
+    safety.restore();
+  });
 });
 
 describe("parseRedisUrl", () => {

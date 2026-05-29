@@ -22,15 +22,12 @@ export interface Context {
   readonly queueCache: Map<string, Queue>;
   /** Cached queue-name discovery (TTL'd in queues.ts). Reassigned, not readonly. */
   queueNamesCache: { names: string[]; timestamp: number } | null;
-  /** Per-context sync lock — see sync.ts. */
-  readonly syncLock: SyncLockState;
-  /** `${queue}:${id}` → Date.now() of polling's last write. See sync.ts. */
-  readonly recentlyPolledWrites: Map<string, number>;
+  /** Per-context queue-store lifecycle state. */
+  readonly queueStore: QueueStoreContextState;
 }
 
-export interface SyncLockState {
-  inProgress: boolean;
-  acquiredAt: number | null;
+export interface QueueStoreContextState {
+  lastCleanupAt: number | null;
 }
 
 /** Minimum Redis surface the data layer needs. */
@@ -124,8 +121,7 @@ export function createContext(config: Config, opts: CreateContextOptions = {}): 
     db,
     queueCache: new Map(),
     queueNamesCache: null,
-    syncLock: { inProgress: false, acquiredAt: null },
-    recentlyPolledWrites: new Map(),
+    queueStore: { lastCleanupAt: null },
   };
 }
 
