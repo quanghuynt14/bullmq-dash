@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **TTL-backed queue-data store facade.** Added `src/data/queue-store.ts` as the public cache API for queues, jobs, and schedulers, with `listJobs`, `searchJobs`, `getJob`, `listQueues`, `listSchedulers`, `getCacheState`, and observation writers for each cached dimension.
+- **Observation-cache freshness control.** Profiles now support `cacheTtlMs` to control the SQLite cache TTL. The default freshness window is 24 hours.
+- **Queue-store lifecycle cleanup.** TUI polling and headless commands run rate-limited cleanup that physically removes stale queue, scheduler, and job rows based on `last_observed_at`.
+
+### Changed
+
+- **SQLite cache semantics are now observation-based.** Polling and headless commands upsert what Redis just returned and never infer absence from missing rows. Redis remains the live source for connected/headless reads, while SQLite serves last-observed disconnected fallback data.
+- **Job details cache full observed payload fields.** When a job detail is observed, SQLite stores stable detail fields and structured payload JSON so later cache reads can return the last observed detail shape.
+- **Connected scheduler refresh renders from Redis observations.** Connected scheduler views no longer depend on SQLite writes succeeding; SQLite is only used as the disconnected fallback.
+
+### Removed (BREAKING)
+
+- **Soft-delete reconciliation and retention model.** Removed the old `sync.ts` reconciliation flow, staging-table public surface, background `fullSync`, soft-delete compaction, and compaction benchmark. The legacy profile key `retentionMs` is rejected as `CONFIG_ERROR`; use `cacheTtlMs` for the TTL observation cache.
+
 ## [0.3.1] - 2026-05-17
 
 ### Fixed
