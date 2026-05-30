@@ -45,6 +45,8 @@
     "lint:fix": "oxlint --fix",
     "format": "oxfmt --write",
     "format:check": "oxfmt --check",
+    "release": "bun run security:release && gh release create v$(bun -p \"require('./package.json').version\") --target master --title v$(bun -p \"require('./package.json').version\") --generate-notes",
+    "release:dry": "bun run security:release && npm pack --dry-run",
     "security:audit-0.2.7": "bun scripts/audit-socket-target.ts",
     "security:release": "bun run security:verify-source-control && bun run security:verify-lockfile && bun run security:verify-workflows && bun run security:verify-package",
     "security:score": "bun scripts/socket-score.ts",
