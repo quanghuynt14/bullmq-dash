@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose an improvement to bullmq-dash
+title: "feat: "
+labels:
+  - needs-triage
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator or developer workflow is hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should bullmq-dash do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What workarounds or alternate designs have you considered?
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Queue size, job states, screenshots, or related tools.

@@ -51,7 +51,7 @@ async function main() {
 
     const config = loadConfig(cliArgs, profile);
     const ctx = createContext(config);
-    await runJsonMode(ctx, cliArgs.subcommand, cliArgs.humanFriendly, cliArgs.dryRun, cliArgs.yes);
+    await runJsonMode(ctx, cliArgs.subcommand, cliArgs.humanFriendly, cliArgs.yes);
     return;
   }
 

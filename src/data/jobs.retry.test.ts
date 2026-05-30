@@ -6,6 +6,8 @@ interface FakeJob {
   name: string;
   finishedOn?: number;
   timestamp?: number;
+  state?: string;
+  getState: () => Promise<string>;
   retry: (state: string) => Promise<void>;
 }
 
@@ -28,6 +30,7 @@ mock.module("./queues.js", () => ({
       return mockState.failedJobs.slice(start, end + 1);
     },
     getJobCounts: async (..._states: string[]) => ({ failed: mockState.totalFailedCount }),
+    getJob: async (id: string) => mockState.failedJobs.find((job) => job.id === id) ?? null,
   }),
 }));
 
@@ -49,6 +52,8 @@ function makeJob(
     name: overrides.name ?? "job",
     finishedOn: overrides.finishedOn,
     timestamp: overrides.timestamp,
+    state: overrides.state ?? "failed",
+    getState: async () => job.state ?? "failed",
     retry: retryImpl ?? (async () => mockState.retryBehavior(job)),
   };
   return job;
@@ -104,6 +109,35 @@ describe("retryFailedJobs — dry-run branch", () => {
     const result = await retryFailedJobs(ctx, "q", { dryRun: true });
 
     expect(result.sampleJobIds).toEqual(["j0", "j1", "j2", "j3", "j4"]);
+  });
+
+  it("can target one failed job by id", async () => {
+    let retryCalls = 0;
+    mockState.failedJobs = [
+      makeJob("a", {}, async () => {
+        retryCalls += 1;
+      }),
+      makeJob("b", {}, async () => {
+        retryCalls += 1;
+      }),
+    ];
+    mockState.totalFailedCount = 2;
+
+    const result = await retryFailedJobs(ctx, "q", { jobId: "b", dryRun: true });
+
+    expect(retryCalls).toBe(0);
+    expect(result.matched).toBe(1);
+    expect(result.sampleJobIds).toEqual(["b"]);
+  });
+
+  it("does not match a targeted job unless it is failed", async () => {
+    mockState.failedJobs = [makeJob("a", { state: "completed" })];
+    mockState.totalFailedCount = 0;
+
+    const result = await retryFailedJobs(ctx, "q", { jobId: "a", dryRun: true });
+
+    expect(result.matched).toBe(0);
+    expect(result.sampleJobIds).toEqual([]);
   });
 });
 
@@ -194,6 +228,26 @@ describe("retryFailedJobs — live branch", () => {
     ]);
     expect(result.retried).toBe(2);
     expect(result.errors).toEqual([]);
+  });
+
+  it("retries one targeted failed job by id", async () => {
+    const calls: string[] = [];
+    mockState.failedJobs = [
+      makeJob("a", {}, async () => {
+        calls.push("a");
+      }),
+      makeJob("b", {}, async () => {
+        calls.push("b");
+      }),
+    ];
+    mockState.totalFailedCount = 2;
+
+    const result = await retryFailedJobs(ctx, "q", { jobId: "b" });
+
+    expect(calls).toEqual(["b"]);
+    expect(result.matched).toBe(1);
+    expect(result.retried).toBe(1);
+    expect(result.sampleJobIds).toEqual(["b"]);
   });
 
   it("collects per-job retry errors and continues (best-effort, never stops)", async () => {

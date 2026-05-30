@@ -39,3 +39,30 @@ https://www.youtube.com/watch?v=rWUWfj_PqmM
 3. **AI leverage** — kubectl-for-BullMQ in two weeks by a solo builder is only possible because the engineering barrier collapsed. Ship accordingly.
 
 Add more as you find them. This file is for you, not anyone else.
+
+---
+
+## Product references applied on 2026-05-30
+
+### chartli
+
+https://github.com/ahmadawais/chartli
+
+Use compact terminal-native data views. For bullmq-dash, this means ranking
+queues by operational metrics and adding inline task-size bars instead of
+adding decorative chart surfaces.
+
+### clickclack
+
+https://github.com/openclaw/clickclack
+
+Keep project-facing docs direct: what the tool does, how to run it, and what is
+included. This informs the README and contribution setup.
+
+### x-rank
+
+https://github.com/kitlangton/x-rank
+
+Prioritize ranked lists that make the next action obvious. For bullmq-dash,
+this maps to sorting queues by task size or failures so the busiest or most
+broken queue floats to the top.

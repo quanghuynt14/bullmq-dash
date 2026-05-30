@@ -17,6 +17,7 @@
  */
 import type { Context } from "./context.js";
 import { getAllQueueStats, type QueueStats } from "./data/queues.js";
+import { sortQueues } from "./data/queue-sort.js";
 import { getJobs, type JobListView, type JobsResult, type JobSummary } from "./data/jobs.js";
 import { getAllJobSchedulers, type JobSchedulerSummary } from "./data/schedulers.js";
 import {
@@ -88,6 +89,19 @@ function clampQueueIndex(queues: QueueStats[], currentIndex: number): number {
   return queues.length > 0 ? Math.min(currentIndex, queues.length - 1) : 0;
 }
 
+function selectedQueueIndexAfterSort(
+  queues: QueueStats[],
+  previousQueues: QueueStats[],
+  previousIndex: number,
+): number {
+  const previousName = previousQueues[previousIndex]?.name;
+  if (previousName) {
+    const nextIndex = queues.findIndex((queue) => queue.name === previousName);
+    if (nextIndex !== -1) return nextIndex;
+  }
+  return clampQueueIndex(queues, previousIndex);
+}
+
 class PollingManager {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private isRunning = false;
@@ -149,13 +163,21 @@ class PollingManager {
       // the read path used to render state.
       const observedQueues = await getAllQueueStats(ctx);
       recordObservedQueues(ctx, observedQueues);
-      const queues = listQueues(ctx);
+      const currentState = stateManager.getState();
+      const queues = sortQueues(
+        listQueues(ctx),
+        currentState.queueSortBy,
+        currentState.queueSortOrder,
+      );
       const rates = updateMetricsTracker(queues);
       const globalMetrics = calculateGlobalMetricsFromQueueStats(queues, rates);
 
-      // Clamp selectedQueueIndex to valid range if queues changed
-      const currentState = stateManager.getState();
-      const clampedIndex = clampQueueIndex(queues, currentState.selectedQueueIndex);
+      // Preserve the selected queue across sort changes and metric updates.
+      const clampedIndex = selectedQueueIndexAfterSort(
+        queues,
+        currentState.queues,
+        currentState.selectedQueueIndex,
+      );
 
       stateManager.setState({
         queues,
@@ -225,8 +247,17 @@ class PollingManager {
     try {
       const queues = listQueues(ctx);
       const currentState = stateManager.getState();
-      const clampedIndex = clampQueueIndex(queues, currentState.selectedQueueIndex);
-      const selectedQueue = queues[clampedIndex];
+      const sortedQueues = sortQueues(
+        queues,
+        currentState.queueSortBy,
+        currentState.queueSortOrder,
+      );
+      const clampedIndex = selectedQueueIndexAfterSort(
+        sortedQueues,
+        currentState.queues,
+        currentState.selectedQueueIndex,
+      );
+      const selectedQueue = sortedQueues[clampedIndex];
 
       let viewState: Partial<AppState>;
       if (selectedQueue && currentState.jobsStatus === "schedulers") {
@@ -246,13 +277,13 @@ class PollingManager {
       }
 
       stateManager.setState({
-        queues,
+        queues: sortedQueues,
         selectedQueueIndex: clampedIndex,
         // Pass explicit zeroed rates: feeding the tracker stale SQLite stats
         // every error tick would let the previous-sample timestamp drift, and
         // the first successful reconnect would compute a rate against a stale
         // snapshot, producing a spurious spike until the next tick smooths it.
-        globalMetrics: calculateGlobalMetricsFromQueueStats(queues, ZERO_RATES),
+        globalMetrics: calculateGlobalMetricsFromQueueStats(sortedQueues, ZERO_RATES),
         connected: false,
         error: errorMessage,
         isLoading: false,

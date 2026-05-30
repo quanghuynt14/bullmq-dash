@@ -1,13 +1,19 @@
 import { parseArgs } from "util";
 import { writeError } from "./errors.js";
 import { parseDuration, MAX_RETRY_PAGE_SIZE } from "./data/duration.js";
+import {
+  QUEUE_SORT_FIELDS,
+  defaultSortOrder,
+  type QueueSortBy,
+  type SortOrder,
+} from "./data/queue-sort.js";
 import { parseRedisUrl, type ResolvedProfile } from "./profiles.js";
 import packageJson from "../package.json" with { type: "json" };
 
 // ── Subcommand types ────────────────────────────────────────────────────
 
 export type Subcommand =
-  | { kind: "queues-list" }
+  | { kind: "queues-list"; sortBy?: QueueSortBy; sortOrder?: SortOrder }
   | { kind: "queues-delete"; queue: string; dryRun?: boolean; yes?: boolean }
   | { kind: "jobs-list"; queue: string; jobState?: string; pageSize?: number }
   | { kind: "jobs-get"; queue: string; jobId: string }
@@ -15,6 +21,7 @@ export type Subcommand =
       kind: "jobs-retry";
       queue: string;
       jobState: string;
+      jobId?: string;
       since?: string;
       name?: string;
       pageSize?: number;
@@ -54,8 +61,9 @@ Commands:
   queues list                            List all queues with job counts
   queues delete <queue>                  Delete a queue and all its jobs
   jobs list <queue>                      List jobs in a queue
+  jobs failed <queue>                    List failed jobs in a queue
   jobs get <queue> <job-id>              Get full detail for a single job
-  jobs retry <queue>                     Bulk-retry failed jobs (supports --dry-run)
+  jobs retry <queue>                     Retry failed jobs (supports --dry-run/--yes)
   schedulers list <queue>                List schedulers in a queue
   schedulers get <queue> <scheduler-id>  Get detail for a single scheduler
 
@@ -88,8 +96,10 @@ Examples:
   bullmq-dash queues list --redis-url redis://localhost:6379
   bullmq-dash queues list --profile prod
   bullmq-dash queues list --redis-url redis://localhost --human-friendly
+  bullmq-dash jobs failed email --redis-url redis://localhost
   bullmq-dash jobs list email --redis-url redis://localhost --job-state failed
   bullmq-dash jobs get email 123 --redis-url redis://localhost
+  bullmq-dash jobs retry email --redis-url redis://localhost --job-id 123 --dry-run
   bullmq-dash jobs retry email --redis-url redis://localhost --job-state failed --since 1h --dry-run
 `;
 
@@ -122,11 +132,19 @@ const QUEUES_LIST_HELP = `
 Usage: bullmq-dash queues list [options]
 
 List all discovered queues with their job counts per state.
+
+Options:
+  --sort-by <field>       Sort queues by: name | task-size | waiting | active | completed | failed | delayed
+                           Aliases: size, total, wait
+  --sort-order <order>    Sort order: asc | desc
+                           Defaults to asc for name, desc for metrics.
 ${CONNECTION_OPTIONS_HELP}
 
 Examples:
   bullmq-dash queues list --redis-url redis://localhost
   bullmq-dash queues list --redis-url redis://localhost:6380
+  bullmq-dash queues list --redis-url redis://localhost --sort-by task-size
+  bullmq-dash queues list --redis-url redis://localhost --sort-by failed
   bullmq-dash queues list --redis-url redis://localhost | jq '.queues[] | select(.counts.failed > 0)'
 `;
 
@@ -151,10 +169,27 @@ Usage: bullmq-dash jobs <action> <queue> [options]
 
 Actions:
   list <queue>             List jobs in a queue
+  failed <queue>           List failed jobs in a queue
   get <queue> <job-id>     Get full detail for a single job
-  retry <queue>            Bulk-retry failed jobs (supports --dry-run)
+  retry <queue>            Retry failed jobs (supports --dry-run/--yes)
 
 Run 'bullmq-dash jobs <action> --help' for action-specific help.
+`;
+
+const JOBS_FAILED_HELP = `
+Usage: bullmq-dash jobs failed <queue> [options]
+
+List failed jobs in a queue. This is equivalent to:
+  bullmq-dash jobs list <queue> --job-state failed
+
+Options:
+  --page-size <n>          Max results to return (default: 1000)
+${CONNECTION_OPTIONS_HELP}
+
+Examples:
+  bullmq-dash jobs failed email --redis-url redis://localhost
+  bullmq-dash jobs failed email --redis-url redis://localhost | jq '.jobs[] | {id, name, timestamp}'
+  bullmq-dash jobs retry email --redis-url redis://localhost --job-id 42 --dry-run
 `;
 
 const JOBS_LIST_HELP = `
@@ -187,13 +222,14 @@ Examples:
 `;
 
 const JOBS_RETRY_HELP = `
-Usage: bullmq-dash jobs retry <queue> --job-state failed [options]
+Usage: bullmq-dash jobs retry <queue> (--job-id <id> | --job-state failed) [options]
 
-Bulk-retry failed jobs in a queue. Operates on failed jobs only in v1.
+Retry one failed job by ID, or bulk-retry failed jobs in a queue.
 Always use --dry-run first to see what would be retried.
 
-Required:
-  --job-state failed       Must be 'failed' (other states not supported in v1)
+Required, choose one:
+  --job-id <id>            Retry one failed job by ID
+  --job-state failed       Bulk-retry failed jobs (other states not supported)
 
 Filters:
   --since <duration>       Only jobs that failed within this window.
@@ -204,21 +240,24 @@ Filters:
 Safety:
   --dry-run                Show what WOULD be retried without enqueueing anything.
                            Prints matched count and sample job IDs.
+  --yes                   Skip confirmation prompt (required in non-interactive scripts).
 
 Exit codes:
   0  Success (dry-run complete, or all matched jobs retried). Includes empty-match.
   1  Runtime / fetch error (e.g. Redis connection failed)
-  2  Config error (invalid flags, missing --job-state, --page-size > 10000)
+  2  Config error (invalid flags, missing --job-id/--job-state, --page-size > 10000)
   3  Partial failure — some jobs retried, some errored (see errors[])
 
 ${CONNECTION_OPTIONS_HELP}
 
 Examples:
   # Always start with a dry-run
+  bullmq-dash jobs retry payments --redis-url redis://localhost --job-id 42 --dry-run
   bullmq-dash jobs retry payments --redis-url redis://localhost --job-state failed --since 1h --dry-run
 
   # Then retry for real
-  bullmq-dash jobs retry payments --redis-url redis://localhost --job-state failed --since 1h
+  bullmq-dash jobs retry payments --redis-url redis://localhost --job-id 42 --yes
+  bullmq-dash jobs retry payments --redis-url redis://localhost --job-state failed --since 1h --yes
 
   # Filter by job name
   bullmq-dash jobs retry email --redis-url redis://localhost --job-state failed --name welcome-email --dry-run
@@ -266,7 +305,7 @@ Examples:
 // ── Known subcommands ───────────────────────────────────────────────────
 
 const RESOURCE_COMMANDS = new Set(["queues", "jobs", "schedulers"]);
-const ACTIONS = new Set(["list", "get", "retry", "delete"]);
+const ACTIONS = new Set(["list", "failed", "get", "retry", "delete"]);
 
 /**
  * Separate subcommand tokens (positional args) from flag tokens.
@@ -313,6 +352,43 @@ function getRequiredArg(positionals: string[], index: number, name: string, usag
   return arg;
 }
 
+export function parseQueueSortBy(rawValue: string | undefined): QueueSortBy | undefined {
+  if (rawValue === undefined) return undefined;
+  switch (rawValue) {
+    case "size":
+    case "total":
+    case "task-size":
+      return "task-size";
+    case "wait":
+    case "waiting":
+      return "waiting";
+    case "name":
+    case "active":
+    case "completed":
+    case "failed":
+    case "delayed":
+      return rawValue;
+    default:
+      writeError(
+        `Invalid --sort-by value: '${rawValue}'`,
+        "CONFIG_ERROR",
+        `Valid queue sort fields: ${QUEUE_SORT_FIELDS.join(", ")}. Aliases: size, total, wait.`,
+      );
+      process.exit(2);
+  }
+}
+
+export function parseSortOrder(rawValue: string | undefined): SortOrder | undefined {
+  if (rawValue === undefined) return undefined;
+  if (rawValue === "asc" || rawValue === "desc") return rawValue;
+  writeError(
+    `Invalid --sort-order value: '${rawValue}'`,
+    "CONFIG_ERROR",
+    "Valid sort orders: asc, desc.",
+  );
+  process.exit(2);
+}
+
 function parseSubcommand(
   positionals: string[],
   help: boolean,
@@ -320,8 +396,11 @@ function parseSubcommand(
   pageSize: number | undefined,
   since: string | undefined,
   name: string | undefined,
+  retryJobId: string | undefined,
   dryRun: boolean,
   yes: boolean = false,
+  sortBy: string | undefined,
+  sortOrder: string | undefined,
 ): Subcommand | undefined {
   if (positionals.length === 0) return undefined;
 
@@ -366,7 +445,13 @@ function parseSubcommand(
       if (action === "list") {
         if (help) showSubcommandHelp(QUEUES_LIST_HELP);
         assertArgCount(positionals, 2, "queues list [options]");
-        return { kind: "queues-list" };
+        const parsedSortBy = parseQueueSortBy(sortBy);
+        const parsedSortOrder = parseSortOrder(sortOrder);
+        return {
+          kind: "queues-list",
+          sortBy: parsedSortBy,
+          sortOrder: parsedSortOrder ?? (parsedSortBy ? defaultSortOrder(parsedSortBy) : undefined),
+        };
       }
       if (action === "delete") {
         if (help) showSubcommandHelp(QUEUES_DELETE_HELP);
@@ -391,6 +476,21 @@ function parseSubcommand(
         assertArgCount(positionals, 3, usage);
         return { kind: "jobs-list", queue, jobState, pageSize };
       }
+      if (action === "failed") {
+        if (help) showSubcommandHelp(JOBS_FAILED_HELP);
+        const usage = "jobs failed <queue> [--page-size <n>]";
+        const queue = getRequiredArg(positionals, 2, "queue", usage);
+        assertArgCount(positionals, 3, usage);
+        if (jobState && jobState !== "failed") {
+          writeError(
+            "--job-state cannot override 'jobs failed'",
+            "CONFIG_ERROR",
+            "Use 'jobs list <queue> --job-state <state>' for other states.",
+          );
+          process.exit(2);
+        }
+        return { kind: "jobs-list", queue, jobState: "failed", pageSize };
+      }
       if (action === "get") {
         if (help) showSubcommandHelp(JOBS_GET_HELP);
         const usage = "jobs get <queue> <job-id>";
@@ -402,20 +502,20 @@ function parseSubcommand(
       if (action === "retry") {
         if (help) showSubcommandHelp(JOBS_RETRY_HELP);
         const usage =
-          "jobs retry <queue> --job-state failed [--since <duration>] [--name <pattern>] [--dry-run]";
+          "jobs retry <queue> (--job-id <id> | --job-state failed) [--since <duration>] [--name <pattern>] [--dry-run|--yes]";
         const queue = getRequiredArg(positionals, 2, "queue", usage);
         assertArgCount(positionals, 3, usage);
 
         // Retry only operates on failed jobs. Guard against footguns.
-        if (!jobState) {
+        if (!jobState && !retryJobId) {
           writeError(
-            "--job-state is required for 'jobs retry'",
+            "--job-id or --job-state is required for 'jobs retry'",
             "CONFIG_ERROR",
-            "Use --job-state failed. Other states are not currently supported.",
+            "Use --job-id <id> for one failed job or --job-state failed for a filtered batch.",
           );
           process.exit(2);
         }
-        if (jobState !== "failed") {
+        if (jobState && jobState !== "failed") {
           writeError(
             `Unsupported --job-state '${jobState}' for 'jobs retry'`,
             "CONFIG_ERROR",
@@ -423,12 +523,21 @@ function parseSubcommand(
           );
           process.exit(2);
         }
-        return { kind: "jobs-retry", queue, jobState, since, name, pageSize, dryRun };
+        return {
+          kind: "jobs-retry",
+          queue,
+          jobState: "failed",
+          jobId: retryJobId,
+          since,
+          name,
+          pageSize,
+          dryRun,
+        };
       }
       writeError(
         `Invalid action '${action}' for jobs`,
         "CONFIG_ERROR",
-        "Available actions: list, get, retry. Use --help for usage.",
+        "Available actions: list, failed, get, retry. Use --help for usage.",
       );
       process.exit(2);
     }
@@ -508,9 +617,12 @@ export function parseCliArgs(): CliArgs {
         "job-state": { type: "string" },
         "page-size": { type: "string" },
         "human-friendly": { type: "boolean" },
+        "sort-by": { type: "string" },
+        "sort-order": { type: "string" },
         // jobs retry flags
         since: { type: "string" },
         name: { type: "string" },
+        "job-id": { type: "string" },
         "dry-run": { type: "boolean" },
         yes: { type: "boolean" },
         // Profiles / config file
@@ -564,9 +676,30 @@ export function parseCliArgs(): CliArgs {
       pageSize,
       since,
       nameFilter,
+      values["job-id"],
       dryRun,
       yes ?? false,
+      values["sort-by"],
+      values["sort-order"],
     );
+
+    if (values["sort-by"] && (!subcommand || subcommand.kind !== "queues-list")) {
+      writeError(
+        "--sort-by can only be used with 'queues list'",
+        "CONFIG_ERROR",
+        "Usage: queues list --sort-by task-size",
+      );
+      process.exit(2);
+    }
+
+    if (values["sort-order"] && (!subcommand || subcommand.kind !== "queues-list")) {
+      writeError(
+        "--sort-order can only be used with 'queues list'",
+        "CONFIG_ERROR",
+        "Usage: queues list --sort-by task-size --sort-order desc",
+      );
+      process.exit(2);
+    }
 
     // Safety rail against accidental multi-million-job retries. Only applies to
     // jobs-retry — queues-delete doesn't accept --page-size (gated below).
@@ -629,6 +762,15 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
+    if (values["job-id"] && (!subcommand || subcommand.kind !== "jobs-retry")) {
+      writeError(
+        "--job-id can only be used with 'jobs retry'",
+        "CONFIG_ERROR",
+        "Usage: jobs retry <queue> --job-id <id> --dry-run",
+      );
+      process.exit(2);
+    }
+
     if (humanFriendly && !subcommand) {
       writeError(
         "--human-friendly can only be used with subcommands",
@@ -659,11 +801,14 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
-    if (yes && (!subcommand || subcommand.kind !== "queues-delete")) {
+    if (
+      yes &&
+      (!subcommand || (subcommand.kind !== "queues-delete" && subcommand.kind !== "jobs-retry"))
+    ) {
       writeError(
-        "--yes can only be used with 'queues delete'",
+        "--yes can only be used with 'queues delete' or 'jobs retry'",
         "CONFIG_ERROR",
-        "Usage: queues delete <queue> --yes",
+        "Usage: queues delete <queue> --yes  or  jobs retry <queue> --job-state failed --yes",
       );
       process.exit(2);
     }
@@ -672,7 +817,7 @@ export function parseCliArgs(): CliArgs {
       writeError(
         "--dry-run and --yes cannot be used together",
         "CONFIG_ERROR",
-        "Usage: queues delete <queue> [--dry-run] or queues delete <queue> --yes",
+        "Usage: queues delete <queue> [--dry-run|--yes] or jobs retry <queue> [--dry-run|--yes]",
       );
       process.exit(2);
     }

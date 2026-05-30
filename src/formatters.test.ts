@@ -21,7 +21,7 @@ function baseOutput(overrides: Partial<JobsRetryOutput> = {}): JobsRetryOutput {
 }
 
 describe("formatJobsRetry — dry-run output", () => {
-  it("renders DRY RUN header and 'Run without --dry-run' footer", () => {
+  it("renders DRY RUN header and non-interactive retry footer", () => {
     const out = formatJobsRetry(
       baseOutput({
         dryRun: true,
@@ -31,7 +31,7 @@ describe("formatJobsRetry — dry-run output", () => {
       }),
     );
     expect(out).toContain("DRY RUN: would retry 3 jobs in queue 'payments'");
-    expect(out).toContain("Run without --dry-run to retry these jobs.");
+    expect(out).toContain("Run with --yes and without --dry-run to retry these jobs from scripts.");
     expect(out).toContain("Sample matched IDs:");
     expect(out).toContain("  a");
   });
@@ -44,6 +44,16 @@ describe("formatJobsRetry — dry-run output", () => {
       }),
     );
     expect(out).toContain("state=failed, since=1h, name=welcome");
+  });
+
+  it("renders targeted job-id filters", () => {
+    const out = formatJobsRetry(
+      baseOutput({
+        dryRun: true,
+        filter: { jobState: "failed", jobId: "42" },
+      }),
+    );
+    expect(out).toContain("state=failed, jobId=42");
   });
 
   it("omits Retried/Errors counts on dry-run", () => {
@@ -66,7 +76,7 @@ describe("formatJobsRetry — live output", () => {
     expect(out).toContain("Retry complete for queue 'payments'");
     expect(out).toContain("Retried:      5");
     expect(out).toContain("Errors:       0");
-    expect(out).not.toContain("Run without --dry-run");
+    expect(out).not.toContain("without --dry-run");
   });
 
   it("renders errors table with up to MAX_DISPLAYED_ERRORS rows", () => {

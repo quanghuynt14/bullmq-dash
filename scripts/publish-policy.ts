@@ -20,7 +20,7 @@ export const SECURITY_RELEASE_SCRIPT =
 // tripwire is what surfaces the mistake at `prepack` time rather than
 // after `npm publish` has already failed (and possibly left the working
 // tree in the stripped-manifest state).
-export const BLOCKED_PUBLISHED_VERSIONS = ["0.2.7", "0.3.0"] as const;
+export const BLOCKED_PUBLISHED_VERSIONS = ["0.2.7", "0.3.0", "0.3.1"] as const;
 export const FORBIDDEN_SOURCE_MANIFEST_FIELDS = [
   "bundleDependencies",
   "bundledDependencies",

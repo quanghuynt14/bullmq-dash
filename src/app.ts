@@ -270,6 +270,13 @@ export class App {
         await pollingManager.refresh();
         break;
 
+      case "s":
+        if (state.focusedPane === "queues") {
+          stateManager.cycleQueueSort();
+          await pollingManager.refresh();
+        }
+        break;
+
       case "g":
         // Open page jump modal when in jobs pane
         if (state.focusedPane === "jobs") {
@@ -448,6 +455,8 @@ export class App {
       state.queues,
       state.selectedQueueIndex,
       state.focusedPane === "queues",
+      state.queueSortBy,
+      state.queueSortOrder,
     );
 
     // Update queue stats

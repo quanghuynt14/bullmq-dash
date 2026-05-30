@@ -10,7 +10,7 @@ describe("assertNoForbiddenPackedManifestFields", () => {
     expect(() =>
       assertNoForbiddenPackedManifestFields({
         name: "bullmq-dash",
-        version: "0.3.1",
+        version: "0.3.2",
         dependencies: {
           "@opentui/core": "0.2.10",
           bullmq: "5.76.8",

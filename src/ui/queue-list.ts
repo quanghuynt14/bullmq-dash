@@ -7,6 +7,7 @@ import {
   type SelectOption,
 } from "@opentui/core";
 import type { QueueStats } from "../data/queues.js";
+import { queueSortLabel, type QueueSortBy, type SortOrder } from "../data/queue-sort.js";
 import { stateManager } from "../state.js";
 import { pollingManager } from "../polling.js";
 import { colors } from "./colors.js";
@@ -16,6 +17,13 @@ export interface QueueListElements {
   title: TextRenderable;
   select: SelectRenderable;
   emptyText: TextRenderable;
+}
+
+export function formatQueueTaskBar(total: number, maxTotal: number, width: number = 8): string {
+  if (width <= 0) return "";
+  if (maxTotal <= 0 || total <= 0) return ".".repeat(width);
+  const filled = Math.max(1, Math.round((total / maxTotal) * width));
+  return "#".repeat(filled).padEnd(width, ".");
 }
 
 export function createQueueList(renderer: CliRenderer, parent: BoxRenderable): QueueListElements {
@@ -92,11 +100,14 @@ export function updateQueueList(
   queues: QueueStats[],
   selectedIndex: number,
   isFocused: boolean,
+  sortBy: QueueSortBy = "name",
+  sortOrder: SortOrder = "asc",
 ): void {
   const { select, emptyText, title } = elements;
 
   // Update title to show focus state
-  title.content = isFocused ? " QUEUES [*]" : " QUEUES";
+  const sortText = queueSortLabel(sortBy, sortOrder);
+  title.content = isFocused ? ` QUEUES [*] ${sortText}` : ` QUEUES ${sortText}`;
   title.bg = isFocused ? colors.surface1 : colors.surface0;
 
   if (queues.length === 0) {
@@ -109,9 +120,12 @@ export function updateQueueList(
   emptyText.visible = false;
 
   // Convert queues to select options
+  const maxTotal = Math.max(...queues.map((queue) => queue.total), 0);
   const options: SelectOption[] = queues.map((queue) => ({
     name: queue.name,
-    description: `${queue.total} jobs | ${queue.isPaused ? "PAUSED" : "active"}`,
+    description: `${formatQueueTaskBar(queue.total, maxTotal)} ${queue.total} jobs | fail ${queue.counts.failed} | ${
+      queue.isPaused ? "PAUSED" : "active"
+    }`,
     value: queue,
   }));
 

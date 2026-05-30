@@ -1,0 +1,46 @@
+name: Bug report
+description: Report broken behavior in bullmq-dash
+title: "bug: "
+labels:
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please include enough detail to reproduce it.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Commands, Redis/BullMQ setup, and steps to reproduce.
+      placeholder: |
+        1. Run `bullmq-dash ...`
+        2. Select ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output from `bullmq-dash --version`, plus Bun version.
+      placeholder: bullmq-dash v0.3.1, bun 1.3.13
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      render: shell

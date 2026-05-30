@@ -1,14 +1,17 @@
 {
   "name": "bullmq-dash",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Terminal UI dashboard for BullMQ queue monitoring",
   "keywords": [
     "bullmq",
     "cli",
     "dashboard",
+    "jobs",
     "monitoring",
+    "opentui",
     "queue",
     "redis",
+    "tasks",
     "terminal",
     "tui"
   ],

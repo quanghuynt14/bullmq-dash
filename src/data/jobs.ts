@@ -362,7 +362,7 @@ export interface RetryResult {
 }
 
 /**
- * Bulk-retry failed jobs in a queue, optionally filtered by age and name.
+ * Retry failed jobs in a queue, either by exact job ID or as a filtered batch.
  * Operates on failed jobs only. Partial failures are best-effort: per-job
  * errors are collected into `errors[]` and the function completes. Callers
  * decide exit code based on `errors.length > 0`.
@@ -373,6 +373,7 @@ export async function retryFailedJobs(
   options: {
     since?: string;
     name?: string;
+    jobId?: string;
     pageSize?: number;
     dryRun?: boolean;
   },
@@ -393,23 +394,61 @@ export async function retryFailedJobs(
 
   const queue = getQueue(ctx, queueName);
 
-  const [failedJobs, counts] = await Promise.all([
+  let failedJobs: Job[];
+  let truncated = false;
+  const countsPromise = queue.getJobCounts("failed");
+
+  if (options.jobId !== undefined) {
+    const [job, counts] = await Promise.all([queue.getJob(options.jobId), countsPromise]);
+    const totalFailed = counts.failed || 0;
+    if (!job) {
+      return {
+        matched: 0,
+        retried: 0,
+        errors: [],
+        sampleJobIds: [],
+        totalFailed,
+        truncated: false,
+      };
+    }
+    const state = await job.getState();
+    failedJobs = state === "failed" ? [job] : [];
+    const matched = applyRetryFilters(failedJobs, cutoffMs, options.name);
+    return retryMatchedJobs(matched, totalFailed, false, dryRun);
+  }
+
+  const [fetchedFailedJobs, counts] = await Promise.all([
     queue.getFailed(0, pageSize - 1),
-    queue.getJobCounts("failed"),
+    countsPromise,
   ]);
   const totalFailed = counts.failed || 0;
+  failedJobs = fetchedFailedJobs;
+  truncated = totalFailed > failedJobs.length;
 
   // Apply client-side filters. finishedOn is when the job transitioned to
   // failed; fall back to timestamp (creation) if finishedOn isn't set yet.
-  const matched = failedJobs.filter((job) => {
+  const matched = applyRetryFilters(failedJobs, cutoffMs, options.name);
+
+  return retryMatchedJobs(matched, totalFailed, truncated, dryRun);
+}
+
+function applyRetryFilters(jobs: Job[], cutoffMs: number | undefined, name: string | undefined) {
+  return jobs.filter((job) => {
     if (cutoffMs !== undefined) {
       const whenFailed = job.finishedOn ?? job.timestamp ?? 0;
       if (whenFailed < cutoffMs) return false;
     }
-    if (options.name !== undefined && job.name !== options.name) return false;
+    if (name !== undefined && job.name !== name) return false;
     return true;
   });
+}
 
+async function retryMatchedJobs(
+  matched: Job[],
+  totalFailed: number,
+  truncated: boolean,
+  dryRun: boolean,
+): Promise<RetryResult> {
   const matchedIds = matched
     .map((job) => job.id)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
@@ -424,7 +463,7 @@ export async function retryFailedJobs(
       errors: [],
       sampleJobIds: sampleIds,
       totalFailed,
-      truncated: totalFailed > failedJobs.length,
+      truncated,
     };
   }
 
@@ -451,7 +490,7 @@ export async function retryFailedJobs(
     errors,
     sampleJobIds: sampleIds,
     totalFailed,
-    truncated: totalFailed > failedJobs.length,
+    truncated,
   };
 }
 

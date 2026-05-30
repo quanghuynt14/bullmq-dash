@@ -320,7 +320,7 @@ const MAX_DISPLAYED_ERRORS = 10;
 interface JobsRetryInput {
   dryRun: boolean;
   queue: string;
-  filter: { jobState: string; since?: string; name?: string };
+  filter: { jobState: string; jobId?: string; since?: string; name?: string };
   matched: number;
   retried: number;
   errors: RetryResult["errors"];
@@ -333,6 +333,7 @@ export function formatJobsRetry(r: JobsRetryInput): string {
   const lines: string[] = [];
 
   const filterParts: string[] = [`state=${r.filter.jobState}`];
+  if (r.filter.jobId) filterParts.push(`jobId=${r.filter.jobId}`);
   if (r.filter.since) filterParts.push(`since=${r.filter.since}`);
   if (r.filter.name) filterParts.push(`name=${r.filter.name}`);
 
@@ -377,7 +378,7 @@ export function formatJobsRetry(r: JobsRetryInput): string {
 
   if (r.dryRun) {
     lines.push("");
-    lines.push("Run without --dry-run to retry these jobs.");
+    lines.push("Run with --yes and without --dry-run to retry these jobs from scripts.");
   }
 
   return lines.join("\n");

@@ -1,9 +1,17 @@
 import type { QueueStats } from "./data/queues.js";
+import { sortQueues, type QueueSortBy, type SortOrder } from "./data/queue-sort.js";
 import type { JobSummary, JobDetail, JobListView } from "./data/jobs.js";
 import type { GlobalMetrics } from "./data/metrics.js";
 import type { JobSchedulerSummary, JobSchedulerDetail } from "./data/schedulers.js";
 
 export type FocusedPane = "queues" | "jobs";
+
+const QUEUE_SORT_SEQUENCE: Array<{ sortBy: QueueSortBy; sortOrder: SortOrder }> = [
+  { sortBy: "name", sortOrder: "asc" },
+  { sortBy: "task-size", sortOrder: "desc" },
+  { sortBy: "failed", sortOrder: "desc" },
+  { sortBy: "waiting", sortOrder: "desc" },
+];
 
 export interface AppState {
   // Connection
@@ -16,6 +24,8 @@ export interface AppState {
   // Queues
   queues: QueueStats[];
   selectedQueueIndex: number;
+  queueSortBy: QueueSortBy;
+  queueSortOrder: SortOrder;
 
   // Jobs
   jobs: JobSummary[];
@@ -59,6 +69,8 @@ class StateManager {
       globalMetrics: null,
       queues: [],
       selectedQueueIndex: 0,
+      queueSortBy: "name",
+      queueSortOrder: "asc",
       jobs: [],
       jobsTotal: 0,
       jobsPage: 1,
@@ -141,6 +153,23 @@ class StateManager {
         jobsPage: 1,
       });
     }
+  }
+
+  cycleQueueSort(): void {
+    const { queueSortBy, queueSortOrder } = this.state;
+    const currentIndex = QUEUE_SORT_SEQUENCE.findIndex(
+      (option) => option.sortBy === queueSortBy && option.sortOrder === queueSortOrder,
+    );
+    const next = QUEUE_SORT_SEQUENCE[(currentIndex + 1) % QUEUE_SORT_SEQUENCE.length]!;
+    const sortedQueues = sortQueues(this.state.queues, next.sortBy, next.sortOrder);
+    this.setState({
+      queues: sortedQueues,
+      queueSortBy: next.sortBy,
+      queueSortOrder: next.sortOrder,
+      selectedQueueIndex: 0,
+      selectedJobIndex: 0,
+      jobsPage: 1,
+    });
   }
 
   // Job navigation

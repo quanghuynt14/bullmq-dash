@@ -9,6 +9,8 @@ import {
   recordObservedSchedulers,
 } from "./data/queue-store.js";
 import { runQueueStoreCleanupIfDue } from "./data/queue-store-lifecycle.js";
+import { defaultSortOrder, sortQueues } from "./data/queue-sort.js";
+import type { QueueSortBy, SortOrder } from "./data/queue-sort.js";
 import type { Subcommand } from "./cli.js";
 import { closeContext, type Context } from "./context.js";
 import {
@@ -51,18 +53,23 @@ export function publicJobSummary(
 
 // ── Queues overview (default) ───────────────────────────────────────────
 
-async function fetchQueuesOverview(ctx: Context) {
+async function fetchQueuesOverview(
+  ctx: Context,
+  sortBy: QueueSortBy = "name",
+  sortOrder: SortOrder = defaultSortOrder(sortBy),
+) {
   const queueNames = await discoverQueueNames(ctx);
   const queues = await Promise.all(queueNames.map((name) => getQueueStats(ctx, name)));
+  const sortedQueues = sortQueues(queues, sortBy, sortOrder);
   const observedAt = Date.now();
 
   try {
-    recordObservedQueues(ctx, queues, { observedAt });
+    recordObservedQueues(ctx, sortedQueues, { observedAt });
   } catch {
     // SQLite upsert is best-effort; don't break CLI output on failure
   }
 
-  const jobCounts = queues.reduce(
+  const jobCounts = sortedQueues.reduce(
     (acc, q) => ({
       wait: acc.wait + q.counts.wait,
       active: acc.active + q.counts.active,
@@ -75,9 +82,9 @@ async function fetchQueuesOverview(ctx: Context) {
   );
 
   return createResponse({
-    queues: queues.map(omitObservationMetadata),
+    queues: sortedQueues.map(omitObservationMetadata),
     metrics: {
-      queueCount: queues.length,
+      queueCount: sortedQueues.length,
       jobCounts,
     },
   });
@@ -133,7 +140,7 @@ export interface JobsRetryOutput {
   command: "jobs-retry";
   dryRun: boolean;
   queue: string;
-  filter: { jobState: string; since?: string; name?: string };
+  filter: { jobState: string; jobId?: string; since?: string; name?: string };
   matched: number;
   retried: number;
   errors: RetryResult["errors"];
@@ -155,14 +162,16 @@ async function fetchJobsRetry(
   ctx: Context,
   queueName: string,
   jobState: string,
+  jobId: string | undefined,
   since: string | undefined,
   name: string | undefined,
   pageSize: number | undefined,
   dryRun: boolean,
 ): Promise<JobsRetryOutput> {
-  const result = await retryFailedJobs(ctx, queueName, { since, name, pageSize, dryRun });
+  const result = await retryFailedJobs(ctx, queueName, { jobId, since, name, pageSize, dryRun });
 
   const filter: JobsRetryOutput["filter"] = { jobState };
+  if (jobId !== undefined) filter.jobId = jobId;
   if (since !== undefined) filter.since = since;
   if (name !== undefined) filter.name = name;
 
@@ -285,12 +294,24 @@ function promptConfirmation(message: string): Promise<boolean> {
   });
 }
 
+function jobsRetryConfirmationMessage(subcommand: Extract<Subcommand, { kind: "jobs-retry" }>) {
+  if (subcommand.jobId) {
+    return `Retry failed job '${subcommand.jobId}' in queue '${subcommand.queue}'?`;
+  }
+
+  const filters: string[] = [];
+  if (subcommand.since) filters.push(`since=${subcommand.since}`);
+  if (subcommand.name) filters.push(`name=${subcommand.name}`);
+  const suffix = filters.length > 0 ? ` matching ${filters.join(", ")}` : "";
+  return `Retry failed jobs in queue '${subcommand.queue}'${suffix}?`;
+}
+
 // ── Route and execute ───────────────────────────────────────────────────
 
 async function routeAndFetch(ctx: Context, subcommand: Subcommand): Promise<unknown> {
   switch (subcommand.kind) {
     case "queues-list":
-      return fetchQueuesOverview(ctx);
+      return fetchQueuesOverview(ctx, subcommand.sortBy, subcommand.sortOrder);
 
     case "queues-delete":
       return fetchQueuesDelete(ctx, subcommand.queue, subcommand.dryRun ?? false);
@@ -310,6 +331,7 @@ async function routeAndFetch(ctx: Context, subcommand: Subcommand): Promise<unkn
         ctx,
         subcommand.queue,
         validState,
+        subcommand.jobId,
         subcommand.since,
         subcommand.name,
         subcommand.pageSize,
@@ -366,10 +388,9 @@ export async function runJsonMode(
   ctx: Context,
   subcommand: Subcommand,
   humanFriendly: boolean = false,
-  dryRun: boolean = false,
   yes: boolean = false,
 ): Promise<void> {
-  if (subcommand.kind === "queues-delete" && !yes && !dryRun) {
+  if (subcommand.kind === "queues-delete" && !yes && !(subcommand.dryRun ?? false)) {
     if (process.stdin.isTTY) {
       const confirmed = await promptConfirmation(
         `Delete queue '${subcommand.queue}' and all its jobs? This cannot be undone.`,
@@ -384,6 +405,24 @@ export async function runJsonMode(
         "Confirmation required: run with --yes flag in non-interactive mode",
         "CONFIG_ERROR",
         "Use --yes to skip confirmation in scripts, or run in interactive terminal.",
+      );
+      process.exit(2);
+    }
+  }
+
+  if (subcommand.kind === "jobs-retry" && !yes && !subcommand.dryRun) {
+    if (process.stdin.isTTY) {
+      const confirmed = await promptConfirmation(jobsRetryConfirmationMessage(subcommand));
+      if (!confirmed) {
+        process.stderr.write("Cancelled.\n");
+        await closeContext(ctx);
+        process.exit(1);
+      }
+    } else {
+      writeError(
+        "Confirmation required: run with --yes flag in non-interactive mode",
+        "CONFIG_ERROR",
+        "Use --yes to retry failed jobs in scripts, or run in interactive terminal.",
       );
       process.exit(2);
     }

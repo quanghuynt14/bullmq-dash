@@ -43,6 +43,7 @@ bun run security:release             # All of the above in publish order
 # Headless / AI agent mode (subcommands output JSON to stdout)
 bullmq-dash queues list --redis-url redis://localhost
 bullmq-dash jobs list email --redis-url redis://localhost
+bullmq-dash jobs failed email --redis-url redis://localhost
 bullmq-dash jobs get email 42 --redis-url redis://localhost
 
 # Interactive TUI mode (requires --tui flag)
@@ -65,14 +66,24 @@ Use subcommands to get machine-readable JSON output without launching the TUI:
 # Queues overview - all queue stats
 bullmq-dash queues list --redis-url redis://localhost:6379
 
+# Queues ranked by task size
+bullmq-dash queues list --redis-url redis://localhost:6379 --sort-by task-size
+
 # List jobs in a queue (all statuses, up to 1000)
 bullmq-dash jobs list email --redis-url redis://localhost
 
 # List jobs filtered by state
 bullmq-dash jobs list email --redis-url redis://localhost --job-state failed
 
+# Shortcut for failed jobs
+bullmq-dash jobs failed email --redis-url redis://localhost
+
 # Get a single job's full detail
 bullmq-dash jobs get email 123 --redis-url redis://localhost
+
+# Preview and retry one failed job
+bullmq-dash jobs retry email --redis-url redis://localhost --job-id 123 --dry-run
+bullmq-dash jobs retry email --redis-url redis://localhost --job-id 123 --yes
 
 # List schedulers in a queue
 bullmq-dash schedulers list email --redis-url redis://localhost
@@ -96,20 +107,29 @@ bullmq-dash jobs list email --redis-url redis://localhost --page-size 50
 | --------------------------------------- | --------------------------------- |
 | `queues list`                           | List all queues with job counts   |
 | `jobs list <queue>`                     | List jobs in a queue              |
+| `jobs failed <queue>`                   | List failed jobs in a queue       |
 | `jobs get <queue> <job-id>`             | Get full detail for a single job  |
+| `jobs retry <queue>`                    | Retry failed jobs                 |
 | `schedulers list <queue>`               | List schedulers in a queue        |
 | `schedulers get <queue> <scheduler-id>` | Get detail for a single scheduler |
 
 ### Command Options
 
-| Flag                  | Type    | Applies to                     | Description                                                                                                                                                                                                                                   |
-| --------------------- | ------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--job-state <state>` | string  | `jobs list`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed`                                                                                                                                                                               |
-| `--page-size <n>`     | number  | `jobs list`, `schedulers list` | Max results to return (default: 1000, must be >= 1)                                                                                                                                                                                           |
-| `--human-friendly`    | boolean | all subcommands                | Human-readable table output (default: JSON)                                                                                                                                                                                                   |
-| `--profile <name>`    | string  | all commands                   | Use a named profile from the config file                                                                                                                                                                                                      |
-| `--config <path>`     | string  | all commands                   | Path to config file (default: `~/.config/bullmq-dash/config.json`)                                                                                                                                                                            |
-| `--redis-url <url>`   | string  | all commands                   | Full Redis URL (`redis://host[:port][/db]`, or `rediss://` for TLS). The single way to specify a Redis connection — discrete `--redis-host` / `--redis-port` / `--redis-password` / `--redis-db` flags were removed in the URL-only redesign. |
+| Flag                   | Type    | Applies to                                   | Description                                                                                                                                                                                                                                   |
+| ---------------------- | ------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--sort-by <field>`    | string  | `queues list`                                | Sort queues by `name`, `task-size`, `waiting`, `active`, `completed`, `failed`, or `delayed`. Aliases: `size`, `total`, `wait`.                                                                                                               |
+| `--sort-order <order>` | string  | `queues list`                                | Sort order: `asc` or `desc`. Defaults to `asc` for `name` and `desc` for queue metrics.                                                                                                                                                       |
+| `--job-state <state>`  | string  | `jobs list`, `jobs retry`                    | Filter jobs: `wait`, `active`, `completed`, `failed`, `delayed`. `jobs retry` only supports `failed`.                                                                                                                                         |
+| `--job-id <id>`        | string  | `jobs retry`                                 | Retry one failed job by ID. Use with `--dry-run` first to preview.                                                                                                                                                                            |
+| `--since <duration>`   | string  | `jobs retry`                                 | Filter failed jobs to a recent window: `30s`, `5m`, `1h`, `24h`, `7d`.                                                                                                                                                                        |
+| `--name <exact>`       | string  | `jobs retry`                                 | Filter failed jobs by exact job name.                                                                                                                                                                                                         |
+| `--dry-run`            | boolean | `queues delete`, `jobs retry`                | Preview the destructive action without changing Redis.                                                                                                                                                                                        |
+| `--yes`                | boolean | `queues delete`, `jobs retry`                | Skip confirmation in scripts.                                                                                                                                                                                                                 |
+| `--page-size <n>`      | number  | `jobs list`, `jobs retry`, `schedulers list` | Max results to return (default: 1000, must be >= 1; `jobs retry` max: 10000)                                                                                                                                                                  |
+| `--human-friendly`     | boolean | all subcommands                              | Human-readable table output (default: JSON)                                                                                                                                                                                                   |
+| `--profile <name>`     | string  | all commands                                 | Use a named profile from the config file                                                                                                                                                                                                      |
+| `--config <path>`      | string  | all commands                                 | Path to config file (default: `~/.config/bullmq-dash/config.json`)                                                                                                                                                                            |
+| `--redis-url <url>`    | string  | all commands                                 | Full Redis URL (`redis://host[:port][/db]`, or `rediss://` for TLS). The single way to specify a Redis connection — discrete `--redis-host` / `--redis-port` / `--redis-password` / `--redis-db` flags were removed in the URL-only redesign. |
 
 ### Connection Profiles
 
@@ -227,6 +247,29 @@ interface JobDetailOutput {
 }
 ```
 
+**Jobs retry** (`jobs retry <queue> --job-id <id> | --job-state failed`):
+
+```typescript
+interface JobsRetryOutput {
+  timestamp: string;
+  command: "jobs-retry";
+  dryRun: boolean;
+  queue: string;
+  filter: {
+    jobState: "failed";
+    jobId?: string;
+    since?: string;
+    name?: string;
+  };
+  matched: number;
+  retried: number;
+  errors: Array<{ jobId: string; error: string }>;
+  sampleJobIds: string[];
+  totalFailed: number;
+  truncated: boolean;
+}
+```
+
 **Schedulers list** (`schedulers list <queue>`):
 
 ```typescript
@@ -290,13 +333,13 @@ interface SchedulerDetailOutput {
 | Code | Meaning                                                         |
 | ---- | --------------------------------------------------------------- |
 | `0`  | Success                                                         |
-| `1`  | Runtime error (unhandled exception)                             |
+| `1`  | Runtime error, including Redis connection/fetch errors          |
 | `2`  | Configuration error (bad/missing CLI flags) or no command given |
-| `3`  | Redis connection error                                          |
+| `3`  | `jobs retry` partial failure (some jobs retried, some errored)  |
 
 ### Idempotency
 
-All current subcommands (`queues list`, `jobs list`, `jobs get`, `schedulers list`, `schedulers get`) are **read-only** and **idempotent**. They perform no writes to Redis and can be called any number of times without side effects. Agents should rely on this guarantee.
+Current read-only subcommands (`queues list`, `jobs list`, `jobs failed`, `jobs get`, `schedulers list`, `schedulers get`) are **read-only** and **idempotent**. They perform no writes to Redis and can be called any number of times without side effects. Agents should rely on this guarantee.
 
 Agents can safely:
 
@@ -309,6 +352,11 @@ When destructive subcommands are added (e.g., `jobs delete`, `jobs retry`):
 - They **MUST** support `--dry-run` to preview the effect without executing it.
 - They **MUST** support `--yes` / `--force` to skip interactive confirmation (agents cannot answer prompts).
 - They **MUST** be idempotent — retrying the same command with the same arguments must produce the same result and not cause unintended duplicate side effects.
+
+`jobs retry` is destructive and follows this policy: it supports `--dry-run`,
+prompts before a live retry unless `--yes` is supplied, only matches failed
+jobs, and retries no job a second time after the first retry moves it out of
+the failed state.
 
 ### Structured Error Output (stderr)
 
@@ -337,7 +385,10 @@ bullmq-dash queues list --redis-url redis://localhost | jq '[.queues[].counts.wa
 bullmq-dash queues list --redis-url redis://localhost | jq '.queues[] | select(.name == "email")'
 
 # Get all failed jobs in a queue with their IDs
-bullmq-dash jobs list email --redis-url redis://localhost --job-state failed | jq '.jobs[] | {id, name, timestamp}'
+bullmq-dash jobs failed email --redis-url redis://localhost | jq '.jobs[] | {id, name, timestamp}'
+
+# Preview retrying a single failed job
+bullmq-dash jobs retry email --redis-url redis://localhost --job-id 42 --dry-run
 
 # Get the stacktrace of a specific failed job
 bullmq-dash jobs get email 42 --redis-url redis://localhost | jq '.job.stacktrace'

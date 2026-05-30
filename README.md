@@ -7,10 +7,11 @@ Terminal UI dashboard for [BullMQ](https://bullmq.io/)
 ## Features
 
 - **Real-time monitoring** - Watch queues and jobs update live with configurable polling
-- **Queue overview** - View all BullMQ queues with job counts and status
+- **Queue overview** - View all BullMQ queues with job counts, failure counts, and task-size sorting
 - **Job inspection** - Browse jobs by status, view details, data, and error stacktraces
+- **Failed-job recovery** - Find failed jobs quickly and retry one job by ID or a filtered batch
 - **Scheduler monitoring** - View Job Schedulers (repeatable jobs) with patterns, iterations, and job history
-- **Job management** - Add, cancel, delete, and retry jobs directly from the dashboard
+- **Job management** - Delete jobs from the TUI and retry failed jobs from headless mode
 - **Global metrics** - Track enqueue/dequeue rates across all queues
 
 ## Requirements
@@ -85,6 +86,29 @@ bullmq-dash --tui --redis-url <redis-url> --queues email,notifications,payments
 bullmq-dash --tui --redis-url <redis-url> --poll-interval 5000
 ```
 
+### Headless Queue Operations
+
+Headless commands print JSON by default, so they are safe to pipe through `jq`
+or run from automation.
+
+```bash
+# Rank queues by task size, largest first
+bullmq-dash queues list --redis-url <redis-url> --sort-by task-size
+
+# Rank queues by failed jobs
+bullmq-dash queues list --redis-url <redis-url> --sort-by failed
+
+# Find failed jobs in a queue
+bullmq-dash jobs failed email --redis-url <redis-url>
+
+# Preview retrying one failed job, then run it
+bullmq-dash jobs retry email --redis-url <redis-url> --job-id 42 --dry-run
+bullmq-dash jobs retry email --redis-url <redis-url> --job-id 42 --yes
+
+# Preview a filtered batch retry
+bullmq-dash jobs retry email --redis-url <redis-url> --job-state failed --since 1h --dry-run
+```
+
 ## Connection Profiles
 
 Save Redis connections as named profiles so you don't have to remember (or paste)
@@ -156,6 +180,7 @@ without auth — keep passwords out of the file itself.
 | `Enter`        | View job details    |
 | `d`            | Delete selected job |
 | `r`            | Refresh data        |
+| `s`            | Cycle queue sorting |
 | `q` / `Ctrl+C` | Quit                |
 
 ### Job Status Filter

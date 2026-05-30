@@ -5,6 +5,7 @@ import {
   getVersionText,
   parseCliArgs,
   parseNumericFlag,
+  parseQueueSortBy,
   parseQueueNames,
   shouldLoadProfile,
 } from "./cli.js";
@@ -195,6 +196,19 @@ describe("parseNumericFlag", () => {
   });
 });
 
+describe("parseQueueSortBy", () => {
+  it("accepts task-size aliases", () => {
+    expect(parseQueueSortBy("task-size")).toBe("task-size");
+    expect(parseQueueSortBy("size")).toBe("task-size");
+    expect(parseQueueSortBy("total")).toBe("task-size");
+  });
+
+  it("accepts queue metric fields", () => {
+    expect(parseQueueSortBy("failed")).toBe("failed");
+    expect(parseQueueSortBy("wait")).toBe("waiting");
+  });
+});
+
 describe("parseCliArgs", () => {
   let originalArgv: string[];
 
@@ -255,6 +269,49 @@ describe("parseCliArgs", () => {
     exitSpy.mockRestore();
     stderrSpy.mockRestore();
   });
+
+  it("parses queues list task-size sorting", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "queues",
+      "list",
+      "--redis-url",
+      "redis://localhost",
+      "--sort-by",
+      "task-size",
+    ];
+
+    expect(parseCliArgs().subcommand).toEqual({
+      kind: "queues-list",
+      sortBy: "task-size",
+      sortOrder: "desc",
+    });
+  });
+
+  it("exits with code 2 when --sort-by is used outside queues list", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "list",
+      "email",
+      "--redis-url",
+      "redis://localhost",
+      "--sort-by",
+      "task-size",
+    ];
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
 });
 
 describe("parseCliArgs — jobs retry", () => {
@@ -297,10 +354,83 @@ describe("parseCliArgs — jobs retry", () => {
       kind: "jobs-retry",
       queue: "payments",
       jobState: "failed",
+      jobId: undefined,
       since: undefined,
       name: undefined,
       pageSize: undefined,
       dryRun: true,
+    });
+  });
+
+  it("parses jobs failed as a failed jobs list shortcut", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "failed",
+      "payments",
+      "--redis-url",
+      "redis://localhost",
+    ];
+    const args = parseCliArgs();
+    expect(args.subcommand).toEqual({
+      kind: "jobs-list",
+      queue: "payments",
+      jobState: "failed",
+      pageSize: undefined,
+    });
+  });
+
+  it("parses single-job retry by id", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "retry",
+      "payments",
+      "--redis-url",
+      "redis://localhost",
+      "--job-id",
+      "42",
+      "--dry-run",
+    ];
+    const args = parseCliArgs();
+    expect(args.subcommand).toEqual({
+      kind: "jobs-retry",
+      queue: "payments",
+      jobState: "failed",
+      jobId: "42",
+      since: undefined,
+      name: undefined,
+      pageSize: undefined,
+      dryRun: true,
+    });
+  });
+
+  it("allows --yes for non-interactive live retries", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "retry",
+      "payments",
+      "--redis-url",
+      "redis://localhost",
+      "--job-id",
+      "42",
+      "--yes",
+    ];
+    const args = parseCliArgs();
+    expect(args.yes).toBe(true);
+    expect(args.subcommand).toEqual({
+      kind: "jobs-retry",
+      queue: "payments",
+      jobState: "failed",
+      jobId: "42",
+      since: undefined,
+      name: undefined,
+      pageSize: undefined,
+      dryRun: false,
     });
   });
 
@@ -325,6 +455,7 @@ describe("parseCliArgs — jobs retry", () => {
       kind: "jobs-retry",
       queue: "payments",
       jobState: "failed",
+      jobId: undefined,
       since: "1h",
       name: "welcome-email",
       pageSize: undefined,
@@ -404,6 +535,50 @@ describe("parseCliArgs — jobs retry", () => {
       "--redis-url",
       "redis://localhost",
       "--dry-run",
+    ];
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 when --yes is used outside destructive commands", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "queues",
+      "list",
+      "--redis-url",
+      "redis://localhost",
+      "--yes",
+    ];
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 when --dry-run and --yes are combined", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "jobs",
+      "retry",
+      "payments",
+      "--redis-url",
+      "redis://localhost",
+      "--job-id",
+      "42",
+      "--dry-run",
+      "--yes",
     ];
     const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
       throw new Error(`process.exit(${code})`);
