@@ -10,6 +10,7 @@ import { loadConfig, createConfigFromPrompt } from "./config.js";
 import { loadProfile } from "./profiles.js";
 import { runConfigPrompt } from "./ui/config-prompt.js";
 import { runJsonMode } from "./json-reporter.js";
+import { runWebMode, WebRedisConnectionError } from "./web/server.js";
 import { writeError } from "./errors.js";
 import { createContext } from "./context.js";
 
@@ -52,6 +53,39 @@ async function main() {
     const config = loadConfig(cliArgs, profile);
     const ctx = createContext(config);
     await runJsonMode(ctx, cliArgs.subcommand, cliArgs.humanFriendly, cliArgs.yes);
+    return;
+  }
+
+  if (cliArgs.web) {
+    if (!hasRedisHostConfig(cliArgs, profile)) {
+      writeError(
+        "Redis URL is not configured",
+        "CONFIG_ERROR",
+        "Use --redis-url <url> or --profile <name> to specify the Redis server.",
+      );
+      process.exit(2);
+    }
+
+    const config = loadConfig(cliArgs, profile);
+    const ctx = createContext(config);
+    try {
+      await runWebMode(ctx, {
+        host: cliArgs.webHost ?? "127.0.0.1",
+        port: cliArgs.webPort ?? 3000,
+        readOnly: cliArgs.webReadOnly ?? false,
+      });
+    } catch (error) {
+      if (error instanceof WebRedisConnectionError) {
+        writeError("Redis connection failed", "REDIS_ERROR", error.message);
+        process.exit(1);
+      }
+      writeError(
+        "Failed to start web UI",
+        "RUNTIME_ERROR",
+        error instanceof Error ? error.message : String(error),
+      );
+      process.exit(1);
+    }
     return;
   }
 

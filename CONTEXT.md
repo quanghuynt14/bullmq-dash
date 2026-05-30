@@ -1,6 +1,6 @@
 # bullmq-dash
 
-A terminal dashboard ("kubectl for BullMQ") that observes BullMQ queues in Redis and presents them through an interactive TUI and a headless JSON CLI.
+A dashboard ("kubectl for BullMQ") that observes BullMQ queues in Redis and presents them through an interactive TUI, a local browser UI, and a headless JSON CLI.
 
 ## Language
 
@@ -29,6 +29,9 @@ The pass that physically deletes rows whose `lastObservedAt` is older than the *
 **TUI mode**:
 The interactive terminal UI started by `--tui`. Foreground polling observes visible **Queues**, **Jobs**, and **Schedulers**; background cleanup expires stale cache rows.
 
+**Web mode**:
+The local browser UI started by `--web`. A Bun HTTP server owns Redis and SQLite handles, serves the dashboard shell, and exposes same-process JSON API endpoints for ranked **Queues**, **Jobs**, **Job** detail, and guarded failed-job retry actions. The browser never receives Redis credentials. `--web-read-only` keeps inspection and dry-run previews available while blocking live retry endpoints.
+
 **Headless mode**:
 One-shot subcommand invocation (`bullmq-dash queues list`, `jobs list`, etc.) that prints JSON to stdout and exits. Designed for AI agents and scripts.
 
@@ -40,7 +43,7 @@ A named connection configuration loaded from disk by the `--profile` flag.
 - A **Queue** has zero or more **Jobs**.
 - A **Job** has exactly one **Job state** at any moment.
 - The **Queue-data store** receives **Observations** from multiple writers and answers cached reads.
-- **TUI mode** polling and **Headless mode** commands produce **Observations** for the records they fetch.
+- **TUI mode** polling, **Web mode** API fetches, and **Headless mode** commands produce **Observations** for the records they fetch.
 - A cached row remains readable until **Cleanup** physically deletes it after the **Cache TTL**.
 
 ## Example dialogue

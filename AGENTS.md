@@ -4,7 +4,7 @@ Reference for AI coding agents and developers working on this codebase.
 
 ## Project Overview
 
-Terminal UI dashboard for monitoring BullMQ queues. Built with Bun, TypeScript, and @opentui/core.
+Terminal and browser dashboard for monitoring BullMQ queues. Built with Bun, TypeScript, and @opentui/core.
 
 **Runtime:** Bun >= 1.3.0 (Node.js not supported - ESM import attributes)
 
@@ -48,6 +48,9 @@ bullmq-dash jobs get email 42 --redis-url redis://localhost
 
 # Interactive TUI mode (requires --tui flag)
 bullmq-dash --tui --redis-url redis://localhost
+
+# Local browser UI mode
+bullmq-dash --web --redis-url redis://localhost
 ```
 
 **Tests:** Uses Bun's built-in test runner (`bun test`).
@@ -130,6 +133,10 @@ bullmq-dash jobs list email --redis-url redis://localhost --page-size 50
 | `--profile <name>`     | string  | all commands                                 | Use a named profile from the config file                                                                                                                                                                                                      |
 | `--config <path>`      | string  | all commands                                 | Path to config file (default: `~/.config/bullmq-dash/config.json`)                                                                                                                                                                            |
 | `--redis-url <url>`    | string  | all commands                                 | Full Redis URL (`redis://host[:port][/db]`, or `rediss://` for TLS). The single way to specify a Redis connection — discrete `--redis-host` / `--redis-port` / `--redis-password` / `--redis-db` flags were removed in the URL-only redesign. |
+| `--web`                | boolean | live UI                                      | Launch the local browser dashboard instead of the TUI. Cannot be combined with subcommands or `--tui`.                                                                                                                                        |
+| `--web-host <host>`    | string  | `--web`                                      | Bind host for the web server (default: `127.0.0.1`). Requires `--web`.                                                                                                                                                                        |
+| `--web-port <n>`       | number  | `--web`                                      | Bind port for the web server (default: `3000`, range `1..65535`). Requires `--web`.                                                                                                                                                           |
+| `--web-read-only`      | boolean | `--web`                                      | Disable live retry endpoints and browser retry buttons while keeping read-only inspection and dry-run previews. Requires `--web`.                                                                                                             |
 
 ### Connection Profiles
 
@@ -169,6 +176,29 @@ bullmq-dash --help                    # Global overview: all commands
 bullmq-dash jobs --help               # Resource-level: available actions for jobs
 bullmq-dash jobs list --help          # Action-level: flags, options, and examples
 ```
+
+### Web Mode
+
+`bullmq-dash --web` starts a local Bun HTTP server and serves the dashboard from
+the same process that owns the Redis and SQLite handles.
+
+```bash
+bullmq-dash --web --redis-url redis://localhost:6379
+bullmq-dash --web --profile prod --web-port 4173
+bullmq-dash --web --profile prod --web-read-only
+```
+
+The web UI is ranked-list first: queues default to task-size ranking, can be
+ranked by failed/waiting/active/completed/delayed/name, supports queue/job
+search and page-size controls, and shows failed-job recovery context in the
+detail pane, including stacktraces when BullMQ has them. The browser never
+receives Redis credentials. Destructive retry API calls require
+`application/json` and `confirm: true`; dry-run retry previews stay read-only.
+`--web-read-only` returns `READ_ONLY` for live retry endpoints.
+
+Web mode has no built-in authentication. Agents should keep the default
+loopback bind unless a human explicitly asks for a trusted network bind or an
+authenticated proxy/tunnel.
 
 ### Output Schemas
 
@@ -415,12 +445,15 @@ src/
 │   ├── jobs.ts       # Job operations
 │   ├── schedulers.ts # Scheduler operations
 │   └── metrics.ts    # Global metrics
-└── ui/               # UI components (@opentui/core)
+├── ui/               # UI components (@opentui/core)
     ├── layout.ts
     ├── queue-list.ts
     ├── job-list.ts
     ├── job-detail.ts
     └── ...
+└── web/              # Browser UI server and HTML shell
+    ├── server.ts
+    └── html.ts
 ```
 
 ## Code Style

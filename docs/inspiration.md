@@ -65,4 +65,25 @@ https://github.com/kitlangton/x-rank
 
 Prioritize ranked lists that make the next action obvious. For bullmq-dash,
 this maps to sorting queues by task size or failures so the busiest or most
-broken queue floats to the top.
+broken queue floats to the top. The web UI applies this as a three-pane
+operator workspace: ranked queues, filtered jobs, and immediate detail/retry
+actions without exposing Redis credentials to the browser.
+
+### bull-board
+
+https://github.com/felixmosh/bull-board
+
+Use bull-board as the generic web-dashboard baseline, then bias bullmq-dash
+toward the on-call operator path: rank the most urgent queues first, default to
+failed-job triage, keep stacktraces and payloads one click away, and guard live
+retry with dry-run previews and confirmation.
+
+### addyosmani/agent-skills and mattpocock/skills
+
+https://github.com/addyosmani/agent-skills
+
+https://github.com/mattpocock/skills
+
+Apply the same skill-shaped discipline to product work: make the workflow
+explicit, verify behavior with concrete gates, and leave durable context for
+future agents in AGENTS.md, CONTEXT.md, and this inspiration log.

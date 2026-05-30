@@ -312,6 +312,89 @@ describe("parseCliArgs", () => {
     exitSpy.mockRestore();
     stderrSpy.mockRestore();
   });
+
+  it("parses web mode options", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "--web",
+      "--redis-url",
+      "redis://localhost",
+      "--web-host",
+      "0.0.0.0",
+      "--web-port",
+      "4173",
+      "--web-read-only",
+      "--poll-interval",
+      "2000",
+    ];
+
+    expect(parseCliArgs()).toMatchObject({
+      web: true,
+      webHost: "0.0.0.0",
+      webPort: 4173,
+      webReadOnly: true,
+      redisUrl: "redis://localhost",
+      pollInterval: 2000,
+    });
+  });
+
+  it("exits with code 2 when --web is combined with subcommands", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "queues",
+      "list",
+      "--redis-url",
+      "redis://localhost",
+      "--web",
+    ];
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 when --web-host is used without --web", () => {
+    process.argv = [
+      "bun",
+      "index.ts",
+      "--redis-url",
+      "redis://localhost",
+      "--web-host",
+      "127.0.0.1",
+    ];
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("exits with code 2 when --web-read-only is used without --web", () => {
+    process.argv = ["bun", "index.ts", "--redis-url", "redis://localhost", "--web-read-only"];
+
+    const exitSpy = spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    expect(() => parseCliArgs()).toThrow("process.exit(2)");
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    exitSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
 });
 
 describe("parseCliArgs — jobs retry", () => {

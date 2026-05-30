@@ -1,12 +1,13 @@
 # bullmq-dash
 
-Terminal UI dashboard for [BullMQ](https://bullmq.io/)
+Terminal and browser dashboard for [BullMQ](https://bullmq.io/)
 
 <img width="1491" height="854" alt="SCR-20260127-gsqa" src="https://github.com/user-attachments/assets/739d7729-b6cd-4933-a9e8-96e8cf84d33a" />
 
 ## Features
 
 - **Real-time monitoring** - Watch queues and jobs update live with configurable polling
+- **Web dashboard** - Rank queues by task size or failures, inspect failed jobs, and retry one job or a failed batch from a local browser UI
 - **Queue overview** - View all BullMQ queues with job counts, failure counts, and task-size sorting
 - **Job inspection** - Browse jobs by status, view details, data, and error stacktraces
 - **Failed-job recovery** - Find failed jobs quickly and retry one job by ID or a filtered batch
@@ -40,6 +41,9 @@ bullmq-dash --tui
 
 # Connect with a URL
 bullmq-dash --tui --redis-url <redis-url>
+
+# Browser dashboard
+bullmq-dash --web --redis-url <redis-url>
 ```
 
 ### CLI Options
@@ -55,6 +59,10 @@ Options:
                            (TLS URLs are supported)
   --poll-interval <ms>     Polling interval in milliseconds (default: 3000)
   --queues <names>         Comma-separated queue names to monitor
+  --web                    Launch local browser dashboard
+  --web-host <host>        Bind host for --web (default: 127.0.0.1)
+  --web-port <port>        Bind port for --web (default: 3000)
+  --web-read-only          Disable live retry actions in the browser/API
   -v, --version            Show version
   -h, --help               Show help
 ```
@@ -73,18 +81,50 @@ bullmq-dash --tui
 bullmq-dash --tui --redis-url <local-redis-url>
 bullmq-dash --tui --redis-url <remote-redis-url>
 
+# Launch the local web UI
+bullmq-dash --web --redis-url <local-redis-url>
+bullmq-dash --web --redis-url <remote-redis-url> --web-port 4173
+
 # Use TLS
 bullmq-dash --tui --redis-url <tls-redis-url>
+bullmq-dash --web --redis-url <tls-redis-url>
 
 # Connect via a named profile from the config file
 bullmq-dash --tui --profile prod
+bullmq-dash --web --profile prod
 
 # Monitor specific queues only
 bullmq-dash --tui --redis-url <redis-url> --queues email,notifications,payments
 
 # Custom polling interval (5 seconds)
 bullmq-dash --tui --redis-url <redis-url> --poll-interval 5000
+bullmq-dash --web --redis-url <redis-url> --poll-interval 5000
 ```
+
+### Web Dashboard
+
+`--web` starts a local Bun HTTP server and serves a data-dense dashboard at
+`http://127.0.0.1:3000` by default.
+
+```bash
+bullmq-dash --web --redis-url <redis-url>
+bullmq-dash --web --redis-url <redis-url> --web-host 0.0.0.0 --web-port 4173
+bullmq-dash --web --redis-url <redis-url> --web-read-only
+```
+
+Web mode has no built-in authentication. Keep the default loopback bind for
+local use; bind `0.0.0.0` only on trusted networks or behind an authenticated
+proxy/tunnel.
+
+The first screen is the operational workspace: ranked queues on the left,
+filtered jobs in the center, and job detail on the right. Queue/job search,
+page-size controls, failed-job stacktrace display, and an attention strip keep
+large installations scannable. Queue ranking defaults to task size and can
+switch to failed, waiting, active, completed, delayed, or name. Retry actions are
+guarded server-side: dry-runs are safe previews, live batch retry uses an
+in-browser confirmation, all live retry API calls require an explicit JSON
+confirmation, and `--web-read-only` blocks live retry requests while keeping
+dry-run previews available.
 
 ### Headless Queue Operations
 

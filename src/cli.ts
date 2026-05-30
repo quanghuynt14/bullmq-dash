@@ -38,6 +38,10 @@ export interface CliArgs {
   help?: boolean;
   version?: boolean;
   tui?: boolean;
+  web?: boolean;
+  webHost?: string;
+  webPort?: number;
+  webReadOnly?: boolean;
   subcommand?: Subcommand;
   humanFriendly?: boolean;
   dryRun?: boolean;
@@ -55,6 +59,7 @@ bullmq-dash - Terminal UI dashboard for BullMQ queue monitoring
 
 Usage:
   bullmq-dash --tui [options]                            Launch interactive TUI
+  bullmq-dash --web [options]                            Launch local web dashboard
   bullmq-dash <command> [options]                        Headless JSON output
 
 Commands:
@@ -82,6 +87,14 @@ Output Options:
 
 TUI Options:
   --tui                    Launch interactive terminal dashboard
+
+Web Options:
+  --web                    Launch browser dashboard
+  --web-host <host>        Bind host (default: 127.0.0.1)
+  --web-port <port>        Bind port (default: 3000)
+  --web-read-only          Disable live retry actions in the browser/API
+
+Shared Live Options:
   --poll-interval <ms>     Polling interval in ms (default: 3000)
   --queues <names>         Comma-separated queue names to monitor
 
@@ -91,6 +104,7 @@ General:
 
 Examples:
   bullmq-dash --tui --redis-url redis://localhost:6379
+  bullmq-dash --web --redis-url redis://localhost:6379
   bullmq-dash --tui --redis-url redis://redis.example.com:6379/0
   bullmq-dash --tui --profile prod
   bullmq-dash queues list --redis-url redis://localhost:6379
@@ -613,6 +627,10 @@ export function parseCliArgs(): CliArgs {
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
         tui: { type: "boolean" },
+        web: { type: "boolean" },
+        "web-host": { type: "string" },
+        "web-port": { type: "string" },
+        "web-read-only": { type: "boolean" },
         // Command-specific flags
         "job-state": { type: "string" },
         "page-size": { type: "string" },
@@ -635,6 +653,7 @@ export function parseCliArgs(): CliArgs {
     // Parse numeric flags with validation
     const pollInterval = parseNumericFlag("poll-interval", values["poll-interval"]);
     const pageSize = parseNumericFlag("page-size", values["page-size"], { min: 1 });
+    const webPort = parseNumericFlag("web-port", values["web-port"], { min: 1 });
 
     const humanFriendly = values["human-friendly"] ?? false;
     const since = values.since;
@@ -789,6 +808,43 @@ export function parseCliArgs(): CliArgs {
       process.exit(2);
     }
 
+    if (values.web && subcommand) {
+      writeError(
+        "--web cannot be used with subcommands",
+        "CONFIG_ERROR",
+        "Use --web to launch the browser dashboard, or use subcommands for headless output.",
+      );
+      process.exit(2);
+    }
+
+    if (values.web && values.tui) {
+      writeError(
+        "--web cannot be used with --tui",
+        "CONFIG_ERROR",
+        "Choose one live UI: --web for browser mode or --tui for terminal mode.",
+      );
+      process.exit(2);
+    }
+
+    if ((values["web-host"] || values["web-port"] || values["web-read-only"]) && !values.web) {
+      writeError(
+        "--web-host, --web-port, and --web-read-only require --web",
+        "CONFIG_ERROR",
+        "Usage: bullmq-dash --web --web-host 127.0.0.1 --web-port 3000 --web-read-only",
+      );
+      process.exit(2);
+    }
+
+    if (values["web-host"] !== undefined && values["web-host"].trim() === "") {
+      writeError("--web-host cannot be empty", "CONFIG_ERROR", "Usage: --web-host 127.0.0.1");
+      process.exit(2);
+    }
+
+    if (webPort !== undefined && webPort > 65535) {
+      writeError("--web-port must be <= 65535", "CONFIG_ERROR", "Usage: --web-port 3000");
+      process.exit(2);
+    }
+
     if (
       dryRun &&
       (!subcommand || (subcommand.kind !== "jobs-retry" && subcommand.kind !== "queues-delete"))
@@ -839,6 +895,10 @@ export function parseCliArgs(): CliArgs {
       help: values.help,
       version: values.version,
       tui: values.tui,
+      web: values.web,
+      webHost: values["web-host"],
+      webPort,
+      webReadOnly: values["web-read-only"],
       subcommand,
       humanFriendly,
       dryRun,
