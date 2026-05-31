@@ -61,7 +61,7 @@
     "postpublish": "bun scripts/publish-manifest.ts restore"
   },
   "dependencies": {
-    "@opentui/core": "^0.2.10",
+    "@opentui/core": "^0.3.0",
     "bullmq": "^5.76.8"
   },
   "devDependencies": {
