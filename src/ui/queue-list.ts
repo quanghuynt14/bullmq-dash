@@ -102,15 +102,25 @@ export function updateQueueList(
   isFocused: boolean,
   sortBy: QueueSortBy = "name",
   sortOrder: SortOrder = "asc",
+  queueFilter: string = "",
+  searchActive: boolean = false,
 ): void {
   const { select, emptyText, title } = elements;
 
-  // Update title to show focus state
+  // Update title to show focus, sort, and `/` search state
   const sortText = queueSortLabel(sortBy, sortOrder);
-  title.content = isFocused ? ` QUEUES [*] ${sortText}` : ` QUEUES ${sortText}`;
-  title.bg = isFocused ? colors.surface1 : colors.surface0;
+  if (searchActive) {
+    title.content = ` QUEUES /${queueFilter}▌  (Enter: keep, Esc: clear)`;
+  } else {
+    const filterText = queueFilter ? ` /${queueFilter}` : "";
+    title.content = isFocused
+      ? ` QUEUES [*] ${sortText}${filterText}`
+      : ` QUEUES ${sortText}${filterText}`;
+  }
+  title.bg = isFocused || searchActive ? colors.surface1 : colors.surface0;
 
   if (queues.length === 0) {
+    emptyText.content = queueFilter ? `No queues match /${queueFilter}` : "No queues found";
     select.visible = false;
     emptyText.visible = true;
     return;

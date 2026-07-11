@@ -256,6 +256,12 @@ without auth — keep passwords out of the file itself.
 | `k` / `↑` | Move up                             |
 | `Tab`     | Switch between queues and jobs pane |
 | `←` / `→` | Previous/next page (in job list)    |
+| `/`       | Search/filter queues by name        |
+
+While searching, every printable key narrows the queue list live
+(case-insensitive substring). `Enter` keeps the filter and returns to
+navigation — the title shows the active filter as `/name` — and `Esc` clears
+it and restores the full list.
 
 ### Actions
 

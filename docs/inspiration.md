@@ -129,10 +129,19 @@ dependencies at install time so first run needs no network. Maintenance: on
 each npm release, bump `url`/`sha256` in `Formula/bullmq-dash.rb`
 (`shasum -a 256` of the new tarball).
 
+### TUI `/` search (applied 2026-07-11, third pass)
+
+tmuxwatch opens a live filter with `/`. **Applied:** `/` in the TUI filters
+the queue list by case-insensitive substring as you type; Enter keeps the
+filter (shown as `/name` in the pane title), Esc clears it. Global metrics
+intentionally keep counting all queues while a filter is active. Verified
+end-to-end by driving the TUI inside tmux against the SQLite disconnected
+fallback. The command-palette half of this pattern is still open.
+
 ### Patterns noted but not yet applied (candidates for next sessions)
 
-- **TUI search with `/` and a command palette** (tmuxwatch) — the TUI has
-  pane navigation but no fuzzy filter; the web UI already has search.
+- **Command palette** (tmuxwatch `ctrl+P`) — `/` search shipped; a palette
+  for actions (retry, sort, filter by status) is the remaining half.
 - **`--dump` JSON snapshot from the live UI** (tmuxwatch) — headless mode
   covers this, but a single "dump everything" command could help support.
 - **Demo GIF/screenshot above the fold** — the README has a web screenshot;
