@@ -51,6 +51,9 @@ bullmq-dash --web --redis-url <redis-url>
 ```
 bullmq-dash [options]
 
+Commands:
+  doctor                   Diagnose config, connection, and queue discovery
+
 Options:
   --profile <name>         Use a named profile from the config file
   --config <path>          Path to config file
@@ -147,6 +150,41 @@ bullmq-dash jobs retry email --redis-url <redis-url> --job-id 42 --yes
 
 # Preview a filtered batch retry
 bullmq-dash jobs retry email --redis-url <redis-url> --job-state failed --since 1h --dry-run
+```
+
+### Troubleshooting: `bullmq-dash doctor`
+
+When a connection doesn't work, run `doctor` before anything else. It checks
+config-file resolution, profile selection, the connection source, Redis
+reachability (with round-trip latency), the server version, and whether any
+BullMQ queues are visible under the key prefix — and keeps going after a
+failed check so you see the whole picture in one pass. Credentials are never
+printed.
+
+```bash
+# Human-readable checklist
+bullmq-dash doctor --human-friendly
+
+# Diagnose a specific connection or profile
+bullmq-dash doctor --redis-url <redis-url> --human-friendly
+bullmq-dash doctor --profile prod --human-friendly
+
+# JSON (default) for scripts and agents; exit 0 = healthy, 1 = a check failed
+bullmq-dash doctor | jq '.checks[] | select(.status == "fail")'
+```
+
+```
+bullmq-dash v0.3.2 — bun 1.3.14 on darwin arm64
+
+✓ config-file      ~/.config/bullmq-dash/config.json — profiles: local, prod (default: local)
+✓ profile          Using profile 'local' (via defaultProfile)
+✓ connection       redis://localhost:6379 (from profile 'local')
+✓ redis-ping       PING ok in 2ms
+✓ redis-server     Redis 7.2.4 (standalone)
+! queue-discovery  No queues found under prefix 'bull'
+                   hint: If your queues use a custom BullMQ prefix, pass --prefix <prefix>.
+
+5 ok, 1 warning(s), 0 failed, 0 skipped
 ```
 
 ## Connection Profiles

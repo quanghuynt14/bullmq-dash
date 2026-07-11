@@ -87,3 +87,45 @@ https://github.com/mattpocock/skills
 Apply the same skill-shaped discipline to product work: make the workflow
 explicit, verify behavior with concrete gates, and leave durable context for
 future agents in AGENTS.md, CONTEXT.md, and this inspiration log.
+
+---
+
+## Product references applied on 2026-07-11 — steipete (Peter Steinberger)
+
+Studied https://github.com/steipete — prolific solo builder of CLI/TUI/menu-bar
+tools (summarize, oracle, tmuxwatch, RepoBar, CodexBar, poltergeist). The
+recurring usability patterns across his portfolio, and how they map here:
+
+### Ship a self-diagnosis command (`summarize status`)
+
+His tools expose a status/diagnostics command that shows what is configured
+and what is reachable — without printing secrets. Users troubleshoot
+themselves instead of filing "it doesn't connect" issues. **Applied:**
+`bullmq-dash doctor` (config-file → profile → connection → redis-ping →
+redis-server → queue-discovery, keeps going after failures, credential-free,
+JSON + `--human-friendly`).
+
+### Version output carries build info (`tmuxwatch --version`)
+
+A version string that includes runtime and platform turns every bug report
+into a better bug report. **Applied:** `-v` now prints
+`bullmq-dash vX.Y.Z (bun A.B.C, darwin arm64)`.
+
+### Graceful degradation over hard failure
+
+summarize falls back across transcription backends; a blocked capability is a
+downgraded experience, not a crash. **Applied in doctor:** a blocked `INFO`
+command (managed-Redis ACLs) is a warning, not a failure; empty queue
+discovery is a warning with a `--prefix` hint.
+
+### Patterns noted but not yet applied (candidates for next sessions)
+
+- **Multiple install paths** (Homebrew tap + npm + npx + nix in the first
+  screen of the README) — a `brew tap` would widen the funnel beyond the
+  Bun/npm crowd.
+- **TUI search with `/` and a command palette** (tmuxwatch) — the TUI has
+  pane navigation but no fuzzy filter; the web UI already has search.
+- **`--dump` JSON snapshot from the live UI** (tmuxwatch) — headless mode
+  covers this, but a single "dump everything" command could help support.
+- **Demo GIF/screenshot above the fold** — the README has a web screenshot;
+  a terminal-cast GIF of the TUI would sell the core mode.

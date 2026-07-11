@@ -102,19 +102,52 @@ bullmq-dash queues delete email --redis-url redis://localhost --yes
 
 # Limit results (default: 1000)
 bullmq-dash jobs list email --redis-url redis://localhost --page-size 50
+
+# Diagnose setup problems before anything else (works without a Redis URL)
+bullmq-dash doctor
+bullmq-dash doctor --redis-url redis://localhost | jq '.checks[] | select(.status == "fail")'
 ```
+
+### Doctor (diagnostics)
+
+`bullmq-dash doctor` runs six checks in order — `config-file`, `profile`,
+`connection`, `redis-ping`, `redis-server`, `queue-discovery` — and reports all
+of them even after a failure. Unlike other subcommands it does not require a
+Redis URL and never hard-exits on a broken config file: problems come back as
+`fail` checks with hints. Credentials are never included in the output.
+
+```typescript
+interface DoctorReport {
+  timestamp: string;
+  command: "doctor";
+  version: string; // "bullmq-dash v0.3.2"
+  runtime: string; // "bun 1.3.14 on darwin arm64"
+  checks: Array<{
+    name: string;
+    status: "ok" | "warn" | "fail" | "skip";
+    detail: string;
+    hint?: string;
+  }>;
+  ok: boolean; // true when no check has status "fail"
+}
+```
+
+Exit code: `0` when no check failed (warnings allowed), `1` otherwise. Agents
+should run `doctor` first when any other command returns `REDIS_ERROR` or
+`CONFIG_ERROR`, and use the failing check's `hint` to decide the next step.
 
 ### Commands
 
-| Command                                 | Description                       |
-| --------------------------------------- | --------------------------------- |
-| `queues list`                           | List all queues with job counts   |
-| `jobs list <queue>`                     | List jobs in a queue              |
-| `jobs failed <queue>`                   | List failed jobs in a queue       |
-| `jobs get <queue> <job-id>`             | Get full detail for a single job  |
-| `jobs retry <queue>`                    | Retry failed jobs                 |
-| `schedulers list <queue>`               | List schedulers in a queue        |
-| `schedulers get <queue> <scheduler-id>` | Get detail for a single scheduler |
+| Command                                 | Description                                      |
+| --------------------------------------- | ------------------------------------------------ |
+| `queues list`                           | List all queues with job counts                  |
+| `jobs list <queue>`                     | List jobs in a queue                             |
+| `jobs failed <queue>`                   | List failed jobs in a queue                      |
+| `jobs get <queue> <job-id>`             | Get full detail for a single job                 |
+| `jobs retry <queue>`                    | Retry failed jobs                                |
+| `schedulers list <queue>`               | List schedulers in a queue                       |
+| `schedulers get <queue> <scheduler-id>` | Get detail for a single scheduler                |
+| `doctor`                                | Diagnose config, connection, and queue discovery |
 
 ### Command Options
 

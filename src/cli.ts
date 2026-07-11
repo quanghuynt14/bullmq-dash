@@ -28,7 +28,8 @@ export type Subcommand =
       dryRun: boolean;
     }
   | { kind: "schedulers-list"; queue: string; pageSize?: number }
-  | { kind: "schedulers-get"; queue: string; schedulerId: string };
+  | { kind: "schedulers-get"; queue: string; schedulerId: string }
+  | { kind: "doctor" };
 
 export interface CliArgs {
   redisUrl?: string;
@@ -71,6 +72,7 @@ Commands:
   jobs retry <queue>                     Retry failed jobs (supports --dry-run/--yes)
   schedulers list <queue>                List schedulers in a queue
   schedulers get <queue> <scheduler-id>  Get detail for a single scheduler
+  doctor                                 Diagnose config, connection, and queue discovery
 
 Run 'bullmq-dash <command> --help' for command-specific help.
 
@@ -103,6 +105,7 @@ General:
   -h, --help               Show this help message
 
 Examples:
+  bullmq-dash doctor
   bullmq-dash --tui --redis-url redis://localhost:6379
   bullmq-dash --web --redis-url redis://localhost:6379
   bullmq-dash --tui --redis-url redis://redis.example.com:6379/0
@@ -305,6 +308,41 @@ Examples:
   bullmq-dash schedulers list email --redis-url redis://localhost | jq '.schedulers[] | {key, pattern, next}'
 `;
 
+const DOCTOR_HELP = `
+Usage: bullmq-dash doctor [options]
+
+Diagnose your bullmq-dash setup in one pass. Checks, in order:
+
+  config-file       Config file resolution and schema
+  profile           Profile selection and env-var expansion
+  connection        Redis connection source and URL shape
+  redis-ping        Connectivity and round-trip latency
+  redis-server      Server version and mode (from INFO)
+  queue-discovery   BullMQ queues visible under the key prefix
+
+Unlike other commands, doctor keeps going after a failed check and reports
+everything it found. Credentials are never printed. Prints JSON by default;
+use --human-friendly for a readable checklist.
+
+Exit codes:
+  0  No check failed (warnings are allowed)
+  1  At least one check failed
+
+Options:
+  --profile <name>         Use a named profile from the config file
+  --config <path>          Path to config file
+                           (default: ~/.config/bullmq-dash/config.json)
+  --redis-url <url>        Full connection URL: redis://host[:port][/db]
+  --prefix <prefix>        BullMQ key prefix (default: bull)
+  --human-friendly         Human-readable checklist output (default: JSON)
+
+Examples:
+  bullmq-dash doctor
+  bullmq-dash doctor --human-friendly
+  bullmq-dash doctor --redis-url redis://localhost:6379
+  bullmq-dash doctor --profile prod --human-friendly
+`;
+
 const SCHEDULERS_GET_HELP = `
 Usage: bullmq-dash schedulers get <queue> <scheduler-id> [options]
 
@@ -421,11 +459,18 @@ function parseSubcommand(
   const resource = positionals[0]!;
   const action = positionals[1];
 
+  // doctor is a single-token command with no resource/action structure.
+  if (resource === "doctor") {
+    if (help) showSubcommandHelp(DOCTOR_HELP);
+    assertArgCount(positionals, 1, "doctor [options]");
+    return { kind: "doctor" };
+  }
+
   if (!RESOURCE_COMMANDS.has(resource)) {
     writeError(
       `Unknown command: '${resource}'`,
       "CONFIG_ERROR",
-      `Available commands: queues, jobs, schedulers. Use --help for usage.`,
+      `Available commands: queues, jobs, schedulers, doctor. Use --help for usage.`,
     );
     process.exit(2);
   }
@@ -928,7 +973,8 @@ export function showHelp(exitCode: number = 0): void {
 }
 
 export function showVersion(): void {
-  console.log(getVersionText());
+  const runtime = `bun ${process.versions.bun ?? "unknown"}, ${process.platform} ${process.arch}`;
+  console.log(`${getVersionText()} (${runtime})`);
   process.exit(0);
 }
 

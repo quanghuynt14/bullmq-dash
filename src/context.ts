@@ -37,11 +37,15 @@ export interface ContextRedisClient {
   quit(): Promise<void>;
   scan(cursor: string, ...args: Array<string | number>): Promise<[string, string[]]>;
   del(...keys: string[]): Promise<number>;
+  ping(): Promise<string>;
+  info(section?: string): Promise<string>;
 }
 
 interface RedisCommands {
   scan(cursor: string, ...args: Array<string | number>): Promise<[string, string[]]>;
   del(...keys: string[]): Promise<number>;
+  ping(): Promise<string>;
+  info(section?: string): Promise<string>;
 }
 
 /**
@@ -107,6 +111,14 @@ function createRedisClient(config: Config): ContextRedisClient {
     async del(...keys: string[]): Promise<number> {
       const client = await getClient();
       return client.del(...keys);
+    },
+    async ping(): Promise<string> {
+      const client = await getClient();
+      return client.ping();
+    },
+    async info(section?: string): Promise<string> {
+      const client = await getClient();
+      return section === undefined ? client.info() : client.info(section);
     },
   };
 }
