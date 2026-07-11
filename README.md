@@ -23,6 +23,9 @@ Terminal and browser dashboard for [BullMQ](https://bullmq.io/)
 ## Installation
 
 ```bash
+# Homebrew
+brew install quanghuynt14/tap/bullmq-dash
+
 # Install globally via npm
 npm install -g bullmq-dash
 
@@ -30,6 +33,9 @@ npm install -g bullmq-dash
 bunx bullmq-dash
 npx bullmq-dash
 ```
+
+The Homebrew formula installs Bun automatically and vendors all runtime
+dependencies at install time — no Node or Bun setup needed beforehand.
 
 ## Usage
 

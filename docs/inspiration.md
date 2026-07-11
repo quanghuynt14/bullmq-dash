@@ -118,11 +118,19 @@ downgraded experience, not a crash. **Applied in doctor:** a blocked `INFO`
 command (managed-Redis ACLs) is a warning, not a failure; empty queue
 discovery is a warning with a `--prefix` hint.
 
+### Multiple install paths (applied 2026-07-11, second pass)
+
+tmuxwatch/summarize list Homebrew, language tooling, and no-install runners in
+the first screen of the README. **Applied:** `brew install
+quanghuynt14/tap/bullmq-dash` via the new
+https://github.com/quanghuynt14/homebrew-tap repo. The formula installs the
+published npm tarball, depends on homebrew-core `bun`, and vendors runtime
+dependencies at install time so first run needs no network. Maintenance: on
+each npm release, bump `url`/`sha256` in `Formula/bullmq-dash.rb`
+(`shasum -a 256` of the new tarball).
+
 ### Patterns noted but not yet applied (candidates for next sessions)
 
-- **Multiple install paths** (Homebrew tap + npm + npx + nix in the first
-  screen of the README) — a `brew tap` would widen the funnel beyond the
-  Bun/npm crowd.
 - **TUI search with `/` and a command palette** (tmuxwatch) — the TUI has
   pane navigation but no fuzzy filter; the web UI already has search.
 - **`--dump` JSON snapshot from the live UI** (tmuxwatch) — headless mode

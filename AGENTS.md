@@ -61,6 +61,12 @@ worktree. The CLI can exit `0` while reporting alert rows; use
 `bun run security:score` after publishing to gate the version against the
 accepted-alert allowlist (`scripts/socket-score.ts:ACCEPTED_ALERT_TYPES`).
 
+**Homebrew tap:** `brew install quanghuynt14/tap/bullmq-dash` installs the
+published npm tarball via https://github.com/quanghuynt14/homebrew-tap. After
+each npm release, update `Formula/bullmq-dash.rb` in that repo: bump the
+version in `url` and set `sha256` to `shasum -a 256` of the new tarball from
+`https://registry.npmjs.org/bullmq-dash/-/bullmq-dash-<version>.tgz`.
+
 ## Non-Interactive / Headless Mode (AI Agent Usage)
 
 Use subcommands to get machine-readable JSON output without launching the TUI:
