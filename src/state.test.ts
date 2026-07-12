@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import type { QueueStats } from "./data/queues.js";
 import { filterQueues, stateManager } from "./state.js";
 
@@ -15,8 +15,11 @@ const EMAIL = queue("email", 10);
 const PAYMENTS = queue("payments", 20);
 const NOTIFICATIONS = queue("notifications", 5);
 
-beforeEach(() => {
-  // stateManager is a process-wide singleton; reset everything these tests touch.
+// stateManager is a process-wide singleton shared across test files in the
+// same bun process; reset everything these tests touch — and reset again in
+// afterAll so no filter/sort state leaks into files that run later (test-file
+// order is platform-dependent).
+function resetSharedState(): void {
   stateManager.setState({
     queues: [],
     allQueues: [],
@@ -29,7 +32,10 @@ beforeEach(() => {
     queueSortOrder: "asc",
     focusedPane: "queues",
   });
-});
+}
+
+beforeEach(resetSharedState);
+afterAll(resetSharedState);
 
 describe("filterQueues", () => {
   it("matches case-insensitive substrings", () => {
