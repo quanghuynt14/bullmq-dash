@@ -123,7 +123,7 @@ describe("publish-policy constants (literal pins)", () => {
     // bullmq. Any addition here widens the Socket-scored graph and must be
     // a deliberate review decision, not a silent constant change.
     expect(EXPECTED_RUNTIME_DEPENDENCIES).toEqual({
-      "@opentui/core": "^0.2.10",
+      "@opentui/core": "^0.4.3",
       bullmq: "^5.76.8",
     });
   });
