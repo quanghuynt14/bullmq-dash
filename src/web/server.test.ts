@@ -16,6 +16,8 @@ function fakeContext(prefix: string = "bull"): Context {
       quit: async () => {},
       scan: async () => ["0", []],
       del: async () => 0,
+      ping: async () => "PONG",
+      info: async () => "",
     },
     db: {} as Context["db"],
     queueCache: new Map(),

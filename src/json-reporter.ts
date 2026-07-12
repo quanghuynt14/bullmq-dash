@@ -25,6 +25,9 @@ import {
 
 import readline from "node:readline";
 
+/** Subcommands served by runJsonMode. `doctor` is routed earlier in index.ts. */
+export type HeadlessSubcommand = Exclude<Subcommand, { kind: "doctor" }>;
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 function createResponse<T>(data: T): { timestamp: string } & T {
@@ -308,7 +311,7 @@ function jobsRetryConfirmationMessage(subcommand: Extract<Subcommand, { kind: "j
 
 // ── Route and execute ───────────────────────────────────────────────────
 
-async function routeAndFetch(ctx: Context, subcommand: Subcommand): Promise<unknown> {
+async function routeAndFetch(ctx: Context, subcommand: HeadlessSubcommand): Promise<unknown> {
   switch (subcommand.kind) {
     case "queues-list":
       return fetchQueuesOverview(ctx, subcommand.sortBy, subcommand.sortOrder);
@@ -354,7 +357,11 @@ async function routeAndFetch(ctx: Context, subcommand: Subcommand): Promise<unkn
 
 // ── Format output ───────────────────────────────────────────────────────
 
-function formatOutput(result: unknown, subcommand: Subcommand, humanFriendly: boolean): string {
+function formatOutput(
+  result: unknown,
+  subcommand: HeadlessSubcommand,
+  humanFriendly: boolean,
+): string {
   if (!humanFriendly) {
     return JSON.stringify(result);
   }
@@ -386,7 +393,7 @@ function formatOutput(result: unknown, subcommand: Subcommand, humanFriendly: bo
 
 export async function runJsonMode(
   ctx: Context,
-  subcommand: Subcommand,
+  subcommand: HeadlessSubcommand,
   humanFriendly: boolean = false,
   yes: boolean = false,
 ): Promise<void> {

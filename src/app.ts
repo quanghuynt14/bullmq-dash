@@ -207,6 +207,36 @@ export class App {
       return;
     }
 
+    // Queue search input mode: all printable keys type into the filter.
+    // The queue select is blurred while this is active (see render), so
+    // typing 'j'/'k' can't move the selection underneath the input.
+    if (state.queueSearchActive) {
+      const selectedBefore = stateManager.getSelectedQueue()?.name;
+      if (key.name === "escape") {
+        stateManager.closeQueueSearch(false);
+      } else if (key.name === "return" || key.name === "enter") {
+        stateManager.closeQueueSearch(true);
+      } else if (key.name === "backspace") {
+        stateManager.backspaceQueueFilter();
+      } else if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+        // Printable characters only — control chars have sequences < " ".
+        if (key.sequence >= " ") {
+          stateManager.appendQueueFilter(key.sequence);
+        }
+      }
+      // Filtering may have landed the selection on a different queue.
+      if (stateManager.getSelectedQueue()?.name !== selectedBefore) {
+        await pollingManager.refreshJobs();
+      }
+      return;
+    }
+
+    // Open queue search ('/' has no key.name; match the raw sequence)
+    if (key.sequence === "/" && !key.ctrl && !key.meta) {
+      stateManager.openQueueSearch();
+      return;
+    }
+
     // Navigation keys
     switch (key.name) {
       case "tab":
@@ -449,14 +479,17 @@ export class App {
     // Update global metrics
     updateGlobalMetrics(globalMetrics, state.globalMetrics);
 
-    // Update queue list
+    // Update queue list. While the `/` search input is active the select is
+    // deliberately unfocused so typed characters don't double as navigation.
     updateQueueList(
       queueList,
       state.queues,
       state.selectedQueueIndex,
-      state.focusedPane === "queues",
+      state.focusedPane === "queues" && !state.queueSearchActive,
       state.queueSortBy,
       state.queueSortOrder,
+      state.queueFilter,
+      state.queueSearchActive,
     );
 
     // Update queue stats

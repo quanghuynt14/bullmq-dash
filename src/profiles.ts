@@ -95,7 +95,12 @@ function validateProfile(value: unknown, path: string, errors: string[]): Profil
   return profile;
 }
 
-function validateProfilesFile(value: unknown): ProfilesFile | string[] {
+/**
+ * Validate a parsed config file. Returns the typed file on success or the
+ * list of schema errors. Exported for `doctor`, which reports problems as
+ * diagnostic checks instead of exiting like `loadProfile` does.
+ */
+export function validateProfilesFile(value: unknown): ProfilesFile | string[] {
   const errors: string[] = [];
 
   if (!isRecord(value)) return ["config file must be an object"];

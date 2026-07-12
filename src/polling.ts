@@ -16,7 +16,7 @@
  * On disconnect, both render from SQLite via the disconnected fallback.
  */
 import type { Context } from "./context.js";
-import { getAllQueueStats, type QueueStats } from "./data/queues.js";
+import { getAllQueueStats } from "./data/queues.js";
 import { sortQueues } from "./data/queue-sort.js";
 import { getJobs, type JobListView, type JobsResult, type JobSummary } from "./data/jobs.js";
 import { getAllJobSchedulers, type JobSchedulerSummary } from "./data/schedulers.js";
@@ -84,23 +84,6 @@ const EMPTY_QUEUE_VIEW: Partial<AppState> = {
   schedulersTotal: 0,
   schedulersTotalPages: 0,
 };
-
-function clampQueueIndex(queues: QueueStats[], currentIndex: number): number {
-  return queues.length > 0 ? Math.min(currentIndex, queues.length - 1) : 0;
-}
-
-function selectedQueueIndexAfterSort(
-  queues: QueueStats[],
-  previousQueues: QueueStats[],
-  previousIndex: number,
-): number {
-  const previousName = previousQueues[previousIndex]?.name;
-  if (previousName) {
-    const nextIndex = queues.findIndex((queue) => queue.name === previousName);
-    if (nextIndex !== -1) return nextIndex;
-  }
-  return clampQueueIndex(queues, previousIndex);
-}
 
 class PollingManager {
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -170,26 +153,22 @@ class PollingManager {
         currentState.queueSortOrder,
       );
       const rates = updateMetricsTracker(queues);
+      // Global metrics reflect every queue, not just the ones a `/` filter
+      // keeps visible.
       const globalMetrics = calculateGlobalMetricsFromQueueStats(queues, rates);
 
-      // Preserve the selected queue across sort changes and metric updates.
-      const clampedIndex = selectedQueueIndexAfterSort(
-        queues,
-        currentState.queues,
-        currentState.selectedQueueIndex,
-      );
-
+      // applyQueues re-derives the visible (filtered) list and preserves the
+      // selected queue across sort changes and metric updates.
+      stateManager.applyQueues(queues);
       stateManager.setState({
-        queues,
         globalMetrics,
         connected: true,
         error: null,
-        selectedQueueIndex: clampedIndex,
       });
 
       // jobsStatus / jobsPage / schedulersPage weren't touched above, so
       // currentState is still authoritative for the view selection.
-      const selectedQueue = queues[clampedIndex];
+      const selectedQueue = stateManager.getSelectedQueue();
       if (selectedQueue) {
         // If status is "schedulers", fetch schedulers instead of jobs
         if (currentState.jobsStatus === "schedulers") {
@@ -252,12 +231,8 @@ class PollingManager {
         currentState.queueSortBy,
         currentState.queueSortOrder,
       );
-      const clampedIndex = selectedQueueIndexAfterSort(
-        sortedQueues,
-        currentState.queues,
-        currentState.selectedQueueIndex,
-      );
-      const selectedQueue = sortedQueues[clampedIndex];
+      stateManager.applyQueues(sortedQueues);
+      const selectedQueue = stateManager.getSelectedQueue();
 
       let viewState: Partial<AppState>;
       if (selectedQueue && currentState.jobsStatus === "schedulers") {
@@ -277,8 +252,6 @@ class PollingManager {
       }
 
       stateManager.setState({
-        queues: sortedQueues,
-        selectedQueueIndex: clampedIndex,
         // Pass explicit zeroed rates: feeding the tracker stale SQLite stats
         // every error tick would let the previous-sample timestamp drift, and
         // the first successful reconnect would compute a rate against a stale

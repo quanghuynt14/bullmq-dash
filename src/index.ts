@@ -9,6 +9,7 @@ import {
 import { loadConfig, createConfigFromPrompt } from "./config.js";
 import { loadProfile } from "./profiles.js";
 import { runConfigPrompt } from "./ui/config-prompt.js";
+import { runDoctorMode } from "./doctor.js";
 import { runJsonMode } from "./json-reporter.js";
 import { runWebMode, WebRedisConnectionError } from "./web/server.js";
 import { writeError } from "./errors.js";
@@ -26,6 +27,13 @@ async function main() {
 
   if (cliArgs.version) {
     showVersion();
+    return;
+  }
+
+  // Doctor routes before profile loading: it inspects the config file itself
+  // and reports problems as checks instead of exiting like loadProfile does.
+  if (cliArgs.subcommand?.kind === "doctor") {
+    await runDoctorMode(cliArgs);
     return;
   }
 

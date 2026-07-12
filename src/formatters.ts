@@ -1,6 +1,7 @@
 import type { QueueStats } from "./data/queues.js";
 import type { JobSummary, JobDetail, RetryResult } from "./data/jobs.js";
 import type { JobSchedulerSummary, JobSchedulerDetail, RecentJobInfo } from "./data/schedulers.js";
+import type { DoctorCheckStatus, DoctorReport } from "./doctor.js";
 import { formatInterval } from "./data/schedulers.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -381,5 +382,40 @@ export function formatJobsRetry(r: JobsRetryInput): string {
     lines.push("Run with --yes and without --dry-run to retry these jobs from scripts.");
   }
 
+  return lines.join("\n");
+}
+
+// ── Doctor report ───────────────────────────────────────────────────────
+
+const DOCTOR_STATUS_SYMBOLS: Record<DoctorCheckStatus, string> = {
+  ok: "✓",
+  warn: "!",
+  fail: "✗",
+  skip: "-",
+};
+
+export function formatDoctorReport(report: DoctorReport): string {
+  const lines: string[] = [];
+  lines.push(`${report.version} — ${report.runtime}`);
+  lines.push("");
+
+  const nameWidth = Math.max(...report.checks.map((check) => check.name.length));
+  for (const check of report.checks) {
+    const symbol = DOCTOR_STATUS_SYMBOLS[check.status];
+    lines.push(`${symbol} ${check.name.padEnd(nameWidth)}  ${check.detail}`);
+    if (check.hint) {
+      lines.push(`  ${" ".repeat(nameWidth)}  hint: ${check.hint}`);
+    }
+  }
+
+  const counts = { ok: 0, warn: 0, fail: 0, skip: 0 };
+  for (const check of report.checks) counts[check.status]++;
+  lines.push("");
+  lines.push(
+    `${counts.ok} ok, ${counts.warn} warning(s), ${counts.fail} failed, ${counts.skip} skipped`,
+  );
+  if (!report.ok) {
+    lines.push("Some checks failed — see hints above.");
+  }
   return lines.join("\n");
 }
