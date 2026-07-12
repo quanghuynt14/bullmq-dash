@@ -31,7 +31,7 @@ export const FORBIDDEN_SOURCE_MANIFEST_FIELDS = [
 ] as const;
 
 export const EXPECTED_RUNTIME_DEPENDENCIES: Record<string, string> = {
-  "@opentui/core": "^0.2.10",
+  "@opentui/core": "^0.4.3",
   bullmq: "^5.76.8",
 };
 
