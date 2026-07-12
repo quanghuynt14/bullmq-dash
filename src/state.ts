@@ -1,5 +1,10 @@
 import type { QueueStats } from "./data/queues.js";
-import { sortQueues, type QueueSortBy, type SortOrder } from "./data/queue-sort.js";
+import {
+  defaultSortOrder,
+  sortQueues,
+  type QueueSortBy,
+  type SortOrder,
+} from "./data/queue-sort.js";
 import type { JobSummary, JobDetail, JobListView } from "./data/jobs.js";
 import type { GlobalMetrics } from "./data/metrics.js";
 import type { JobSchedulerSummary, JobSchedulerDetail } from "./data/schedulers.js";
@@ -58,6 +63,9 @@ export interface AppState {
   showConfirmDelete: boolean;
   showPageJump: boolean;
   pageJumpInput: string;
+  showCommandPalette: boolean;
+  paletteQuery: string;
+  paletteIndex: number;
   isLoading: boolean;
 }
 
@@ -105,6 +113,9 @@ class StateManager {
       showConfirmDelete: false,
       showPageJump: false,
       pageJumpInput: "",
+      showCommandPalette: false,
+      paletteQuery: "",
+      paletteIndex: 0,
       isLoading: false,
     };
   }
@@ -246,6 +257,41 @@ class StateManager {
 
   backspaceQueueFilter(): void {
     this.setQueueFilter(this.state.queueFilter.slice(0, -1));
+  }
+
+  /** Set an explicit queue sort (command palette); `s` still cycles. */
+  setQueueSort(sortBy: QueueSortBy, sortOrder?: SortOrder): void {
+    const order = sortOrder ?? defaultSortOrder(sortBy);
+    const sortedQueues = sortQueues(this.state.allQueues, sortBy, order);
+    this.setState({
+      allQueues: sortedQueues,
+      queues: filterQueues(sortedQueues, this.state.queueFilter),
+      queueSortBy: sortBy,
+      queueSortOrder: order,
+      selectedQueueIndex: 0,
+      selectedJobIndex: 0,
+      jobsPage: 1,
+    });
+  }
+
+  // Command palette (Ctrl+P)
+  openCommandPalette(): void {
+    this.setState({ showCommandPalette: true, paletteQuery: "", paletteIndex: 0 });
+  }
+
+  closeCommandPalette(): void {
+    this.setState({ showCommandPalette: false, paletteQuery: "", paletteIndex: 0 });
+  }
+
+  setPaletteQuery(query: string): void {
+    // Typing changes the filtered list; restart the selection at the top.
+    this.setState({ paletteQuery: query, paletteIndex: 0 });
+  }
+
+  movePaletteSelection(delta: number, listLength: number): void {
+    if (listLength <= 0) return;
+    const next = Math.max(0, Math.min(this.state.paletteIndex + delta, listLength - 1));
+    this.setState({ paletteIndex: next });
   }
 
   // Job navigation

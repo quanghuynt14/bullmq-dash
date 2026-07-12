@@ -1,7 +1,8 @@
 import { createCliRenderer, type CliRenderer, type KeyEvent } from "@opentui/core";
-import { stateManager } from "./state.js";
+import { stateManager, type AppState } from "./state.js";
 import { pollingManager } from "./polling.js";
-import { getJobDetail, deleteJob } from "./data/jobs.js";
+import { getJobDetail, deleteJob, type JobListView } from "./data/jobs.js";
+import type { QueueSortBy } from "./data/queue-sort.js";
 import { getJobSchedulerDetail } from "./data/schedulers.js";
 import { closeContext, type Context } from "./context.js";
 
@@ -41,6 +42,19 @@ import {
   type GlobalMetricsElements,
 } from "./ui/global-metrics.js";
 import { createPageJump, updatePageJump, type PageJumpElements } from "./ui/page-jump.js";
+import {
+  clampPaletteIndex,
+  createCommandPalette,
+  filterPaletteActions,
+  updateCommandPalette,
+  type CommandPaletteElements,
+  type PaletteAction,
+} from "./ui/command-palette.js";
+
+/** A palette entry plus the closure that executes it. */
+interface RunnablePaletteAction extends PaletteAction {
+  run: () => void | Promise<void>;
+}
 
 interface AppElements {
   layout: LayoutElements;
@@ -54,6 +68,7 @@ interface AppElements {
   schedulerDetail: SchedulerDetailElements;
   confirmDialog: ConfirmDialogElements;
   pageJump: PageJumpElements;
+  commandPalette: CommandPaletteElements;
 }
 
 export class App {
@@ -125,6 +140,7 @@ export class App {
     const schedulerDetail = createSchedulerDetail(this.renderer);
     const confirmDialog = createConfirmDialog(this.renderer);
     const pageJump = createPageJump(this.renderer);
+    const commandPalette = createCommandPalette(this.renderer);
 
     return {
       layout,
@@ -138,6 +154,7 @@ export class App {
       schedulerDetail,
       confirmDialog,
       pageJump,
+      commandPalette,
     };
   }
 
@@ -156,9 +173,39 @@ export class App {
   private async handleKeyPress(key: KeyEvent): Promise<void> {
     const state = stateManager.getState();
 
-    // Global keys
-    if (key.name === "q" || (key.ctrl && key.name === "c")) {
+    // Ctrl+C always quits. Bare `q` only quits outside text-input modes —
+    // otherwise typing a queue name containing "q" would exit the app.
+    if (key.ctrl && key.name === "c") {
       await this.cleanup();
+      return;
+    }
+    if (key.name === "q" && !state.queueSearchActive && !state.showCommandPalette) {
+      await this.cleanup();
+      return;
+    }
+
+    // Command palette input mode
+    if (state.showCommandPalette) {
+      const available = filterPaletteActions(this.buildPaletteActions(state), state.paletteQuery);
+      if (key.name === "escape") {
+        stateManager.closeCommandPalette();
+      } else if (key.name === "return" || key.name === "enter") {
+        const action = available[clampPaletteIndex(state.paletteIndex, available.length)];
+        stateManager.closeCommandPalette();
+        if (action && available.length > 0) {
+          await action.run();
+        }
+      } else if (key.name === "up") {
+        stateManager.movePaletteSelection(-1, available.length);
+      } else if (key.name === "down") {
+        stateManager.movePaletteSelection(1, available.length);
+      } else if (key.name === "backspace") {
+        stateManager.setPaletteQuery(state.paletteQuery.slice(0, -1));
+      } else if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+        if (key.sequence >= " ") {
+          stateManager.setPaletteQuery(state.paletteQuery + key.sequence);
+        }
+      }
       return;
     }
 
@@ -234,6 +281,12 @@ export class App {
     // Open queue search ('/' has no key.name; match the raw sequence)
     if (key.sequence === "/" && !key.ctrl && !key.meta) {
       stateManager.openQueueSearch();
+      return;
+    }
+
+    // Open command palette
+    if (key.ctrl && key.name === "p") {
+      stateManager.openCommandPalette();
       return;
     }
 
@@ -328,18 +381,109 @@ export class App {
       case "7":
         const newStatus = getStatusFromKey(key.name);
         if (newStatus) {
-          stateManager.setJobsStatus(newStatus);
-          // Reset scheduler state when switching to schedulers
-          if (newStatus === "schedulers") {
-            stateManager.setState({
-              selectedSchedulerIndex: 0,
-              schedulersPage: 1,
-            });
-          }
-          await pollingManager.refreshJobs();
+          await this.applyJobsStatus(newStatus);
         }
         break;
     }
+  }
+
+  private async applyJobsStatus(newStatus: JobListView): Promise<void> {
+    stateManager.setJobsStatus(newStatus);
+    // Reset scheduler state when switching to schedulers
+    if (newStatus === "schedulers") {
+      stateManager.setState({
+        selectedSchedulerIndex: 0,
+        schedulersPage: 1,
+      });
+    }
+    await pollingManager.refreshJobs();
+  }
+
+  /**
+   * The command-palette action registry. Rebuilt per keystroke/render from
+   * live state so titles and availability stay current (e.g. "Clear queue
+   * filter" only exists while a filter is set).
+   */
+  private buildPaletteActions(state: AppState): RunnablePaletteAction[] {
+    const actions: RunnablePaletteAction[] = [
+      { id: "refresh", title: "Refresh data now", hint: "r", run: () => pollingManager.refresh() },
+      {
+        id: "search-queues",
+        title: "Search queues",
+        hint: "/",
+        run: () => stateManager.openQueueSearch(),
+      },
+    ];
+
+    if (state.queueFilter) {
+      actions.push({
+        id: "clear-queue-filter",
+        title: `Clear queue filter /${state.queueFilter}`,
+        run: async () => {
+          stateManager.setQueueFilter("");
+          await pollingManager.refreshJobs();
+        },
+      });
+    }
+
+    const sorts: Array<{ sortBy: QueueSortBy; title: string }> = [
+      { sortBy: "task-size", title: "Sort queues by task size" },
+      { sortBy: "failed", title: "Sort queues by failed jobs" },
+      { sortBy: "waiting", title: "Sort queues by waiting jobs" },
+      { sortBy: "name", title: "Sort queues by name" },
+    ];
+    for (const sort of sorts) {
+      actions.push({
+        id: `sort-${sort.sortBy}`,
+        title: sort.title,
+        hint: "s",
+        run: async () => {
+          stateManager.setQueueSort(sort.sortBy);
+          await pollingManager.refresh();
+        },
+      });
+    }
+
+    const statuses: Array<{ status: JobListView; title: string; hint: string }> = [
+      { status: "latest", title: "Show latest jobs", hint: "1" },
+      { status: "wait", title: "Show waiting jobs", hint: "2" },
+      { status: "active", title: "Show active jobs", hint: "3" },
+      { status: "completed", title: "Show completed jobs", hint: "4" },
+      { status: "failed", title: "Show failed jobs", hint: "5" },
+      { status: "delayed", title: "Show delayed jobs", hint: "6" },
+      { status: "schedulers", title: "Show schedulers", hint: "7" },
+    ];
+    for (const entry of statuses) {
+      actions.push({
+        id: `status-${entry.status}`,
+        title: entry.title,
+        hint: entry.hint,
+        run: () => this.applyJobsStatus(entry.status),
+      });
+    }
+
+    actions.push({
+      id: "toggle-pane",
+      title: "Switch pane",
+      hint: "Tab",
+      run: () => stateManager.toggleFocus(),
+    });
+
+    if (
+      state.focusedPane === "jobs" &&
+      state.jobsStatus !== "schedulers" &&
+      state.jobs.length > 0
+    ) {
+      actions.push({
+        id: "delete-job",
+        title: "Delete selected job",
+        hint: "d",
+        run: () => stateManager.showDeleteConfirm(),
+      });
+    }
+
+    actions.push({ id: "quit", title: "Quit bullmq-dash", hint: "q", run: () => this.cleanup() });
+    return actions;
   }
 
   private async openJobDetail(): Promise<void> {
@@ -465,6 +609,7 @@ export class App {
       schedulerDetail,
       confirmDialog,
       pageJump,
+      commandPalette,
     } = this.elements;
 
     const headerConfig = this.ctx.config;
@@ -479,13 +624,14 @@ export class App {
     // Update global metrics
     updateGlobalMetrics(globalMetrics, state.globalMetrics);
 
-    // Update queue list. While the `/` search input is active the select is
-    // deliberately unfocused so typed characters don't double as navigation.
+    // Update queue list. While the `/` search or command palette input is
+    // active the select is deliberately unfocused so typed characters don't
+    // double as navigation.
     updateQueueList(
       queueList,
       state.queues,
       state.selectedQueueIndex,
-      state.focusedPane === "queues" && !state.queueSearchActive,
+      state.focusedPane === "queues" && !state.queueSearchActive && !state.showCommandPalette,
       state.queueSortBy,
       state.queueSortOrder,
       state.queueFilter,
@@ -513,7 +659,7 @@ export class App {
         state.schedulersPage,
         state.schedulersTotalPages,
         state.schedulersTotal,
-        state.focusedPane === "jobs",
+        state.focusedPane === "jobs" && !state.showCommandPalette,
       );
     } else {
       // Hide scheduler list, show job list
@@ -526,7 +672,7 @@ export class App {
         state.jobsPage,
         state.jobsTotalPages,
         state.jobsTotal,
-        state.focusedPane === "jobs",
+        state.focusedPane === "jobs" && !state.showCommandPalette,
       );
     }
 
@@ -551,6 +697,18 @@ export class App {
       state.pageJumpInput,
       isSchedulersView ? state.schedulersPage : state.jobsPage,
       isSchedulersView ? state.schedulersTotalPages : state.jobsTotalPages,
+    );
+
+    // Update command palette
+    const paletteActions = state.showCommandPalette
+      ? filterPaletteActions(this.buildPaletteActions(state), state.paletteQuery)
+      : [];
+    updateCommandPalette(
+      commandPalette,
+      state.showCommandPalette,
+      state.paletteQuery,
+      paletteActions,
+      state.paletteIndex,
     );
   }
 

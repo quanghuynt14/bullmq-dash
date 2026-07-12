@@ -259,11 +259,18 @@ without auth — keep passwords out of the file itself.
 | `Tab`     | Switch between queues and jobs pane |
 | `←` / `→` | Previous/next page (in job list)    |
 | `/`       | Search/filter queues by name        |
+| `Ctrl+P`  | Open the command palette            |
 
 While searching, every printable key narrows the queue list live
 (case-insensitive substring). `Enter` keeps the filter and returns to
 navigation — the title shows the active filter as `/name` — and `Esc` clears
 it and restores the full list.
+
+`Ctrl+P` opens a command palette listing every action — refresh, queue
+sorting, job status filters, queue search, pane switching, job deletion, and
+quit — searchable by typing, with `↑`/`↓` + `Enter` to run and `Esc` to
+close. Every entry shows its direct keyboard shortcut, so the palette doubles
+as a discoverable cheat sheet.
 
 ### Actions
 
