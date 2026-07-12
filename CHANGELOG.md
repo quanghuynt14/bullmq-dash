@@ -5,10 +5,26 @@ All notable changes to bullmq-dash are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-07-12
 
 ### Added
 
+- **Local web dashboard.** `bullmq-dash --web` starts a local Bun HTTP server (default `http://127.0.0.1:3000`) serving an operator-first three-pane workspace: ranked queues, filtered jobs, and job detail with failed-job stacktraces. Queue ranking defaults to task size and can switch to failed/waiting/active/completed/delayed/name. Queue/job search and page-size controls keep large installations scannable. Retry actions are guarded server-side: dry-runs are safe previews, live retries require explicit JSON confirmation, and `--web-read-only` blocks live retries entirely. Flags: `--web-host` (default `127.0.0.1`), `--web-port` (default `3000`), `--web-read-only`. Web mode has no built-in authentication — keep the default loopback bind unless behind an authenticated proxy. The browser never receives Redis credentials.
+- **`doctor` diagnostics command.** `bullmq-dash doctor` diagnoses a setup in one pass: config-file resolution and schema, profile selection and env-var expansion, connection source and URL shape, Redis PING with round-trip latency, server version/mode from INFO, and BullMQ queue discovery under the key prefix. Unlike other commands it works without a Redis URL, keeps going after a failed check, and treats a broken config file as a finding instead of exiting. Credentials are never printed; an ACL-blocked INFO or an empty queue discovery is a warning, not a failure. JSON by default, `--human-friendly` for a ✓/✗ checklist. Exit codes: `0` when no check failed (warnings allowed), `1` otherwise.
+- **TUI `/` queue search.** Press `/` in the TUI to filter the queue list live by case-insensitive substring as you type. `Enter` keeps the filter (shown as `/name` in the pane title), `Esc` clears it and restores the full list. Global metrics keep counting all queues while a filter is active.
+- **Homebrew install path.** `brew install quanghuynt14/tap/bullmq-dash` via the new [quanghuynt14/homebrew-tap](https://github.com/quanghuynt14/homebrew-tap). The formula installs the published npm tarball, depends on homebrew-core `bun`, and vendors runtime dependencies at install time so first run needs no network or Node/Bun setup.
+
+### Changed
+
+- **`--version` includes runtime info.** `-v` now prints the Bun version and platform (e.g. `bullmq-dash v0.4.0 (bun 1.3.14, darwin arm64)`) so bug reports carry build context.
+
+## [0.3.2] - 2026-05-30
+
+### Added
+
+- **Queue ranking.** `queues list --sort-by name|task-size|waiting|active|completed|failed|delayed` (aliases: `size`, `total`, `wait`) with `--sort-order asc|desc`, plus TUI `s` sort cycling and inline task-size bars in the queue list.
+- **Single-job retry.** `jobs retry <queue> --job-id <id>` retries one failed job by ID, with the same `--dry-run`/`--yes` guards as batch retry.
+- **Community templates.** Issue templates, PR template, CONTRIBUTING.md, and CODE_OF_CONDUCT.md.
 - **TTL-backed queue-data store facade.** Added `src/data/queue-store.ts` as the public cache API for queues, jobs, and schedulers, with `listJobs`, `searchJobs`, `getJob`, `listQueues`, `listSchedulers`, `getCacheState`, and observation writers for each cached dimension.
 - **Observation-cache freshness control.** Profiles now support `cacheTtlMs` to control the SQLite cache TTL. The default freshness window is 24 hours.
 - **Queue-store lifecycle cleanup.** TUI polling and headless commands run rate-limited cleanup that physically removes stale queue, scheduler, and job rows based on `last_observed_at`.

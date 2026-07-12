@@ -1,6 +1,6 @@
 {
   "name": "bullmq-dash",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Terminal UI dashboard for BullMQ queue monitoring",
   "keywords": [
     "bullmq",

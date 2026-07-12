@@ -2,7 +2,7 @@
 
 Terminal and browser dashboard for [BullMQ](https://bullmq.io/)
 
-<img width="1491" height="854" alt="SCR-20260127-gsqa" src="https://github.com/user-attachments/assets/739d7729-b6cd-4933-a9e8-96e8cf84d33a" />
+![bullmq-dash TUI: live queues, / search, failed-job triage with stacktraces](https://raw.githubusercontent.com/quanghuynt14/bullmq-dash/master/docs/demo.gif)
 
 ## Features
 
@@ -112,6 +112,8 @@ bullmq-dash --web --redis-url <redis-url> --poll-interval 5000
 
 ### Web Dashboard
 
+<img width="1491" height="854" alt="bullmq-dash web dashboard" src="https://github.com/user-attachments/assets/739d7729-b6cd-4933-a9e8-96e8cf84d33a" />
+
 `--web` starts a local Bun HTTP server and serves a data-dense dashboard at
 `http://127.0.0.1:3000` by default.
 
@@ -180,7 +182,7 @@ bullmq-dash doctor | jq '.checks[] | select(.status == "fail")'
 ```
 
 ```
-bullmq-dash v0.3.2 — bun 1.3.14 on darwin arm64
+bullmq-dash v0.4.0 — bun 1.3.14 on darwin arm64
 
 ✓ config-file      ~/.config/bullmq-dash/config.json — profiles: local, prod (default: local)
 ✓ profile          Using profile 'local' (via defaultProfile)

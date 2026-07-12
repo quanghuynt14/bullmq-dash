@@ -126,7 +126,7 @@ Redis URL and never hard-exits on a broken config file: problems come back as
 interface DoctorReport {
   timestamp: string;
   command: "doctor";
-  version: string; // "bullmq-dash v0.3.2"
+  version: string; // "bullmq-dash v0.4.0"
   runtime: string; // "bun 1.3.14 on darwin arm64"
   checks: Array<{
     name: string;
