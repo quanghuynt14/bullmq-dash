@@ -128,7 +128,7 @@ export function createLayout(renderer: CliRenderer): LayoutElements {
   const footerText = new TextRenderable(renderer, {
     id: "footer-text",
     content:
-      "j/k: navigate | Tab: switch pane | Enter: select | /: search | d: delete | r: refresh | q: quit",
+      "j/k: navigate | Tab: switch pane | Enter: select | /: search | ^p: commands | d: delete | r: refresh | q: quit",
     fg: colors.overlay0,
   });
   footer.add(footerText);

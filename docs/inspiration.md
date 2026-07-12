@@ -138,10 +138,18 @@ intentionally keep counting all queues while a filter is active. Verified
 end-to-end by driving the TUI inside tmux against the SQLite disconnected
 fallback. The command-palette half of this pattern is still open.
 
+### TUI command palette (applied 2026-07-12, completing the tmuxwatch pattern)
+
+tmuxwatch's `ctrl+P` palette. **Applied:** `Ctrl+P` opens a searchable
+palette of every TUI action (refresh, explicit queue sorts, job status
+filters, queue search, pane switch, delete, quit); entries show their direct
+shortcut so the palette doubles as a cheat sheet. Availability is
+state-aware ("Clear queue filter" only exists while one is set). Building it
+surfaced and fixed a shipped bug: the global `q`-quits check ran before the
+`/` search input branch, so typing a queue name containing "q" quit the app.
+
 ### Patterns noted but not yet applied (candidates for next sessions)
 
-- **Command palette** (tmuxwatch `ctrl+P`) — `/` search shipped; a palette
-  for actions (retry, sort, filter by status) is the remaining half.
 - **`--dump` JSON snapshot from the live UI** (tmuxwatch) — headless mode
   covers this, but a single "dump everything" command could help support.
 

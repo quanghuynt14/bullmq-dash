@@ -31,6 +31,9 @@ function resetSharedState(): void {
     queueSortBy: "name",
     queueSortOrder: "asc",
     focusedPane: "queues",
+    showCommandPalette: false,
+    paletteQuery: "",
+    paletteIndex: 0,
   });
 }
 
@@ -159,6 +162,58 @@ describe("queue search mode", () => {
     state = stateManager.getState();
     expect(state.queueFilter).toBe("");
     expect(state.queues.length).toBe(3);
+  });
+});
+
+describe("setQueueSort", () => {
+  it("applies an explicit sort with its default order and keeps the filter", () => {
+    stateManager.applyQueues([EMAIL, NOTIFICATIONS, PAYMENTS]);
+    stateManager.setQueueFilter("ent");
+
+    stateManager.setQueueSort("task-size");
+    const state = stateManager.getState();
+    expect(state.queueSortBy).toBe("task-size");
+    expect(state.queueSortOrder).toBe("desc");
+    expect(state.allQueues.map((q) => q.name)).toEqual(["payments", "email", "notifications"]);
+    expect(state.queues.map((q) => q.name)).toEqual(["payments"]);
+  });
+});
+
+describe("command palette state", () => {
+  it("opens with a fresh query and selection", () => {
+    stateManager.setState({ paletteQuery: "stale", paletteIndex: 3 });
+    stateManager.openCommandPalette();
+    const state = stateManager.getState();
+    expect(state.showCommandPalette).toBe(true);
+    expect(state.paletteQuery).toBe("");
+    expect(state.paletteIndex).toBe(0);
+  });
+
+  it("resets the selection when the query changes", () => {
+    stateManager.openCommandPalette();
+    stateManager.movePaletteSelection(2, 5);
+    expect(stateManager.getState().paletteIndex).toBe(2);
+    stateManager.setPaletteQuery("fail");
+    expect(stateManager.getState().paletteIndex).toBe(0);
+  });
+
+  it("clamps palette navigation to the list bounds", () => {
+    stateManager.openCommandPalette();
+    stateManager.movePaletteSelection(-1, 5);
+    expect(stateManager.getState().paletteIndex).toBe(0);
+    stateManager.movePaletteSelection(99, 5);
+    expect(stateManager.getState().paletteIndex).toBe(4);
+    stateManager.movePaletteSelection(1, 0);
+    expect(stateManager.getState().paletteIndex).toBe(4);
+  });
+
+  it("clears query and selection on close", () => {
+    stateManager.openCommandPalette();
+    stateManager.setPaletteQuery("sort");
+    stateManager.closeCommandPalette();
+    const state = stateManager.getState();
+    expect(state.showCommandPalette).toBe(false);
+    expect(state.paletteQuery).toBe("");
   });
 });
 

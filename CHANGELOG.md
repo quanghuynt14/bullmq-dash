@@ -5,6 +5,16 @@ All notable changes to bullmq-dash are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **TUI command palette.** `Ctrl+P` opens a searchable palette of every TUI action — refresh, explicit queue sorts (task size / failed / waiting / name), job status filters, queue search, pane switching, job deletion, and quit. Type to filter, `↑`/`↓` + `Enter` to run, `Esc` to close. Entries show their direct keyboard shortcut, and availability is state-aware (e.g. "Clear queue filter" only appears while a filter is set).
+
+### Fixed
+
+- **`q` no longer quits while typing in the `/` queue search or the command palette.** The global quit key ran before text-input handling, so searching for a queue name containing "q" exited the app. `Ctrl+C` still always quits.
+
 ## [0.4.0] - 2026-07-12
 
 ### Added
