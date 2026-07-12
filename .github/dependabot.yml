@@ -5,7 +5,7 @@
 
 version: 2
 updates:
-  - package-ecosystem: "npm" # See documentation for possible values
+  - package-ecosystem: "bun" # the npm ecosystem does not update bun.lock, which breaks CI's frozen-lockfile install
     directory: "/" # Location of package manifests
     schedule:
       interval: "weekly"
