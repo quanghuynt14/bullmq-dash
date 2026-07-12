@@ -182,7 +182,7 @@ bullmq-dash doctor | jq '.checks[] | select(.status == "fail")'
 ```
 
 ```
-bullmq-dash v0.4.0 — bun 1.3.14 on darwin arm64
+bullmq-dash v0.4.1 — bun 1.3.14 on darwin arm64
 
 ✓ config-file      ~/.config/bullmq-dash/config.json — profiles: local, prod (default: local)
 ✓ profile          Using profile 'local' (via defaultProfile)
