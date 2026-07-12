@@ -144,5 +144,15 @@ fallback. The command-palette half of this pattern is still open.
   for actions (retry, sort, filter by status) is the remaining half.
 - **`--dump` JSON snapshot from the live UI** (tmuxwatch) — headless mode
   covers this, but a single "dump everything" command could help support.
-- **Demo GIF/screenshot above the fold** — the README has a web screenshot;
-  a terminal-cast GIF of the TUI would sell the core mode.
+
+### Demo GIF above the fold (applied 2026-07-12)
+
+steipete's high-star repos show the product in the first screen. **Applied:**
+`docs/demo.gif` — a 26s VHS recording of the TUI against a live local Redis
+(seeded queues + a continuous traffic generator adapted from
+https://github.com/quanghuynt14/bullmq-simulator so ACTIVE counts and ENQ/DEQ
+rates visibly move). The tour: launch → rank by size → `/pay` search → failed
+filter → stacktrace detail. Regeneration scripts are checked in at
+`docs/demo/` (seed-demo.ts + live-traffic.ts + demo.tape — instructions in
+the tape header); demo failures carry fabricated `/app/...` stacks so no
+local paths leak into the recording.
