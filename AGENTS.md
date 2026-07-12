@@ -604,9 +604,7 @@ export interface XxxElements {
 
 // 2. Factory function - creates elements
 export function createXxx(renderer: CliRenderer, parent: BoxRenderable): XxxElements {
-  const container = new BoxRenderable(renderer, {
-    /* ... */
-  });
+  const container = new BoxRenderable(renderer, {/* ... */});
   parent.add(container);
   // ...
   return { container, title /* ... */ };
